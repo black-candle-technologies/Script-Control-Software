@@ -10,6 +10,21 @@ The basic idea is simple:
 
 ---
 
+## Project Status
+
+SCS is in **Phase 0 — Foundation**. The desktop shell runs, the architecture is
+laid out, and the core data models are drafted. No story features are built yet;
+the app opens to a dashboard that establishes the product's direction.
+
+## Documentation
+
+- [ROADMAP.md](ROADMAP.md) — phased plan from foundation to full product.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the app is layered.
+- [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md) — the portable `.scs` project format.
+- [docs/DOMAIN_MODELS.md](docs/DOMAIN_MODELS.md) — story hierarchy, television, recognition and versioning models.
+
+---
+
 ## Core Vision
 
 Most screenwriting applications focus almost entirely on the screenplay page. They help format a script correctly, export a PDF, and maybe provide some basic beat board or revision tools. That is useful, but it does not reflect how stories are actually developed.
@@ -656,41 +671,31 @@ This would make adoption easier because writers would not need to immediately ab
 
 SCS should use a local project format that keeps the user in control.
 
-A possible project structure could look like this:
+An SCS project is a portable `.scs` folder:
 
 ```text
 MyProject.scs/
-  project.json
-  screenplay/
-    main.fdx
-    main.scs.json
-  episodes/
-    s01e01/
-      episode.fdx
-      episode.scs.json
-    s01e02/
-      episode.fdx
-      episode.scs.json
-  treatments/
-    treatment-v1.md
-  boards/
-    story-board.json
-    season-board.json
-  characters/
-    characters.json
-  objects/
-    objects.json
-  locations/
-    locations.json
-  bible/
-    show-bible.md
-  breakdowns/
-    latest.json
-  versions/
-    history/
+  scs.project.json        # Portable project metadata (the source of truth)
+  scripts/
+    main.fdx              # External, portable FDX script source(s)
+  treatments/             # Long-form development documents
+  notes/                  # Loose research and notes
+  references/             # Images, links, supporting material
+  exports/                # Generated breakdowns and JSON / PDF exports
+  .scs/                   # Internal working data — safe to delete and rebuild
+    database.sqlite       # Planned local index for fast search/indexing
+    versions/             # Planned version-history storage
+    cache/                # Disposable caches
 ```
 
-This structure is only a proposal, but the guiding principle should be portability. Users should not feel like their project is trapped inside a black-box database.
+The guiding principle is portability. `scs.project.json` plus the external FDX
+scripts fully describe the project in open formats; everything under `.scs/` is a
+rebuildable index, never the source of truth. Users should never feel like their
+project is trapped inside a black-box database, or locked away from Final Draft or
+other FDX-compatible tools.
+
+The canonical, evolving specification lives in
+[docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md).
 
 ---
 

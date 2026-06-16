@@ -1,50 +1,45 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import Dashboard from "./components/Dashboard.tsx";
+import { defaultAppInfo, type AppInfo } from "./domain/index.ts";
 import "./App.css";
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const [appInfo, setAppInfo] = useState<AppInfo>(defaultAppInfo);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    // Ask the Rust command layer who we are. Falls back to static metadata when
+    // the UI is rendered outside the Tauri shell (e.g. a plain browser preview).
+    invoke<AppInfo>("get_app_info")
+      .then(setAppInfo)
+      .catch(() => setAppInfo(defaultAppInfo));
+  }, []);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div className="app">
+      <header className="topbar">
+        <span className="wordmark">{appInfo.short_name}</span>
+        <span className="topbar-name">{appInfo.name}</span>
+        <span className="phase-chip">
+          {appInfo.phase} · v{appInfo.version}
+        </span>
+      </header>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
+      <main className="content">
+        <div className="hero">
+          <h1>{appInfo.name}</h1>
+          <span className="subtitle">{appInfo.short_name}</span>
+          <p className="positioning">{appInfo.tagline}</p>
+        </div>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+        <Dashboard />
+
+        <p className="foot-note">
+          Phase 0 foundation — this is the architecture, not the features.
+          Nothing here writes to disk yet.
+        </p>
+      </main>
+    </div>
   );
 }
 
