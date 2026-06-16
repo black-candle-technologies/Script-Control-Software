@@ -1,0 +1,11 @@
+packages:
+  - .
+
+allowBuilds:
+  esbuild: true
+
+overrides:
+  electron-to-chromium: 1.5.372
+
+onlyBuiltDependencies:
+  - esbuild
