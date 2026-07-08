@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 /// Lifecycle state of a foundation capability. Mirrors the `FoundationStatus`
 /// union used by the TypeScript frontend so both sides speak the same language.
-#[allow(dead_code)] // Forward-looking model; consumed by the storage layer in a later phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CapabilityStatus {
@@ -22,7 +21,6 @@ pub enum CapabilityStatus {
 
 /// The two kinds of project SCS is built around. Behaviour is defined in later
 /// phases; this exists so the storage and command layers can branch on it.
-#[allow(dead_code)] // Forward-looking model; consumed by the storage layer in a later phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectKind {
@@ -48,10 +46,76 @@ impl AppInfo {
             name: "Script Control Software".to_string(),
             short_name: "SCS".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            phase: "Phase 0 — Foundation".to_string(),
+            phase: "Phase 1 — Writing Workspace".to_string(),
             tagline:
                 "A local-first development environment for film and television writing."
                     .to_string(),
+        }
+    }
+}
+
+/// Portable sample-project metadata, matching `ProjectMeta` on the TS side
+/// (camelCase over the wire).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SampleProject {
+    pub format_version: u32,
+    pub kind: ProjectKind,
+    pub title: String,
+    pub created_at: String,
+}
+
+impl SampleProject {
+    pub fn sample() -> Self {
+        Self {
+            format_version: 1,
+            kind: ProjectKind::Feature,
+            title: "The Long Way Home".to_string(),
+            created_at: "2026-07-08T00:00:00Z".to_string(),
+        }
+    }
+}
+
+/// One capability line in the phase report.
+#[derive(Debug, Clone, Serialize)]
+pub struct Capability {
+    pub id: String,
+    pub status: CapabilityStatus,
+    pub detail: String,
+}
+
+/// What this build of SCS actually does — kept honest and in one place.
+#[derive(Debug, Clone, Serialize)]
+pub struct PhaseStatus {
+    pub phase: String,
+    pub summary: String,
+    pub capabilities: Vec<Capability>,
+}
+
+impl PhaseStatus {
+    pub fn current() -> Self {
+        let cap = |id: &str, status: CapabilityStatus, detail: &str| Capability {
+            id: id.to_string(),
+            status,
+            detail: detail.to_string(),
+        };
+        Self {
+            phase: AppInfo::current().phase,
+            summary: "Screenplay editor with Fountain-inspired parsing, scene/character \
+                      detection and local autosave. Storage, FDX and version control are \
+                      drafted or planned."
+                .to_string(),
+            capabilities: vec![
+                cap("editor", CapabilityStatus::Active, "Block-based screenplay editor with element types and keyboard flow."),
+                cap("fountain", CapabilityStatus::Active, "Fountain-inspired serialize/parse for source view and export."),
+                cap("detection", CapabilityStatus::Active, "Scenes, characters and locations derived live from the script."),
+                cap("persistence", CapabilityStatus::Active, "Local autosave via browser storage; the Rust storage layer is planned."),
+                cap("versioning", CapabilityStatus::Drafted, "Draft-version UI with sample history; real version control planned."),
+                cap("television", CapabilityStatus::Drafted, "Episode-tab preview; episode workspaces planned."),
+                cap("recognition", CapabilityStatus::Drafted, "Entity candidates shown in the UI; recognition engine planned."),
+                cap("fdx", CapabilityStatus::Planned, "FDX import/export not implemented — no compatibility claimed."),
+                cap("sqlite", CapabilityStatus::Planned, "Local project index."),
+            ],
         }
     }
 }

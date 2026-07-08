@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "node --test \"src/**/*.test.ts\"",
+    "check": "tsc && node --test \"src/**/*.test.ts\"",
     "tauri": "tauri"
   },
   "dependencies": {

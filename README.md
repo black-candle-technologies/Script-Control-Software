@@ -12,16 +12,34 @@ The basic idea is simple:
 
 ## Project Status
 
-SCS is in **Phase 0 — Foundation**. The desktop shell runs, the architecture is
-laid out, and the core data models are drafted. No story features are built yet;
-the app opens to a dashboard that establishes the product's direction.
+SCS is in **Phase 1 — Writing Workspace**. The app opens to a lightweight start
+screen and a working screenplay editor:
+
+- **Works today**: block-based screenplay editor with professional element
+  formatting (scene heading, action, character, dialogue, parenthetical,
+  transition, shot, note), screenwriter keyboard flow (Enter/Tab/Ctrl+1–8),
+  Fountain-inspired recognition while typing, a Fountain source view and
+  `.fountain` export, live scene/character/location detection feeding the
+  scene navigator and reference panels, and local autosave.
+- **Placeholder / sample data**: props, draft versions, breakdown production
+  categories, TV episode tabs, and entity recognition are visible in the UI but
+  clearly labelled as sample or planned.
+- **Not implemented yet**: FDX import/export, PDF export, real version control,
+  pagination, and the Rust storage layer. The UI never claims otherwise —
+  unfinished actions are labelled “planned”.
+
+Run it with `pnpm install`, then `pnpm tauri dev` (desktop) or `pnpm dev`
+(browser preview). `pnpm test` runs the domain tests; `pnpm build` type-checks
+and bundles the frontend.
 
 ## Documentation
 
 - [ROADMAP.md](ROADMAP.md) — phased plan from foundation to full product.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the app is layered.
+- [docs/EDITOR.md](docs/EDITOR.md) — what the screenplay editor supports today, including the Fountain-inspired rules.
 - [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md) — the portable `.scs` project format.
 - [docs/DOMAIN_MODELS.md](docs/DOMAIN_MODELS.md) — story hierarchy, television, recognition and versioning models.
+- [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md) — the recommended next slice of work.
 
 ---
 

@@ -1,8 +1,10 @@
 # SCS Architecture
 
-> Status: Phase 0. This describes the intended layering of SCS. Only the
-> **frontend shell**, the **command layer** and the **domain model layer** exist
-> today; everything below them is named and reserved, not built.
+> Status: Phase 1. The **frontend shell** (now a writing workspace, not just a
+> dashboard), the **command layer** and the **domain model layer** are active;
+> the screenplay model and a Fountain-inspired parser/serializer live in the
+> TypeScript domain layer. Storage, the FDX parser/compiler, versioning and
+> recognition remain named and reserved, not built.
 
 SCS is a local-first desktop application built on **Tauri** (native shell) with a
 **React / TypeScript** frontend and a **Rust** backend. The architecture is
@@ -34,23 +36,30 @@ versioning, recognition — has an obvious home before any of it is written.
 
 ## Frontend shell — `src/`
 
-A React/TypeScript application rendered inside the Tauri window. In Phase 0 it is
-a single dashboard that communicates the product's direction without pretending
-features exist. The UI is intentionally **data-driven**: it renders from the
-typed domain models in `src/domain/` rather than hard-coding content, so the
-foundation stays honest and easy to extend.
+A React/TypeScript application rendered inside the Tauri window. Phase 1 starts
+from writing: a lightweight home screen opens into the screenplay workspace
+(scene navigator · page editor · collapsible inspector · status bar). The UI is
+**data-driven**: scenes, characters and locations are always derived from the
+screenplay blocks, never stored separately.
 
-- `src/App.tsx` — the shell (top bar + hero).
-- `src/components/Dashboard.tsx` — the dashboard sections.
-- `src/domain/` — the TypeScript domain models (see DOMAIN_MODELS.md).
+- `src/App.tsx` — the shell and view switching (home / write / foundation).
+- `src/components/Home.tsx` — the lightweight start screen.
+- `src/components/Workspace.tsx` — the writing workspace layout and state.
+- `src/components/Editor.tsx` — the block-based screenplay page editor (see EDITOR.md).
+- `src/components/Inspector.tsx` — reference tabs (scene, cast, props, places, drafts, breakdown, series, entities).
+- `src/components/Dashboard.tsx` — the Phase 0 foundation-status view, kept as a secondary screen.
+- `src/domain/` — the TypeScript domain models, including `screenplay.ts` and `fountain.ts` (see DOMAIN_MODELS.md).
+- `src/storage.ts` — the local-persistence seam (localStorage today, Rust storage layer later).
 
 ## Command layer — `src-tauri/src/lib.rs`
 
 The Rust side exposes `#[tauri::command]` functions that the frontend calls via
-`invoke`. Today there is one — `get_app_info` — which returns the application's
-identity. This thin layer is where future operations (open project, parse FDX,
-query the index, compute a diff) will be surfaced to the UI. The frontend always
-degrades gracefully when a command is unavailable (e.g. running outside Tauri).
+`invoke`: `get_app_info`, `get_sample_screenplay` (the same
+`samples/sample.fountain` file the frontend bundles, via `include_str!`),
+`get_sample_project` and `get_phase_status` (an honest capability report). This
+thin layer is where future operations (open project, parse FDX, query the
+index, compute a diff) will be surfaced to the UI. The frontend always degrades
+gracefully when a command is unavailable (e.g. running outside Tauri).
 
 ## Domain model layer — `src-tauri/src/domain.rs` and `src/domain/`
 

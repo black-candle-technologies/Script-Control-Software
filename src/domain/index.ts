@@ -7,6 +7,8 @@
  * Rust layer agree on the architecture before any feature is built.
  */
 export * from "./status.ts";
+export * from "./screenplay.ts";
+export * from "./fountain.ts";
 export * from "./hierarchy.ts";
 export * from "./projectTypes.ts";
 export * from "./foundation.ts";
