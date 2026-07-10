@@ -80,3 +80,13 @@ export interface SeasonArc {
   /** Episodes that advance this arc, in order. */
   episodeIds: string[];
 }
+
+export function aggregateEpisodes(documents: import("./screenplay.ts").ScreenplayDocument[]) {
+  const characters = new Set<string>();
+  const locations = new Set<string>();
+  for (const document of documents) {
+    document.characters?.forEach((character) => characters.add(character.canonicalName));
+    document.locations?.forEach((location) => locations.add(location.canonicalName));
+  }
+  return { characters: [...characters].sort(), locations: [...locations].sort() };
+}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FinalDraft DocumentType="Script" Version="1">
+  <TitlePage><Content><Paragraph Type="Title"><Text>Night Kitchen</Text></Paragraph><Paragraph Type="Author"><Text>Test Writer</Text></Paragraph></Content></TitlePage>
+  <Content>
+    <Paragraph Type="Scene Heading" Number="1" Id="p1"><Text>INT. WALSH HOUSE - KITCHEN - NIGHT</Text></Paragraph>
+    <Paragraph Type="Action"><Text Style="Bold">Rain needles the windows.</Text></Paragraph>
+    <Paragraph Type="Character"><Text>MARA (V.O.)</Text></Paragraph>
+    <Paragraph Type="Parenthetical"><Text>(quietly)</Text></Paragraph>
+    <Paragraph Type="Dialogue"><Text>It started here.</Text></Paragraph>
+    <Paragraph Type="Transition"><Text>CUT TO:</Text></Paragraph>
+    <Paragraph Type="Shot"><Text>CLOSE ON THE CLOCK</Text></Paragraph>
+    <Paragraph Type="General"><Text>A general note.</Text></Paragraph>
+    <Paragraph Type="Lyrics"><Text>Home again.</Text></Paragraph>
+    <Paragraph Type="Cast List"><Text>MARA</Text></Paragraph>
+    <Paragraph Type="New Act"><Text>ACT TWO</Text></Paragraph>
+    <Paragraph Type="End of Act"><Text>END ACT TWO</Text></Paragraph>
+  </Content>
+</FinalDraft>

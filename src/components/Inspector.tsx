@@ -1,10 +1,12 @@
 import { useState } from "react";
 import {
+  aggregateEpisodes,
   parseHeading,
   type CharacterRef,
   type LocationRef,
   type Scene,
   type ScreenplayBlock,
+  type ScreenplayDocument,
 } from "../domain/index.ts";
 import { sampleCharacterBios, sampleEpisodes, sampleProps } from "../domain/sample.ts";
 
@@ -28,6 +30,8 @@ interface InspectorProps {
   onSaveVersion: () => void;
   words: number;
   pages: number;
+  episodeDocuments: ScreenplayDocument[];
+  readOnly?: boolean;
 }
 
 const TABS = ["Scene", "Cast", "Props", "Places", "Drafts", "Breakdown", "Series", "Entities"] as const;
@@ -77,7 +81,7 @@ export default function Inspector(props: InspectorProps) {
 
 /* ---- Scene -------------------------------------------------------------- */
 
-function SceneTab({ blocks, scenes, activeScene, sceneNotes, onSceneNote }: InspectorProps) {
+function SceneTab({ blocks, scenes, activeScene, sceneNotes, onSceneNote, readOnly }: InspectorProps) {
   if (!activeScene) {
     return <Hint>Click into the script to see the current scene here.</Hint>;
   }
@@ -134,6 +138,7 @@ function SceneTab({ blocks, scenes, activeScene, sceneNotes, onSceneNote }: Insp
         className="insp-notes-input"
         placeholder="Private notes for this scene…"
         value={sceneNotes[activeScene.id] ?? ""}
+        readOnly={readOnly}
         onChange={(e) => onSceneNote(activeScene.id, e.target.value)}
       />
     </div>
@@ -285,13 +290,18 @@ function BreakdownTab({ scenes, characters, locations, words, pages }: Inspector
 
 /* ---- Series (TV placeholder) ------------------------------------------------ */
 
-function SeriesTab({ characters }: InspectorProps) {
+function SeriesTab({ characters, episodeDocuments }: InspectorProps) {
   const [episode, setEpisode] = useState(0);
+  const hasEpisodes = episodeDocuments.length > 1;
+  const labels = hasEpisodes
+    ? episodeDocuments.map((document, index) => document.titlePage.title || `Episode ${index + 1}`)
+    : sampleEpisodes;
+  const aggregate = aggregateEpisodes(episodeDocuments);
   return (
     <div className="insp-stack">
-      <Hint>Television workspace preview — flip through episodes like tabs.</Hint>
+      <Hint>{hasEpisodes ? "Imported episode tabs share this show's cast and locations." : "Add Episode FDX from the toolbar to start a television workspace."}</Hint>
       <div className="episode-tabs">
-        {sampleEpisodes.map((ep, i) => (
+        {labels.map((ep, i) => (
           <button
             key={ep}
             className={`episode-tab ${i === episode ? "active" : ""}`}
@@ -301,11 +311,13 @@ function SeriesTab({ characters }: InspectorProps) {
           </button>
         ))}
       </div>
-      {episode === 0 ? (
+      {hasEpisodes ? (
+        <Hint>{labels[episode]} is open in the writing workspace.</Hint>
+      ) : episode === 0 ? (
         <Hint>The Pilot is the screenplay currently open in the editor.</Hint>
       ) : (
         <Hint>
-          {sampleEpisodes[episode]} — episode workspaces are planned. Each episode will carry its
+          {labels[episode]} — episode workspaces are planned. Each episode will carry its
           own script, beat board and breakdowns.
         </Hint>
       )}
@@ -314,17 +326,18 @@ function SeriesTab({ characters }: InspectorProps) {
       <h4>Continuity notes</h4>
       <Hint>Cross-episode continuity tracking — planned.</Hint>
       <h4>Recurring characters</h4>
-      {characters.length ? (
+      {(aggregate.characters.length ? aggregate.characters : characters.map((character) => character.name)).length ? (
         <div className="chip-row">
-          {characters.map((c) => (
-            <span key={c.name} className="chip">
-              {c.name}
+          {(aggregate.characters.length ? aggregate.characters : characters.map((character) => character.name)).map((name) => (
+            <span key={name} className="chip">
+              {name}
             </span>
           ))}
         </div>
       ) : (
         <Hint>None detected yet.</Hint>
       )}
+      {aggregate.locations.length > 0 && <><h4>Show locations</h4><div className="chip-row">{aggregate.locations.map((location) => <span key={location} className="chip">{location}</span>)}</div></>}
       <h4>Recurring props</h4>
       <div className="chip-row">
         {sampleProps.map((p) => (

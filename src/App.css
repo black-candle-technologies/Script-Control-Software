@@ -490,6 +490,55 @@ button.wordmark {
   flex-wrap: wrap;
 }
 
+.workspace-episodes {
+  display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+  padding: 0.35rem 0.75rem 0;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+
+.readonly-banner,
+.operation-message,
+.import-summary,
+.import-error {
+  margin: 0;
+  padding: 0.38rem 0.9rem;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  background: var(--bg-raised-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.readonly-banner {
+  color: var(--accent);
+}
+
+.readonly-banner span {
+  color: var(--text-muted);
+  margin-left: 0.4rem;
+}
+
+.operation-message,
+.import-error {
+  color: var(--status-active);
+}
+
+.import-error {
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+
+.import-summary summary {
+  cursor: pointer;
+}
+
+.import-summary ul {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+}
+
 .toolbar-spacer {
   flex: 1;
 }

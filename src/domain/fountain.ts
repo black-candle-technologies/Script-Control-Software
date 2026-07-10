@@ -67,6 +67,8 @@ export function toFountain(doc: ScreenplayDocument): string {
       case "note":
         out.push(`[[${text}]]`, "");
         break;
+      default:
+        out.push(text, "");
     }
   });
   return out.join("\n").replace(/\n+$/, "") + "\n";

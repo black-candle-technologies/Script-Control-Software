@@ -1,7 +1,15 @@
 # SCS Project Format
 
-> Status: **drafted** (Phase 0). This document specifies the intended on-disk
-> shape of an SCS project. No reading or writing of projects is implemented yet.
+## Phase 1 linked FDX wrapper
+
+Phase 1 writes a portable `scs.project.json` alongside the user-selected FDX
+files. It links `sourcePath` values and never copies or moves the source files.
+The manifest contains `schemaVersion`, project identity/name/type/timestamps,
+and script entries. A television manifest adds `seasonNumber: 1` and sequential
+`episodeNumber` values for its linked episodes.
+
+> Status: **active for linked FDX manifests** (Phase 1). Opening existing
+> manifests and broader project-folder management remain later work.
 
 An SCS project is an ordinary folder named `MyProject.scs/`. The guiding
 principle is **portability**: a writer should never feel that their work is

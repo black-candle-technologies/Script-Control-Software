@@ -6,10 +6,13 @@ interface HomeProps {
   appInfo: AppInfo;
   savedTitle: string | null;
   onOpen: (choice: DocChoice) => void;
+  onOpenFdx: () => void;
+  importError: string | null;
+  importing: boolean;
   onShowFoundation: () => void;
 }
 
-export default function Home({ appInfo, savedTitle, onOpen, onShowFoundation }: HomeProps) {
+export default function Home({ appInfo, savedTitle, onOpen, onOpenFdx, importError, importing, onShowFoundation }: HomeProps) {
   return (
     <div className="home">
       <div className="home-hero">
@@ -19,6 +22,10 @@ export default function Home({ appInfo, savedTitle, onOpen, onShowFoundation }: 
       </div>
 
       <div className="home-actions">
+        <button className="home-action primary" onClick={onOpenFdx} disabled={importing}>
+          <span className="home-action-title">{importing ? "Opening…" : "Open FDX"}</span>
+          <span className="home-action-desc">Import a local Final Draft screenplay read-only.</span>
+        </button>
         <button className="home-action primary" onClick={() => onOpen("new")}>
           <span className="home-action-title">New Screenplay</span>
           <span className="home-action-desc">A blank page, starting from a scene heading.</span>
@@ -34,6 +41,8 @@ export default function Home({ appInfo, savedTitle, onOpen, onShowFoundation }: 
           <span className="home-action-desc">Open a portable .scs project folder.</span>
         </button>
       </div>
+
+      {importError && <div className="import-error" role="alert">{importError}</div>}
 
       <div className="home-recent">
         <h2>Recent</h2>

@@ -15,24 +15,101 @@ export type ScreenplayElementType =
   | "parenthetical"
   | "transition"
   | "shot"
-  | "note";
+  | "note"
+  | "general"
+  | "lyrics"
+  | "cast_list"
+  | "new_act"
+  | "end_of_act"
+  | "unknown";
+
+export interface TextRun {
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  strikeout: boolean;
+  revisionId?: string;
+  metadata: Record<string, string>;
+}
 
 export interface ScreenplayBlock {
   id: string;
   type: ScreenplayElementType;
   text: string;
+  textRuns?: TextRun[];
+  sceneId?: string;
+  originalType?: string;
+  metadata?: Record<string, string>;
 }
 
 export interface TitlePage {
   title: string;
   author: string;
+  blocks?: { type: string; text: string; metadata: Record<string, string> }[];
 }
 
 export interface ScreenplayDocument {
+  id?: string;
+  title?: string;
+  source?: ScriptSource;
+  metadata?: Record<string, string>;
   titlePage: TitlePage;
   blocks: ScreenplayBlock[];
+  scenes?: ImportedScene[];
+  characters?: ImportedCharacter[];
+  locations?: ImportedLocation[];
+  warnings?: ImportWarning[];
+  readOnly?: boolean;
   /** Free-form notes keyed by the scene-heading block id. */
   sceneNotes: Record<string, string>;
+}
+
+export interface ScriptSource {
+  type: "fdx" | "fountain" | "native";
+  path: string;
+  fileName: string;
+  fdxVersion?: string;
+  lastImportedAt: string;
+}
+
+export interface ImportWarning {
+  code: string;
+  message: string;
+  blockIndex?: number;
+  severity: "info" | "warning" | "error";
+  dataPreserved: boolean;
+}
+
+export interface ImportedScene {
+  id: string;
+  sceneNumber?: string;
+  heading: string;
+  interiorExterior?: string;
+  location?: string;
+  timeOfDay?: string;
+  blockStart: number;
+  blockEnd: number;
+  characterIds: string[];
+  metadata: Record<string, string>;
+}
+
+export interface ImportedCharacter {
+  id: string;
+  canonicalName: string;
+  displayName: string;
+  aliases: string[];
+  firstAppearanceBlockId: string;
+  sceneIds: string[];
+  dialogueBlockIds: string[];
+}
+
+export interface ImportedLocation {
+  id: string;
+  canonicalName: string;
+  displayName: string;
+  interiorExteriorUsages: string[];
+  sceneIds: string[];
 }
 
 /** Order used by Tab / Shift+Tab cycling and the element selector. */
@@ -56,6 +133,12 @@ export const elementLabels: Record<ScreenplayElementType, string> = {
   transition: "Transition",
   shot: "Shot",
   note: "Note",
+  general: "General",
+  lyrics: "Lyrics",
+  cast_list: "Cast List",
+  new_act: "New Act",
+  end_of_act: "End of Act",
+  unknown: "Unsupported",
 };
 
 /**
@@ -72,6 +155,12 @@ export const enterCreates: Record<ScreenplayElementType, ScreenplayElementType> 
   transition: "scene_heading",
   shot: "action",
   note: "action",
+  general: "action",
+  lyrics: "action",
+  cast_list: "action",
+  new_act: "action",
+  end_of_act: "action",
+  unknown: "action",
 };
 
 let counter = 0;
@@ -95,6 +184,7 @@ export interface Scene {
   id: string;
   /** 1-based scene number. */
   number: number;
+  sceneNumber?: string;
   heading: string;
   /** Index of the heading block in the document. */
   blockIndex: number;
@@ -217,6 +307,12 @@ const LINE_WIDTH: Record<ScreenplayElementType, number> = {
   transition: 60,
   shot: 60,
   note: 60,
+  general: 60,
+  lyrics: 35,
+  cast_list: 60,
+  new_act: 60,
+  end_of_act: 60,
+  unknown: 60,
 };
 
 /**

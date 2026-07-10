@@ -54,8 +54,14 @@ screenplay blocks, never stored separately.
 ## Command layer — `src-tauri/src/lib.rs`
 
 The Rust side exposes `#[tauri::command]` functions that the frontend calls via
-`invoke`: `get_app_info`, `get_sample_screenplay` (the same
-`samples/sample.fountain` file the frontend bundles, via `include_str!`),
+`invoke`: `get_app_info`, `get_sample_screenplay`, `parse_fdx`, and
+`create_project_manifest`. The Rust `fdx` module owns XML parsing and returns
+the normalized screenplay model; React renders that model in the existing
+workspace. Imported FDX documents are read-only while Fountain/native documents
+retain the editable block workflow.
+
+`get_sample_screenplay` returns the same `samples/sample.fountain` file the
+frontend bundles via `include_str!`; the remaining commands are
 `get_sample_project` and `get_phase_status` (an honest capability report). This
 thin layer is where future operations (open project, parse FDX, query the
 index, compute a diff) will be surfaced to the UI. The frontend always degrades

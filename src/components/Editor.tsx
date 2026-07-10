@@ -18,6 +18,7 @@ interface EditorProps {
   onActiveBlock: (id: string) => void;
   /** Bump `nonce` to scroll to and focus a block (used by the scene navigator). */
   focusRequest: { id: string; nonce: number } | null;
+  readOnly?: boolean;
 }
 
 function resize(el: HTMLTextAreaElement) {
@@ -32,6 +33,7 @@ export default function Editor({
   onTitlePageChange,
   onActiveBlock,
   focusRequest,
+  readOnly = false,
 }: EditorProps) {
   const refs = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; pos: number } | null>(null);
@@ -69,6 +71,7 @@ export default function Editor({
   };
 
   const handleChange = (index: number, block: ScreenplayBlock, el: HTMLTextAreaElement) => {
+    if (readOnly) return;
     let value = el.value;
     let type = block.type;
     const singleLine = !value.includes("\n");
@@ -97,6 +100,7 @@ export default function Editor({
     index: number,
     block: ScreenplayBlock,
   ) => {
+    if (readOnly) return;
     const el = e.currentTarget;
     const { selectionStart, selectionEnd } = el;
     const collapsed = selectionStart === selectionEnd;
@@ -188,6 +192,7 @@ export default function Editor({
         <input
           className="title-card-title"
           value={titlePage.title}
+          readOnly={readOnly}
           placeholder="TITLE"
           onChange={(e) => onTitlePageChange({ ...titlePage, title: e.target.value })}
         />
@@ -195,6 +200,7 @@ export default function Editor({
         <input
           className="title-card-author"
           value={titlePage.author}
+          readOnly={readOnly}
           placeholder="Author"
           onChange={(e) => onTitlePageChange({ ...titlePage, author: e.target.value })}
         />
@@ -209,6 +215,7 @@ export default function Editor({
             spellCheck={false}
             className={`blk blk-${block.type}`}
             value={block.text}
+            readOnly={readOnly}
             placeholder={placeholderFor(block.type, index)}
             ref={(el) => {
               if (el) {

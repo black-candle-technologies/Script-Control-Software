@@ -6,6 +6,7 @@ import Dashboard from "./components/Dashboard.tsx";
 import { defaultAppInfo, emptyDocument, type AppInfo, type ScreenplayDocument } from "./domain/index.ts";
 import { sampleScreenplay } from "./domain/sample.ts";
 import { loadDocument } from "./storage.ts";
+import { chooseAndParseFdx, messageFrom } from "./services/fdxService.ts";
 import "./App.css";
 
 type View = "home" | "write" | "foundation";
@@ -15,6 +16,8 @@ function App() {
   const [view, setView] = useState<View>("home");
   const [doc, setDoc] = useState<ScreenplayDocument | null>(null);
   const [docNonce, setDocNonce] = useState(0);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     // Ask the Rust command layer who we are. Falls back to static metadata when
@@ -37,6 +40,23 @@ function App() {
   };
 
   const savedTitle = view === "home" ? loadDocument()?.titlePage.title || null : null;
+
+  const openFdx = async () => {
+    setImporting(true);
+    setImportError(null);
+    try {
+      const imported = await chooseAndParseFdx();
+      if (!imported) return;
+      setDoc(imported);
+      setDocNonce((n) => n + 1);
+      setView("write");
+    } catch (error) {
+      setImportError(messageFrom(error));
+      setView("home");
+    } finally {
+      setImporting(false);
+    }
+  };
 
   return (
     <div className={`app view-${view}`}>
@@ -67,11 +87,14 @@ function App() {
           appInfo={appInfo}
           savedTitle={savedTitle}
           onOpen={open}
+          onOpenFdx={openFdx}
+          importError={importError}
+          importing={importing}
           onShowFoundation={() => setView("foundation")}
         />
       )}
 
-      {view === "write" && doc && <Workspace key={docNonce} initialDoc={doc} />}
+      {view === "write" && doc && <Workspace key={docNonce} initialDoc={doc} onOpenFdx={openFdx} />}
 
       {view === "foundation" && (
         <main className="content">
