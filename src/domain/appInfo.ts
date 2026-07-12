@@ -18,6 +18,6 @@ export const defaultAppInfo: AppInfo = {
   name: "Script Control Software",
   short_name: "SCS",
   version: "0.1.0",
-  phase: "Phase 1 — Writing Workspace",
+  phase: "Roadmap build",
   tagline: "A local-first development environment for film and television writing.",
 };

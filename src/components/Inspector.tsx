@@ -1,382 +1,146 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   aggregateEpisodes,
+  characterDialogue,
   parseHeading,
+  type Breakdown,
   type CharacterRef,
+  type DetectedObject,
+  type DraftChange,
+  type DraftSnapshot,
   type LocationRef,
   type Scene,
   type ScreenplayBlock,
   type ScreenplayDocument,
+  type StoryStructure,
+  type WorkspaceData,
 } from "../domain/index.ts";
-import { sampleCharacterBios, sampleEpisodes, sampleProps } from "../domain/sample.ts";
-
-export interface DraftVersion {
-  id: string;
-  label: string;
-  note: string;
-  when: string;
-  milestone: boolean;
-}
 
 interface InspectorProps {
   blocks: ScreenplayBlock[];
   scenes: Scene[];
   characters: CharacterRef[];
   locations: LocationRef[];
+  objects: DetectedObject[];
+  structure: StoryStructure;
+  breakdown: Breakdown;
   activeScene: Scene | null;
   sceneNotes: Record<string, string>;
   onSceneNote: (sceneId: string, text: string) => void;
-  versions: DraftVersion[];
+  workspace: WorkspaceData;
+  onWorkspace: (patch: Partial<WorkspaceData>) => void;
+  versions: DraftSnapshot[];
+  draftChanges: DraftChange[];
   onSaveVersion: () => void;
-  words: number;
-  pages: number;
+  onRestoreVersion: (version: DraftSnapshot) => void;
+  onExportBreakdown: (format: "md" | "csv" | "json" | "pdf") => void;
+  onExportTreatment: (format: "md" | "pdf") => void;
   episodeDocuments: ScreenplayDocument[];
-  readOnly?: boolean;
 }
 
-const TABS = ["Scene", "Cast", "Props", "Places", "Drafts", "Breakdown", "Series", "Entities"] as const;
+const TABS = ["Scene", "Story", "Treatment", "Cast", "Props", "Places", "Drafts", "Breakdown", "Series", "Production", "Team", "Assist"] as const;
 type Tab = (typeof TABS)[number];
-
-function Hint({ children }: { children: React.ReactNode }) {
-  return <p className="insp-hint">{children}</p>;
-}
-
-function Planned({ label }: { label: string }) {
-  return (
-    <button className="btn btn-ghost" disabled title="Planned — not implemented yet">
-      {label} <span className="planned-tag">planned</span>
-    </button>
-  );
-}
+const Hint = ({ children }: { children: React.ReactNode }) => <p className="insp-hint">{children}</p>;
 
 export default function Inspector(props: InspectorProps) {
   const [tab, setTab] = useState<Tab>("Scene");
-
-  return (
-    <aside className="inspector">
-      <nav className="insp-tabs">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            className={`insp-tab ${t === tab ? "active" : ""}`}
-            onClick={() => setTab(t)}
-          >
-            {t}
-          </button>
-        ))}
-      </nav>
-      <div className="insp-body">
-        {tab === "Scene" && <SceneTab {...props} />}
-        {tab === "Cast" && <CastTab {...props} />}
-        {tab === "Props" && <PropsTab />}
-        {tab === "Places" && <PlacesTab {...props} />}
-        {tab === "Drafts" && <DraftsTab {...props} />}
-        {tab === "Breakdown" && <BreakdownTab {...props} />}
-        {tab === "Series" && <SeriesTab {...props} />}
-        {tab === "Entities" && <EntitiesTab {...props} />}
-      </div>
-    </aside>
-  );
-}
-
-/* ---- Scene -------------------------------------------------------------- */
-
-function SceneTab({ blocks, scenes, activeScene, sceneNotes, onSceneNote, readOnly }: InspectorProps) {
-  if (!activeScene) {
-    return <Hint>Click into the script to see the current scene here.</Hint>;
-  }
-  const { intExt, location, timeOfDay } = parseHeading(activeScene.heading);
-  const nextHeading = scenes.find((s) => s.number === activeScene.number + 1);
-  const end = nextHeading ? nextHeading.blockIndex : blocks.length;
-  const scriptNotes = blocks
-    .slice(activeScene.blockIndex, end)
-    .filter((b) => b.type === "note" && b.text.trim());
-
-  return (
-    <div className="insp-stack">
-      <div className="insp-kicker">Scene {activeScene.number}</div>
-      <div className="insp-title">{activeScene.heading}</div>
-      <dl className="insp-facts">
-        {intExt && (
-          <>
-            <dt>Set</dt>
-            <dd>{intExt}</dd>
-          </>
-        )}
-        {location && (
-          <>
-            <dt>Location</dt>
-            <dd>{location}</dd>
-          </>
-        )}
-        {timeOfDay && (
-          <>
-            <dt>Time</dt>
-            <dd>{timeOfDay}</dd>
-          </>
-        )}
-        <dt>Cast</dt>
-        <dd>{activeScene.characters.join(", ") || "—"}</dd>
-      </dl>
-
-      <h4>Beats</h4>
-      {scriptNotes.length ? (
-        <ul className="insp-list">
-          {scriptNotes.map((n) => (
-            <li key={n.id} className="insp-note">
-              {n.text}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <Hint>No notes in this scene. Add a Note element in the script.</Hint>
-      )}
-      <Hint>Structured beat board and treatment links are planned.</Hint>
-
-      <h4>Scene notes</h4>
-      <textarea
-        className="insp-notes-input"
-        placeholder="Private notes for this scene…"
-        value={sceneNotes[activeScene.id] ?? ""}
-        readOnly={readOnly}
-        onChange={(e) => onSceneNote(activeScene.id, e.target.value)}
-      />
+  return <aside className="inspector">
+    <nav className="insp-tabs">{TABS.map((name) => <button key={name} className={`insp-tab ${name === tab ? "active" : ""}`} onClick={() => setTab(name)}>{name}</button>)}</nav>
+    <div className="insp-body">
+      {tab === "Scene" && <SceneTab {...props} />}
+      {tab === "Story" && <StoryTab {...props} />}
+      {tab === "Treatment" && <TreatmentTab {...props} />}
+      {tab === "Cast" && <CastTab {...props} />}
+      {tab === "Props" && <PropsTab {...props} />}
+      {tab === "Places" && <PlacesTab {...props} />}
+      {tab === "Drafts" && <DraftsTab {...props} />}
+      {tab === "Breakdown" && <BreakdownTab {...props} />}
+      {tab === "Series" && <SeriesTab {...props} />}
+      {tab === "Production" && <ProductionTab {...props} />}
+      {tab === "Team" && <TeamTab {...props} />}
+      {tab === "Assist" && <AssistTab {...props} />}
     </div>
-  );
+  </aside>;
 }
 
-/* ---- Cast ---------------------------------------------------------------- */
-
-function CastTab({ characters }: InspectorProps) {
-  if (!characters.length) return <Hint>No character cues in the script yet.</Hint>;
-  return (
-    <div className="insp-stack">
-      <Hint>Detected live from character cues in the script.</Hint>
-      {characters.map((c) => (
-        <div key={c.name} className="insp-card">
-          <div className="insp-card-title">{c.name}</div>
-          <div className="insp-card-meta">
-            {c.cueCount} cue{c.cueCount === 1 ? "" : "s"} · first appears in Sc. {c.firstScene}
-          </div>
-          <div className="insp-card-desc">
-            {sampleCharacterBios[c.name] ?? "No description yet."}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+function SceneTab({ blocks, scenes, activeScene, sceneNotes, onSceneNote, workspace, onWorkspace }: InspectorProps) {
+  if (!activeScene) return <Hint>Click into the script to inspect a scene.</Hint>;
+  const heading = parseHeading(activeScene.heading);
+  const end = scenes[activeScene.number]?.blockIndex ?? blocks.length;
+  const beats = blocks.slice(activeScene.blockIndex, end).filter((block) => block.type === "note" && block.text.trim());
+  const meta = workspace.sceneMeta?.[activeScene.id] ?? { summary: "", tags: "", status: "draft" as const };
+  const setMeta = (patch: Partial<typeof meta>) => onWorkspace({ sceneMeta: { ...workspace.sceneMeta, [activeScene.id]: { ...meta, ...patch } } });
+  return <div className="insp-stack">
+    <div className="insp-kicker">Scene {activeScene.number}</div><div className="insp-title">{activeScene.heading}</div>
+    <dl className="insp-facts"><dt>Set</dt><dd>{heading.intExt || "—"}</dd><dt>Location</dt><dd>{heading.location || "—"}</dd><dt>Time</dt><dd>{heading.timeOfDay || "—"}</dd><dt>Cast</dt><dd>{activeScene.characters.join(", ") || "—"}</dd></dl>
+    <h4>Beats</h4>{beats.length ? <ul className="insp-list">{beats.map((beat) => <li key={beat.id}>{beat.text}</li>)}</ul> : <Hint>Add a Note element to create a beat in this scene.</Hint>}
+    <h4>Development</h4><textarea className="insp-notes-input" value={meta.summary} placeholder="Scene summary…" onChange={(event) => setMeta({ summary: event.target.value })} /><input className="insp-notes-input" value={meta.tags} placeholder="Tags, comma separated" onChange={(event) => setMeta({ tags: event.target.value })} /><select className="element-select" value={meta.status} onChange={(event) => setMeta({ status: event.target.value as typeof meta.status })}><option value="outline">Outline</option><option value="draft">Draft</option><option value="revised">Revised</option><option value="locked">Locked</option></select>
+    <h4>Scene notes</h4><textarea className="insp-notes-input" value={sceneNotes[activeScene.id] ?? ""} placeholder="Notes and continuity…" onChange={(event) => onSceneNote(activeScene.id, event.target.value)} />
+  </div>;
 }
 
-/* ---- Props ---------------------------------------------------------------- */
-
-function PropsTab() {
-  return (
-    <div className="insp-stack">
-      <Hint>Sample data — prop recognition from the script is planned.</Hint>
-      {sampleProps.map((p) => (
-        <div key={p.name} className="insp-card">
-          <div className="insp-card-title">{p.name}</div>
-          <div className="insp-card-meta">First appears in Sc. {p.firstScene}</div>
-          <div className="insp-card-desc">{p.description}</div>
-          {p.continuity && <div className="insp-card-continuity">Continuity: {p.continuity}</div>}
-        </div>
-      ))}
-    </div>
-  );
+function StoryTab({ structure, scenes }: InspectorProps) {
+  return <div className="insp-stack"><Hint>Act → sequence → scene → beat hierarchy derived from the script. New Act blocks start custom acts; sequences hold up to eight scenes.</Hint>
+    {structure.acts.map((act) => <div className="insp-card" key={act.id}><div className="insp-card-title">{act.title}</div>{act.sequences.map((sequence) => <div key={sequence.id}><div className="insp-card-meta">{sequence.title}</div><ol className="insp-list">{sequence.sceneIds.map((id) => <li key={id}>{scenes.find((scene) => scene.id === id)?.heading ?? id}</li>)}</ol></div>)}</div>)}
+    <h4>Beat map</h4>{structure.beats.length ? <ul className="insp-list">{structure.beats.map((beat) => <li key={beat.id}>{beat.text}</li>)}</ul> : <Hint>No beats yet.</Hint>}
+  </div>;
 }
 
-/* ---- Places ---------------------------------------------------------------- */
+function TreatmentTab({ workspace, onWorkspace, onExportTreatment }: InspectorProps) {
+  return <div className="insp-stack"><Hint>Markdown treatment stored with the project. Reference scenes, characters, locations, or beats by name.</Hint><textarea className="insp-notes-input treatment-input" value={workspace.treatment} placeholder="# Treatment\n\n## Act I\n…" onChange={(event) => onWorkspace({ treatment: event.target.value })} /><div className="btn-row"><button className="btn" onClick={() => onExportTreatment("md")}>Export Markdown</button><button className="btn btn-ghost" onClick={() => onExportTreatment("pdf")}>Print PDF</button></div></div>;
+}
+
+function CastTab({ characters, blocks }: InspectorProps) {
+  if (!characters.length) return <Hint>No character cues detected.</Hint>;
+  return <div className="insp-stack"><Hint>Deterministic cue recognition with dialogue and scene statistics.</Hint>{characters.map((character) => {
+    const dialogue = characterDialogue(blocks, character.name);
+    return <details className="insp-card" key={character.name}><summary className="insp-card-title">{character.name}</summary><div className="insp-card-meta">{character.cueCount} cues · first scene {character.firstScene} · {dialogue.join(" ").match(/\S+/g)?.length ?? 0} dialogue words</div>{dialogue.map((line, index) => <p key={index} className="insp-card-desc">{line}</p>)}</details>;
+  })}</div>;
+}
+
+function PropsTab({ objects, workspace, onWorkspace }: InspectorProps) {
+  const setStatus = (object: DetectedObject, status: "confirmed" | "rejected") => onWorkspace({ entityStatuses: { ...workspace.entityStatuses, [object.id]: status } });
+  const visible = objects.filter((object) => workspace.entityStatuses[object.id] !== "rejected");
+  if (!visible.length) return <Hint>No known production objects detected in action lines.</Hint>;
+  return <div className="insp-stack"><Hint>Objects are matched deterministically; confirm or ignore each candidate.</Hint>{visible.map((object) => <div className="insp-card" key={object.id}><div className="insp-card-title">{object.name}</div><div className="insp-card-meta">{object.category} · {object.mentions} mentions · scenes {object.sceneNumbers.join(", ") || "—"} · {Math.round(object.confidence * 100)}%</div><div className="btn-row"><button className="btn" onClick={() => setStatus(object, "confirmed")}>{workspace.entityStatuses[object.id] === "confirmed" ? "Confirmed" : "Confirm"}</button><button className="btn btn-ghost" onClick={() => setStatus(object, "rejected")}>Ignore</button></div></div>)}</div>;
+}
 
 function PlacesTab({ locations }: InspectorProps) {
-  if (!locations.length) return <Hint>No scene headings yet.</Hint>;
-  return (
-    <div className="insp-stack">
-      <Hint>Detected live from scene headings.</Hint>
-      {locations.map((l) => (
-        <div key={l.name} className="insp-card">
-          <div className="insp-card-title">{l.name}</div>
-          <div className="insp-card-meta">
-            {l.intExt.join(" / ") || "—"} · scene{l.sceneNumbers.length === 1 ? "" : "s"}{" "}
-            {l.sceneNumbers.join(", ")}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+  return <div className="insp-stack">{locations.length ? locations.map((location) => <div className="insp-card" key={location.name}><div className="insp-card-title">{location.name}</div><div className="insp-card-meta">{location.intExt.join(" / ") || "—"} · scenes {location.sceneNumbers.join(", ")}</div></div>) : <Hint>No locations detected.</Hint>}</div>;
 }
 
-/* ---- Drafts ---------------------------------------------------------------- */
-
-function DraftsTab({ versions, onSaveVersion }: InspectorProps) {
-  return (
-    <div className="insp-stack">
-      <button className="btn btn-primary" onClick={onSaveVersion}>
-        Save Draft Version
-      </button>
-      <Hint>Draft versions are session-only for now — real version control is planned.</Hint>
-      <div className="version-list">
-        {versions.map((v) => (
-          <div key={v.id} className="version-row">
-            <div className="version-top">
-              <span className="version-label">{v.label}</span>
-              {v.milestone && <span className="milestone-tag">milestone</span>}
-              <span className="version-when">{v.when}</span>
-            </div>
-            <div className="version-note">{v.note}</div>
-          </div>
-        ))}
-      </div>
-      <h4>Changed scenes</h4>
-      <Hint>Scene-aware draft comparison is planned.</Hint>
-      <div className="btn-row">
-        <Planned label="Compare Drafts" />
-        <Planned label="Alternate Draft" />
-        <Planned label="Restore" />
-      </div>
-    </div>
-  );
+function DraftsTab({ versions, draftChanges, onSaveVersion, onRestoreVersion }: InspectorProps) {
+  return <div className="insp-stack"><button className="btn btn-primary" onClick={onSaveVersion}>Save Draft Version</button><Hint>Snapshots include script and development metadata. The newest two versions are compared scene by scene.</Hint>
+    {draftChanges.length > 0 && <><h4>Changed scenes</h4><ul className="insp-list">{draftChanges.map((change, index) => <li key={`${change.scene}-${index}`}>{change.summary}</li>)}</ul></>}
+    <div className="version-list">{versions.map((version) => <div className="version-row" key={version.id}><div className="version-top"><span className="version-label">{version.label}</span>{version.milestone && <span className="milestone-tag">milestone</span>}<span className="version-when">{new Date(version.createdAt).toLocaleString()}</span></div><div className="version-note">{version.note}</div><button className="link-btn" onClick={() => onRestoreVersion(version)}>Restore</button></div>)}</div>
+  </div>;
 }
 
-/* ---- Breakdown ---------------------------------------------------------------- */
-
-function BreakdownTab({ scenes, characters, locations, words, pages }: InspectorProps) {
-  const intCount = scenes.filter((s) => parseHeading(s.heading).intExt.startsWith("INT")).length;
-  const extCount = scenes.filter((s) => parseHeading(s.heading).intExt.startsWith("EXT")).length;
-  const times = new Map<string, number>();
-  for (const s of scenes) {
-    const t = parseHeading(s.heading).timeOfDay;
-    if (t) times.set(t, (times.get(t) ?? 0) + 1);
-  }
-  const live: [string, string][] = [
-    ["Scenes", String(scenes.length)],
-    ["Characters", String(characters.length)],
-    ["Locations", String(locations.length)],
-    ["INT / EXT", `${intCount} / ${extCount}`],
-    ["Time of day", [...times.entries()].map(([t, n]) => `${t} ×${n}`).join(", ") || "—"],
-    ["Words", String(words)],
-    ["Pages", `~${pages}`],
-  ];
-  const sample: [string, string][] = [
-    ["Props", String(sampleProps.length)],
-    ["Vehicles", "1 (bus)"],
-    ["Stunts", "0"],
-    ["VFX / SFX", "0"],
-    ["Wardrobe", "2 changes"],
-  ];
-  return (
-    <div className="insp-stack">
-      <h4>From the script (live)</h4>
-      <dl className="insp-facts">
-        {live.map(([k, v]) => (
-          <div className="fact-row" key={k}>
-            <dt>{k}</dt>
-            <dd>{v}</dd>
-          </div>
-        ))}
-      </dl>
-      <h4>Sample categories</h4>
-      <Hint>Sample data — script-driven breakdowns are planned.</Hint>
-      <dl className="insp-facts">
-        {sample.map(([k, v]) => (
-          <div className="fact-row" key={k}>
-            <dt>{k}</dt>
-            <dd>{v}</dd>
-          </div>
-        ))}
-      </dl>
-    </div>
-  );
+function BreakdownTab({ breakdown, onExportBreakdown }: InspectorProps) {
+  const facts: [string, string | number][] = [["Scenes", breakdown.scenes], ["Pages", `~${breakdown.pages}`], ["Words", breakdown.words], ["Dialogue words", breakdown.dialogueWords], ["Characters", breakdown.characters], ["Locations", breakdown.locations], ["Night scenes", breakdown.nightScenes], ["INT / EXT", `${breakdown.interiorScenes} / ${breakdown.exteriorScenes}`]];
+  return <div className="insp-stack"><dl className="insp-facts">{facts.map(([label, value]) => <div className="fact-row" key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><h4>Production categories</h4><dl className="insp-facts">{Object.entries(breakdown.categories).map(([name, count]) => <div className="fact-row" key={name}><dt>{name}</dt><dd>{count}</dd></div>)}</dl><div className="btn-row">{(["md", "csv", "json", "pdf"] as const).map((format) => <button className="btn btn-ghost" key={format} onClick={() => onExportBreakdown(format)}>{format.toUpperCase()}</button>)}</div></div>;
 }
 
-/* ---- Series (TV placeholder) ------------------------------------------------ */
-
-function SeriesTab({ characters, episodeDocuments }: InspectorProps) {
-  const [episode, setEpisode] = useState(0);
-  const hasEpisodes = episodeDocuments.length > 1;
-  const labels = hasEpisodes
-    ? episodeDocuments.map((document, index) => document.titlePage.title || `Episode ${index + 1}`)
-    : sampleEpisodes;
+function SeriesTab({ episodeDocuments, workspace, onWorkspace }: InspectorProps) {
   const aggregate = aggregateEpisodes(episodeDocuments);
-  return (
-    <div className="insp-stack">
-      <Hint>{hasEpisodes ? "Imported episode tabs share this show's cast and locations." : "Add Episode FDX from the toolbar to start a television workspace."}</Hint>
-      <div className="episode-tabs">
-        {labels.map((ep, i) => (
-          <button
-            key={ep}
-            className={`episode-tab ${i === episode ? "active" : ""}`}
-            onClick={() => setEpisode(i)}
-          >
-            {ep}
-          </button>
-        ))}
-      </div>
-      {hasEpisodes ? (
-        <Hint>{labels[episode]} is open in the writing workspace.</Hint>
-      ) : episode === 0 ? (
-        <Hint>The Pilot is the screenplay currently open in the editor.</Hint>
-      ) : (
-        <Hint>
-          {labels[episode]} — episode workspaces are planned. Each episode will carry its
-          own script, beat board and breakdowns.
-        </Hint>
-      )}
-      <h4>Show bible</h4>
-      <Hint>Shared world, tone and canon notes — planned.</Hint>
-      <h4>Continuity notes</h4>
-      <Hint>Cross-episode continuity tracking — planned.</Hint>
-      <h4>Recurring characters</h4>
-      {(aggregate.characters.length ? aggregate.characters : characters.map((character) => character.name)).length ? (
-        <div className="chip-row">
-          {(aggregate.characters.length ? aggregate.characters : characters.map((character) => character.name)).map((name) => (
-            <span key={name} className="chip">
-              {name}
-            </span>
-          ))}
-        </div>
-      ) : (
-        <Hint>None detected yet.</Hint>
-      )}
-      {aggregate.locations.length > 0 && <><h4>Show locations</h4><div className="chip-row">{aggregate.locations.map((location) => <span key={location} className="chip">{location}</span>)}</div></>}
-      <h4>Recurring props</h4>
-      <div className="chip-row">
-        {sampleProps.map((p) => (
-          <span key={p.name} className="chip">
-            {p.name}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
+  return <div className="insp-stack"><Hint>{episodeDocuments.length} episode workspace · shared references aggregate across tabs.</Hint><h4>Show bible</h4><textarea className="insp-notes-input" value={workspace.showBible} onChange={(event) => onWorkspace({ showBible: event.target.value })} placeholder="World, tone, format, canon…" /><h4>Season arc / A-B-C stories</h4><textarea className="insp-notes-input" value={workspace.seasonArc} onChange={(event) => onWorkspace({ seasonArc: event.target.value })} placeholder="A story, B story, cold open, act breaks, tag…" /><h4>Continuity</h4><textarea className="insp-notes-input" value={workspace.continuity} onChange={(event) => onWorkspace({ continuity: event.target.value })} placeholder="Timeline, knowledge, unresolved questions…" /><h4>Recurring cast</h4><div className="chip-row">{aggregate.characters.map((name) => <span className="chip" key={name}>{name}</span>)}</div><h4>Recurring locations</h4><div className="chip-row">{aggregate.locations.map((name) => <span className="chip" key={name}>{name}</span>)}</div></div>;
 }
 
-/* ---- Entities (recognition placeholder) -------------------------------------- */
+function ProductionTab({ breakdown, workspace, onWorkspace, activeScene }: InspectorProps) {
+  const omitted = workspace.omittedSceneIds ?? [];
+  const toggleOmitted = () => activeScene && onWorkspace({ omittedSceneIds: omitted.includes(activeScene.id) ? omitted.filter((id) => id !== activeScene.id) : [...omitted, activeScene.id] });
+  return <div className="insp-stack"><Hint>Scene numbers, locked-page records, colored revisions, omitted scenes, and deterministic shooting complexity.</Hint><label className="insp-card-meta">Draft label<input className="insp-notes-input" value={workspace.productionDraftLabel ?? ""} onChange={(event) => onWorkspace({ productionDraftLabel: event.target.value })} /></label><label className="insp-card-meta">Revision color<select className="element-select" value={workspace.revisionColor ?? "White"} onChange={(event) => onWorkspace({ revisionColor: event.target.value })}>{["White", "Blue", "Pink", "Yellow", "Green", "Goldenrod", "Buff", "Salmon", "Cherry"].map((color) => <option key={color}>{color}</option>)}</select></label><label className="insp-card-meta">Locked pages<input className="insp-notes-input" value={workspace.lockedPages ?? ""} placeholder="1-12, 14" onChange={(event) => onWorkspace({ lockedPages: event.target.value })} /></label>{activeScene && <button className="btn" onClick={toggleOmitted}>{omitted.includes(activeScene.id) ? "Restore Scene" : "Mark Scene Omitted"}</button>}{breakdown.complexity.map((scene) => <div className="insp-card" key={scene.scene}><div className="insp-card-title">Scene {scene.scene} · complexity {scene.score}/5</div><div className="insp-card-meta">{scene.reasons.join(", ") || "standard dialogue/action"}</div></div>)}<h4>Department and revision notes</h4><textarea className="insp-notes-input" value={workspace.productionNotes} onChange={(event) => onWorkspace({ productionNotes: event.target.value })} placeholder="Wardrobe, makeup, props, revision history…" /></div>;
+}
 
-function EntitiesTab({ characters, locations }: InspectorProps) {
-  const candidates = [
-    ...characters.map((c) => ({ kind: "character", text: c.name, confidence: 0.95 })),
-    ...locations.map((l) => ({ kind: "location", text: l.name, confidence: 0.9 })),
-    ...sampleProps.map((p) => ({ kind: "object", text: p.name.toUpperCase(), confidence: 0.62 })),
-  ];
-  return (
-    <div className="insp-stack">
-      <Hint>
-        Recognition preview. Characters and locations are detected live from the script; objects are
-        sample data. Confirm / Ignore / Merge arrive with the recognition engine.
-      </Hint>
-      {candidates.map((c) => (
-        <div key={`${c.kind}-${c.text}`} className="insp-card entity-card">
-          <div className="insp-card-title">{c.text}</div>
-          <div className="insp-card-meta">
-            {c.kind} · confidence {Math.round(c.confidence * 100)}%
-          </div>
-          <div className="btn-row">
-            <Planned label="Confirm" />
-            <Planned label="Ignore" />
-            <Planned label="Merge" />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+function TeamTab({ workspace, onWorkspace }: InspectorProps) {
+  const [text, setText] = useState("");
+  const add = () => { if (!text.trim()) return; onWorkspace({ comments: [...workspace.comments, { id: `comment-${Date.now()}`, author: "Local writer", text: text.trim(), resolved: false, createdAt: new Date().toISOString() }] }); setText(""); };
+  return <div className="insp-stack"><Hint>Local-first review comments and approvals. Project-folder sync can be handled by Git or any shared drive.</Hint><textarea className="insp-notes-input" value={text} onChange={(event) => setText(event.target.value)} placeholder="Leave a comment or suggested change…" /><button className="btn" onClick={add}>Add Comment</button>{workspace.comments.map((comment) => <div className="insp-card" key={comment.id}><div className="insp-card-title">{comment.author}</div><div className="insp-card-desc">{comment.text}</div><button className="link-btn" onClick={() => onWorkspace({ comments: workspace.comments.map((item) => item.id === comment.id ? { ...item, resolved: !item.resolved } : item) })}>{comment.resolved ? "Reopen" : "Resolve"}</button></div>)}</div>;
+}
+
+function AssistTab({ scenes, characters, breakdown, workspace }: InspectorProps) {
+  const prompt = useMemo(() => `Review this screenplay development summary. Keep all suggestions optional.\nScenes: ${scenes.length}\nCharacters: ${characters.map((character) => character.name).join(", ")}\nNight scenes: ${breakdown.nightScenes}\nTreatment:\n${workspace.treatment}`, [scenes, characters, breakdown, workspace.treatment]);
+  const [copied, setCopied] = useState(false);
+  const copy = async () => { await navigator.clipboard.writeText(prompt); setCopied(true); };
+  return <div className="insp-stack"><Hint>Opt-in companion prompt: SCS sends nothing. Copy this structured context into the local or API-based assistant you choose.</Hint><textarea className="insp-notes-input treatment-input" readOnly value={prompt} /><button className="btn" onClick={copy}>{copied ? "Copied" : "Copy Assistant Prompt"}</button></div>;
 }

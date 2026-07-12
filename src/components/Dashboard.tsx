@@ -57,7 +57,7 @@ export default function Dashboard() {
       <section className="block">
         <div className="block-header">
           <h2>Foundation status</h2>
-          <span className="hint">What is real today versus drafted or planned.</span>
+          <span className="hint">What is active today and which scaling choices remain optional.</span>
         </div>
         <div className="card-grid status-grid">
           {foundationSignals.map((signal) => (
@@ -93,7 +93,7 @@ export default function Dashboard() {
       <section className="block">
         <div className="block-header">
           <h2>Workspace panels</h2>
-          <span className="hint">Planned — placeholders for the multi-panel workspace.</span>
+          <span className="hint">Active core panels in the multi-panel workspace.</span>
         </div>
         <div className="card-grid panel-grid">
           {workspacePanels.map((panel) => (

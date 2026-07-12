@@ -11,18 +11,18 @@ test("foundation signals only use known statuses", () => {
   }
 });
 
-test("the runtime stack is reported as active", () => {
+test("implemented foundation capabilities are active", () => {
   const active = foundationSignals.filter((s) => s.status === "active").map((s) => s.id);
-  assert.deepEqual(active.sort(), ["backend", "frontend", "tauri"]);
+  assert.deepEqual(active.sort(), ["backend", "domain-models", "frontend", "json-portability", "project-format", "tauri"]);
 });
 
-test("storage choices are still planned, not overstated", () => {
+test("optional SQLite remains planned while portable JSON is active", () => {
   const byId = Object.fromEntries(foundationSignals.map((s) => [s.id, s.status]));
   assert.equal(byId["sqlite"], "planned");
-  assert.equal(byId["json-portability"], "planned");
+  assert.equal(byId["json-portability"], "active");
 });
 
-test("all eight workspace panels are present and planned", () => {
+test("all eight core workspace panels are active", () => {
   const titles = workspacePanels.map((p) => p.title);
   assert.deepEqual(titles, [
     "Screenplay",
@@ -34,5 +34,5 @@ test("all eight workspace panels are present and planned", () => {
     "Versions",
     "Breakdowns",
   ]);
-  assert.ok(workspacePanels.every((p) => p.status === "planned"));
+  assert.ok(workspacePanels.every((p) => p.status === "active"));
 });

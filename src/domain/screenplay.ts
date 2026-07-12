@@ -63,7 +63,39 @@ export interface ScreenplayDocument {
   readOnly?: boolean;
   /** Free-form notes keyed by the scene-heading block id. */
   sceneNotes: Record<string, string>;
+  workspace?: WorkspaceData;
 }
+
+/** Portable development metadata kept beside the screenplay, never inside FDX. */
+export interface WorkspaceData {
+  treatment: string;
+  showBible: string;
+  continuity: string;
+  seasonArc: string;
+  productionNotes: string;
+  productionDraftLabel?: string;
+  revisionColor?: string;
+  lockedPages?: string;
+  omittedSceneIds?: string[];
+  sceneMeta?: Record<string, { summary: string; tags: string; status: "outline" | "draft" | "revised" | "locked" }>;
+  comments: { id: string; author: string; text: string; resolved: boolean; createdAt: string }[];
+  entityStatuses: Record<string, "detected" | "confirmed" | "rejected">;
+}
+
+export const emptyWorkspace = (): WorkspaceData => ({
+  treatment: "",
+  showBible: "",
+  continuity: "",
+  seasonArc: "",
+  productionNotes: "",
+  productionDraftLabel: "First Draft",
+  revisionColor: "White",
+  lockedPages: "",
+  omittedSceneIds: [],
+  sceneMeta: {},
+  comments: [],
+  entityStatuses: {},
+});
 
 export interface ScriptSource {
   type: "fdx" | "fountain" | "native";
@@ -174,6 +206,7 @@ export function emptyDocument(title = "Untitled Screenplay"): ScreenplayDocument
     titlePage: { title, author: "" },
     blocks: [newBlock("scene_heading")],
     sceneNotes: {},
+    workspace: emptyWorkspace(),
   };
 }
 
@@ -329,6 +362,22 @@ export function estimatePages(blocks: ScreenplayBlock[]): number {
     lines += 1; // blank line between elements
   }
   return Math.max(1, Math.ceil(lines / 55));
+}
+
+/** Group whole screenplay elements onto estimated 55-line pages for visible page boundaries. */
+export function paginateBlocks(blocks: ScreenplayBlock[]): ScreenplayBlock[][] {
+  const pages: ScreenplayBlock[][] = [[]];
+  let lines = 0;
+  for (const block of blocks) {
+    const blockLines = block.text.split("\n").reduce((count, line) => count + Math.max(1, Math.ceil(line.length / LINE_WIDTH[block.type])), 1);
+    if (lines && lines + blockLines > 55) {
+      pages.push([]);
+      lines = 0;
+    }
+    pages[pages.length - 1].push(block);
+    lines += blockLines;
+  }
+  return pages;
 }
 
 export function isSceneHeadingText(text: string): boolean {

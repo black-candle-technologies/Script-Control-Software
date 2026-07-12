@@ -1,10 +1,14 @@
-import { useLayoutEffect, useRef } from "react";
+import { Fragment, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ELEMENT_TYPES,
   enterCreates,
+  deriveCharacters,
+  deriveLocations,
+  deriveScenes,
   isSceneHeadingText,
   isTransitionText,
   newBlock,
+  paginateBlocks,
   type ScreenplayBlock,
   type ScreenplayElementType,
   type TitlePage,
@@ -38,6 +42,21 @@ export default function Editor({
   const refs = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; pos: number } | null>(null);
   const lastFocusNonce = useRef(0);
+  const undo = useRef<ScreenplayBlock[][]>([]);
+  const redo = useRef<ScreenplayBlock[][]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const pages = useMemo(() => paginateBlocks(blocks), [blocks]);
+  const indexes = useMemo(() => new Map(blocks.map((block, index) => [block.id, index])), [blocks]);
+  const characterNames = useMemo(() => deriveCharacters(blocks).map((character) => character.name), [blocks]);
+  const sceneHeadings = useMemo(() => deriveScenes(blocks).map((scene) => scene.heading), [blocks]);
+  const locationHeadings = useMemo(() => deriveLocations(blocks).flatMap((location) => [`INT. ${location.name} - DAY`, `EXT. ${location.name} - NIGHT`]), [blocks]);
+
+  const commit = (next: ScreenplayBlock[]) => {
+    undo.current.push(blocks.map((block) => ({ ...block })));
+    if (undo.current.length > 100) undo.current.shift();
+    redo.current = [];
+    onBlocksChange(next);
+  };
 
   // Apply structural focus moves (splits, merges, navigator jumps) after render,
   // and keep textarea heights in sync with their content.
@@ -67,7 +86,7 @@ export default function Editor({
   const update = (index: number, patch: Partial<ScreenplayBlock>) => {
     const next = blocks.slice();
     next[index] = { ...next[index], ...patch };
-    onBlocksChange(next);
+    commit(next);
   };
 
   const handleChange = (index: number, block: ScreenplayBlock, el: HTMLTextAreaElement) => {
@@ -90,6 +109,7 @@ export default function Editor({
     } else if (type === "dialogue" && block.text === "" && value.startsWith("(")) {
       type = "parenthetical";
     }
+    if (type === "scene_heading" || type === "character" || type === "transition") value = value.toUpperCase();
 
     resize(el);
     update(index, { text: value, type });
@@ -104,6 +124,25 @@ export default function Editor({
     const el = e.currentTarget;
     const { selectionStart, selectionEnd } = el;
     const collapsed = selectionStart === selectionEnd;
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      const previous = undo.current.pop();
+      if (previous) {
+        redo.current.push(blocks.map((item) => ({ ...item })));
+        onBlocksChange(previous);
+      }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+      e.preventDefault();
+      const next = redo.current.pop();
+      if (next) {
+        undo.current.push(blocks.map((item) => ({ ...item })));
+        onBlocksChange(next);
+      }
+      return;
+    }
 
     // Ctrl/Cmd+1..8 — set the element type directly.
     if ((e.ctrlKey || e.metaKey) && e.key >= "1" && e.key <= "8") {
@@ -138,7 +177,7 @@ export default function Editor({
       next[index] = { ...block, text: before };
       next.splice(index + 1, 0, created);
       pendingFocus.current = { id: created.id, pos: 0 };
-      onBlocksChange(next);
+      commit(next);
       return;
     }
 
@@ -149,7 +188,7 @@ export default function Editor({
       next[index - 1] = { ...prev, text: prev.text + block.text };
       next.splice(index, 1);
       pendingFocus.current = { id: prev.id, pos: prev.text.length };
-      onBlocksChange(next);
+      commit(next);
       return;
     }
 
@@ -160,7 +199,7 @@ export default function Editor({
       next[index] = { ...block, text: block.text + after.text };
       next.splice(index + 1, 1);
       pendingFocus.current = { id: block.id, pos: block.text.length };
-      onBlocksChange(next);
+      commit(next);
       return;
     }
 
@@ -204,13 +243,16 @@ export default function Editor({
           placeholder="Author"
           onChange={(e) => onTitlePageChange({ ...titlePage, author: e.target.value })}
         />
-        <span className="title-card-hint">Title page — full layout planned</span>
+        <span className="title-card-hint">Title page</span>
       </div>
 
-      <div className="page page-surface">
-        {blocks.map((block, index) => (
+      {pages.map((page, pageIndex) => <div className="page page-surface" key={`page-${pageIndex}`} data-page={pageIndex + 1}>
+        {page.map((block) => {
+          const index = indexes.get(block.id)!;
+          const completionNames = block.type === "character" ? characterNames : block.type === "scene_heading" ? [...new Set([...sceneHeadings, ...locationHeadings])] : [];
+          const suggestions = activeId === block.id ? completionNames.filter((name) => name !== block.text && name.startsWith(block.text.trim().toUpperCase())).slice(0, 5) : [];
+          return <Fragment key={block.id}>
           <textarea
-            key={block.id}
             rows={1}
             spellCheck={false}
             className={`blk blk-${block.type}`}
@@ -225,12 +267,14 @@ export default function Editor({
                 refs.current.delete(block.id);
               }
             }}
-            onFocus={() => onActiveBlock(block.id)}
+            onFocus={() => { setActiveId(block.id); onActiveBlock(block.id); }}
             onChange={(e) => handleChange(index, block, e.currentTarget)}
             onKeyDown={(e) => handleKeyDown(e, index, block)}
           />
-        ))}
-      </div>
+          {suggestions.length > 0 && <div className="character-suggestions">{suggestions.map((name) => <button key={name} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => { update(index, { text: name }); refs.current.get(block.id)?.focus(); }}>{name}</button>)}</div>}
+          </Fragment>;
+        })}
+      </div>)}
     </div>
   );
 }

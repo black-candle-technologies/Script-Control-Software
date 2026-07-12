@@ -1,9 +1,7 @@
 import type { FoundationStatus } from "./status.ts";
 
 /**
- * The workspace panels SCS will eventually offer. In Phase 0 these are
- * placeholders — they communicate the shape of the product without pretending
- * the features exist yet. Every panel is `planned`.
+ * Core workspace panels exposed by the writing and development workspace.
  */
 export interface WorkspacePanel {
   id: string;
@@ -18,48 +16,48 @@ export const workspacePanels: WorkspacePanel[] = [
     id: "screenplay",
     title: "Screenplay",
     summary: "Professionally formatted, FDX-compatible script editing and viewing.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "beat-board",
     title: "Beat Board",
     summary: "Hierarchical beats inside scenes, sequences and acts — not a flat board.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "treatment",
     title: "Treatment",
     summary: "Long-form development documents linked to scenes, beats and characters.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "characters",
     title: "Characters",
     summary: "Character sheets built from recognised dialogue and appearances.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "objects",
     title: "Objects / Props",
     summary: "Tracking for recurring props and story-critical objects across scenes.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "locations",
     title: "Locations",
     summary: "Location sheets derived from scene headings, with scene and page counts.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "versions",
     title: "Versions",
     summary: "Writer-friendly, Git-style snapshots, branches and draft comparisons.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "breakdowns",
     title: "Breakdowns",
     summary: "Deterministic, compiler-generated story and production reports.",
-    status: "planned",
+    status: "active",
   },
 ];

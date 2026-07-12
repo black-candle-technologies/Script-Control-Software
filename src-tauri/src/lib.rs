@@ -4,8 +4,10 @@ mod project_file;
 
 use domain::{AppInfo, PhaseStatus, SampleProject};
 use fdx::ScreenplayDocument;
-use project_file::{ProjectManifest, ProjectType};
+use project_file::{ProjectBundle, ProjectManifest, ProjectType};
+use serde_json::Value;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 /// Returns the application's identity so the frontend shell can render its
 /// title bar and hero without hard-coding the version or phase.
@@ -48,6 +50,43 @@ fn create_project_manifest(
     project_file::create(Path::new(&path), name, project_type, &documents)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn save_project_bundle(
+    path: String,
+    name: String,
+    project_type: ProjectType,
+    documents: Vec<Value>,
+    fountain_scripts: Vec<String>,
+    versions: Vec<Value>,
+) -> Result<ProjectBundle, String> {
+    project_file::save_bundle(
+        Path::new(&path),
+        name,
+        project_type,
+        documents,
+        fountain_scripts,
+        versions,
+    )
+}
+
+#[tauri::command]
+fn open_project_bundle(path: String) -> Result<ProjectBundle, String> {
+    project_file::read_bundle(Path::new(&path))
+}
+
+#[tauri::command]
+fn file_modified_at(path: String) -> Result<u64, String> {
+    std::fs::metadata(Path::new(&path))
+        .and_then(|metadata| metadata.modified())
+        .and_then(|modified| {
+            modified
+                .duration_since(UNIX_EPOCH)
+                .map_err(std::io::Error::other)
+        })
+        .map(|duration| duration.as_millis() as u64)
+        .map_err(|error| format!("Linked file could not be checked: {error}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -59,7 +98,10 @@ pub fn run() {
             get_sample_project,
             get_phase_status,
             parse_fdx,
-            create_project_manifest
+            create_project_manifest,
+            save_project_bundle,
+            open_project_bundle,
+            file_modified_at
         ])
         .run(tauri::generate_context!())
         .expect("error while running Script Control Software");

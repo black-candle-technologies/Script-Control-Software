@@ -769,12 +769,86 @@ button.wordmark {
 }
 
 .page {
+  position: relative;
   width: 816px; /* US Letter at 96dpi */
-  margin: 0 auto;
+  min-height: 1056px;
+  margin: 0 auto 1.25rem;
   padding: 96px 96px 120px 144px; /* 1in top/right, 1.5in screenplay left margin */
   font-family: "Courier Prime", "Courier New", Courier, monospace;
   font-size: 16px; /* ~12pt Courier */
   line-height: 1.25;
+}
+
+.page::after {
+  content: attr(data-page);
+  position: absolute;
+  right: 48px;
+  bottom: 40px;
+  color: #999184;
+  font-size: 12px;
+}
+
+.character-suggestions {
+  display: flex;
+  gap: 0.3rem;
+  margin: 0.2rem 0 0 211px;
+  flex-wrap: wrap;
+}
+
+.character-suggestions button {
+  border: 1px solid #d2cabd;
+  background: #f5f1e9;
+  border-radius: 3px;
+  padding: 0.2rem 0.35rem;
+  font: 11px Inter, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.treatment-input {
+  min-height: 22rem;
+}
+
+.command-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: start center;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.48);
+}
+
+.command-palette {
+  width: min(620px, 90vw);
+  display: flex;
+  flex-direction: column;
+  padding: 0.55rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg-raised);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+}
+
+.command-palette input,
+.command-palette button {
+  width: 100%;
+  padding: 0.75rem;
+  color: var(--text);
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+
+.command-palette input { border-bottom: 1px solid var(--border); outline: none; }
+.command-palette button:hover { background: var(--bg-hover); }
+.layout-development .inspector, .layout-television .inspector, .layout-production .inspector, .layout-revision .inspector { width: 360px; }
+
+@media print {
+  .topbar, .toolbar, .scene-nav, .inspector, .statusbar, .readonly-banner, .operation-message, .import-summary, .title-card-hint { display: none !important; }
+  .workspace-main, .editor-scroll { display: block; overflow: visible; background: white; padding: 0; }
+  .page-surface { box-shadow: none; }
+  .page { break-after: page; margin: 0; }
 }
 
 /* One screenplay element = one auto-sized textarea. */

@@ -7,9 +7,7 @@
  * into sequences, then scenes, then beats) or bottom-up (organise a messy board
  * of beats into scenes, sequences and acts).
  *
- * These are descriptive models for Phase 0 — no editing behaviour is attached
- * yet. They drive the dashboard's hierarchy preview and document the intended
- * shape of the data layer.
+ * These levels drive the dashboard and active structure view.
  */
 
 export interface HierarchyLevel {

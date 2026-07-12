@@ -46,7 +46,7 @@ impl AppInfo {
             name: "Script Control Software".to_string(),
             short_name: "SCS".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            phase: "Phase 1 — FDX Viewer".to_string(),
+            phase: "Roadmap build".to_string(),
             tagline: "A local-first development environment for film and television writing."
                 .to_string(),
         }
@@ -100,18 +100,17 @@ impl PhaseStatus {
         };
         Self {
             phase: AppInfo::current().phase,
-            summary: "Screenplay editor plus Rust-powered, read-only FDX import, linked \
-                      project manifests, and television episode tabs."
+            summary: "Local-first screenplay editing, portable projects, deterministic analysis, versions, television development, and production tools."
                 .to_string(),
             capabilities: vec![
                 cap("editor", CapabilityStatus::Active, "Block-based screenplay editor with element types and keyboard flow."),
                 cap("fountain", CapabilityStatus::Active, "Fountain-inspired serialize/parse for source view and export."),
                 cap("detection", CapabilityStatus::Active, "Scenes, characters and locations derived live from the script."),
-                cap("persistence", CapabilityStatus::Active, "Local autosave via browser storage; the Rust storage layer is planned."),
-                cap("versioning", CapabilityStatus::Drafted, "Draft-version UI with sample history; real version control planned."),
+                cap("persistence", CapabilityStatus::Active, "Portable project folders save documents, Fountain scripts, metadata, and history."),
+                cap("versioning", CapabilityStatus::Active, "Persistent draft snapshots, restore, and scene-aware comparison."),
                 cap("television", CapabilityStatus::Active, "Multiple imported FDX episodes switch in tabs with shared cast and locations."),
-                cap("recognition", CapabilityStatus::Drafted, "Entity candidates shown in the UI; recognition engine planned."),
-                cap("fdx", CapabilityStatus::Active, "Rust parses common FDX screenplay content into the read-only viewer; export is not implemented."),
+                cap("recognition", CapabilityStatus::Active, "Deterministic character, location, object, and production-category recognition."),
+                cap("fdx", CapabilityStatus::Active, "Rust imports common FDX content; the editor exports valid, clean FDX XML."),
                 cap("sqlite", CapabilityStatus::Planned, "Local project index."),
             ],
         }

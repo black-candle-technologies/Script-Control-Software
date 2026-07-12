@@ -1,8 +1,7 @@
 /**
  * SCS domain models.
  *
- * Phase 0 establishes the *shapes* of the product — the story hierarchy, the
- * project format, and placeholders for television, recognition and versioning.
+ * Shared product vocabulary plus active screenplay and studio behavior.
  * These models carry no behaviour yet; they exist so the UI, the docs and the
  * Rust layer agree on the architecture before any feature is built.
  */
@@ -17,4 +16,5 @@ export * from "./project.ts";
 export * from "./television.ts";
 export * from "./recognition.ts";
 export * from "./versioning.ts";
+export * from "./studio.ts";
 export * from "./appInfo.ts";

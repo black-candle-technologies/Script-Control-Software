@@ -1,30 +1,40 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Editor from "./Editor.tsx";
-import Inspector, { type DraftVersion } from "./Inspector.tsx";
+import Inspector from "./Inspector.tsx";
 import {
   ELEMENT_TYPES,
+  breakdownCsv,
+  breakdownMarkdown,
+  buildStructure,
+  compareDrafts,
+  compileBreakdown,
   countWords,
+  detectObjects,
   deriveCharacters,
   deriveLocations,
   deriveScenes,
   elementLabels,
+  emptyWorkspace,
   estimatePages,
+  moveScene,
   parseFountain,
+  toFdx,
   toFountain,
   type ScreenplayDocument,
   type ScreenplayElementType,
+  type DraftSnapshot,
 } from "../domain/index.ts";
-import { sampleVersions } from "../domain/sample.ts";
-import { saveDocument } from "../storage.ts";
-import { chooseAndParseFdx, messageFrom, saveProjectManifest } from "../services/fdxService.ts";
+import { loadVersions, saveDocument, saveVersions } from "../storage.ts";
+import { chooseAndParseFdx, linkedFileModifiedAt, messageFrom, parseLinkedFdx, saveProjectBundle } from "../services/fdxService.ts";
 
 interface WorkspaceProps {
   initialDoc: ScreenplayDocument;
+  initialDocuments?: ScreenplayDocument[];
   onOpenFdx: () => void;
 }
 
-export default function Workspace({ initialDoc, onOpenFdx }: WorkspaceProps) {
-  const [episodeDocs, setEpisodeDocs] = useState([initialDoc]);
+export default function Workspace({ initialDoc, initialDocuments = [], onOpenFdx }: WorkspaceProps) {
+  const [episodeDocs, setEpisodeDocs] = useState(initialDocuments.length ? initialDocuments : [initialDoc]);
   const [activeEpisode, setActiveEpisode] = useState(0);
   const doc = episodeDocs[activeEpisode];
   const setDoc = (next: ScreenplayDocument) => setEpisodeDocs((all) => all.map((item, index) => index === activeEpisode ? next : item));
@@ -34,9 +44,14 @@ export default function Workspace({ initialDoc, onOpenFdx }: WorkspaceProps) {
   const [mode, setMode] = useState<"formatted" | "source">("formatted");
   const [sourceText, setSourceText] = useState("");
   const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [versions, setVersions] = useState<DraftVersion[]>(sampleVersions);
+  const [versions, setVersions] = useState<DraftSnapshot[]>(loadVersions);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [layout, setLayout] = useState(() => localStorage.getItem("scs.layout") ?? "writer");
+  const [externalChanged, setExternalChanged] = useState(false);
+  const [draggedScene, setDraggedScene] = useState<number | null>(null);
   const focusNonce = useRef(0);
 
   useEffect(() => {
@@ -48,7 +63,36 @@ export default function Workspace({ initialDoc, onOpenFdx }: WorkspaceProps) {
     return () => clearTimeout(timer);
   }, [doc]);
 
-  const scenes = useMemo(() => doc.scenes?.map((scene, index) => ({
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+      if (event.key === "Escape") setPaletteOpen(false);
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, []);
+
+  useEffect(() => {
+    const path = doc.source?.type === "fdx" ? doc.source.path : null;
+    if (!path) return;
+    let baseline = 0;
+    let stopped = false;
+    const check = async () => {
+      try {
+        const stamp = await linkedFileModifiedAt(path);
+        if (baseline && stamp !== baseline && !stopped) setExternalChanged(true);
+        baseline = stamp;
+      } catch { /* linked file may be temporarily unavailable */ }
+    };
+    void check();
+    const timer = window.setInterval(check, 5000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [doc.source?.path]);
+
+  const scenes = useMemo(() => doc.readOnly && doc.scenes ? doc.scenes.map((scene, index) => ({
     id: scene.id,
     number: index + 1,
     sceneNumber: scene.sceneNumber,
@@ -57,17 +101,22 @@ export default function Workspace({ initialDoc, onOpenFdx }: WorkspaceProps) {
     characters: scene.characterIds
       .map((id) => doc.characters?.find((character) => character.id === id)?.canonicalName)
       .filter((name): name is string => Boolean(name)),
-  })) ?? deriveScenes(doc.blocks), [doc]);
-  const characters = useMemo(() => doc.characters?.map((character) => ({
+  })) : deriveScenes(doc.blocks), [doc]);
+  const characters = useMemo(() => doc.readOnly && doc.characters ? doc.characters.map((character) => ({
     name: character.canonicalName,
     cueCount: character.dialogueBlockIds.length,
     firstScene: Math.max(1, (doc.scenes?.findIndex((scene) => scene.id === character.sceneIds[0]) ?? 0) + 1),
-  })) ?? deriveCharacters(doc.blocks), [doc]);
-  const locations = useMemo(() => doc.locations?.map((location) => ({
+  })) : deriveCharacters(doc.blocks), [doc]);
+  const locations = useMemo(() => doc.readOnly && doc.locations ? doc.locations.map((location) => ({
     name: location.displayName,
     intExt: location.interiorExteriorUsages,
     sceneNumbers: location.sceneIds.map((id) => (doc.scenes?.findIndex((scene) => scene.id === id) ?? 0) + 1),
-  })) ?? deriveLocations(doc.blocks), [doc]);
+  })) : deriveLocations(doc.blocks), [doc]);
+  const objects = useMemo(() => detectObjects(doc.blocks), [doc.blocks]);
+  const structure = useMemo(() => buildStructure(doc.blocks), [doc.blocks]);
+  const breakdown = useMemo(() => compileBreakdown(doc.blocks), [doc.blocks]);
+  const workspace = doc.workspace ?? emptyWorkspace();
+  const draftChanges = useMemo(() => versions.length > 1 ? compareDrafts(versions[1].document, versions[0].document) : [], [versions]);
   const words = useMemo(() => countWords(doc.blocks), [doc.blocks]);
   const pages = useMemo(() => estimatePages(doc.blocks), [doc.blocks]);
   const activeIndex = doc.blocks.findIndex((block) => block.id === activeBlockId);
@@ -103,7 +152,7 @@ export default function Workspace({ initialDoc, onOpenFdx }: WorkspaceProps) {
       const match = oldScene && newScenes[oldScene.number - 1];
       if (match && note) sceneNotes[match.id] = note;
     }
-    setDoc({ ...parsed, sceneNotes });
+    setDoc({ ...doc, ...parsed, sceneNotes, workspace });
     setMode("formatted");
   };
 
@@ -112,14 +161,23 @@ export default function Workspace({ initialDoc, onOpenFdx }: WorkspaceProps) {
     setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
   };
 
-  const exportFountain = () => {
-    const blob = new Blob([toFountain(doc)], { type: "text/plain" });
+  const download = (content: string, extension: string, type: string) => {
+    const blob = new Blob([content], { type });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `${(doc.titlePage.title || "screenplay").toLowerCase().replace(/\s+/g, "-")}.fountain`;
+    link.download = `${(doc.titlePage.title || "screenplay").toLowerCase().replace(/\s+/g, "-")}.${extension}`;
     link.click();
     URL.revokeObjectURL(link.href);
   };
+
+  const exportFountain = () => download(toFountain(doc), "fountain", "text/plain");
+  const exportFdx = () => download(toFdx(doc), "fdx", "application/xml");
+  const exportBreakdown = (format: "md" | "csv" | "json" | "pdf") => {
+    if (format === "pdf") return window.print();
+    const content = format === "md" ? breakdownMarkdown(doc.titlePage.title || "Screenplay", breakdown) : format === "csv" ? breakdownCsv(breakdown) : JSON.stringify(breakdown, null, 2);
+    download(content, format, format === "json" ? "application/json" : "text/plain");
+  };
+  const exportTreatment = (format: "md" | "pdf") => format === "pdf" ? window.print() : download(workspace.treatment || "# Untitled Treatment\n", "md", "text/markdown");
 
   const addEpisode = async () => {
     setBusy(true);
@@ -142,7 +200,7 @@ export default function Workspace({ initialDoc, onOpenFdx }: WorkspaceProps) {
     setBusy(true);
     setOperationMessage(null);
     try {
-      const path = await saveProjectManifest(episodeDocs[0].titlePage.title || "Untitled Project", episodeDocs);
+      const path = await saveProjectBundle(episodeDocs[0].titlePage.title || "Untitled Project", episodeDocs, versions);
       if (path) setOperationMessage(`Project wrapper saved to ${path}.`);
     } catch (error) {
       setOperationMessage(messageFrom(error));
@@ -151,15 +209,53 @@ export default function Workspace({ initialDoc, onOpenFdx }: WorkspaceProps) {
     }
   };
 
-  const saveDraftVersion = () => setVersions((all) => [{
-    id: `s${Date.now()}`,
-    label: `Session draft ${all.filter((version) => version.id.startsWith("s")).length + 1}`,
-    note: "Saved from the Drafts panel (session only).",
-    when: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    milestone: false,
-  }, ...all]);
+  const saveDraftVersion = () => setVersions((all) => {
+    // ponytail: keep 50 local snapshots; portable projects can retain longer history outside browser storage
+    const next: DraftSnapshot[] = [{ id: `draft-${Date.now()}`, label: `Draft ${all.length + 1}`, note: "Saved draft version", createdAt: new Date().toISOString(), milestone: false, document: JSON.parse(JSON.stringify(doc)) as ScreenplayDocument }, ...all].slice(0, 50);
+    saveVersions(next);
+    return next;
+  });
 
-  return <div className="workspace">
+  const restoreVersion = (version: DraftSnapshot) => {
+    setDoc(JSON.parse(JSON.stringify(version.document)) as ScreenplayDocument);
+    setOperationMessage(`Restored ${version.label}.`);
+  };
+
+  const reloadLinkedFdx = async () => {
+    if (!doc.source?.path) return;
+    setBusy(true);
+    try {
+      const imported = await parseLinkedFdx(doc.source.path);
+      setDoc({ ...imported, workspace, sceneNotes: doc.sceneNotes });
+      setExternalChanged(false);
+      setOperationMessage("Re-imported external FDX; SCS development metadata was preserved.");
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectLayout = (next: string) => {
+    setLayout(next);
+    localStorage.setItem("scs.layout", next);
+    setInspectorOpen(next !== "writer");
+  };
+
+  const searchResults = query.trim() ? [
+    ...scenes.filter((scene) => scene.heading.toLowerCase().includes(query.toLowerCase())).map((scene) => ({ label: `Scene ${scene.number}: ${scene.heading}`, action: () => jumpToScene(scene.id) })),
+    ...characters.filter((character) => character.name.toLowerCase().includes(query.toLowerCase())).map((character) => ({ label: `Character: ${character.name}`, action: () => setInspectorOpen(true) })),
+    ...objects.filter((object) => object.name.toLowerCase().includes(query.toLowerCase())).map((object) => ({ label: `Object: ${object.name}`, action: () => setInspectorOpen(true) })),
+  ].slice(0, 12) : [];
+
+  const dropScene = (to: number) => {
+    if (draggedScene === null) return;
+    setDoc({ ...doc, blocks: moveScene(doc.blocks, draggedScene, to), scenes: undefined, characters: undefined, locations: undefined });
+    setDraggedScene(null);
+  };
+
+  return <div className={`workspace layout-${layout}`}>
+    {paletteOpen && <div className="command-backdrop" onMouseDown={() => setPaletteOpen(false)}><div className="command-palette" onMouseDown={(event) => event.stopPropagation()}><input autoFocus value={query} placeholder="Search project or run a command…" onChange={(event) => setQuery(event.target.value)} />{query ? searchResults.map((result) => <button key={result.label} onClick={() => { result.action(); setPaletteOpen(false); }}>{result.label}</button>) : <><button onClick={() => { saveNow(); setPaletteOpen(false); }}>Save Project</button><button onClick={() => { saveDraftVersion(); setPaletteOpen(false); }}>Save Draft Version</button><button onClick={() => { exportFdx(); setPaletteOpen(false); }}>Export FDX</button><button onClick={() => { setInspectorOpen((open) => !open); setPaletteOpen(false); }}>Toggle Inspector</button></>}</div></div>}
     {episodeDocs.length > 1 && <div className="workspace-episodes" aria-label="Television episodes">
       {episodeDocs.map((episode, index) => <button key={episode.id ?? episode.source?.path ?? index} className={`episode-tab ${index === activeEpisode ? "active" : ""}`} onClick={() => { setActiveEpisode(index); setActiveBlockId(null); setMode("formatted"); }}>
         {episode.titlePage.title || `Episode ${index + 1}`}
@@ -174,29 +270,33 @@ export default function Workspace({ initialDoc, onOpenFdx }: WorkspaceProps) {
         <button disabled={doc.readOnly} className={mode === "source" ? "active" : ""} onClick={() => mode === "formatted" && toggleMode()}>Fountain Source</button>
       </div>
       <div className="toolbar-spacer" />
-      <button className="btn" onClick={doc.readOnly ? createProject : saveNow} disabled={busy}>{doc.readOnly ? "Create SCS Project" : "Save Project"}</button>
+      <button className="btn btn-ghost" onClick={() => setPaletteOpen(true)}>Search · Ctrl+K</button>
+      <select className="element-select" aria-label="Workspace layout" value={layout} onChange={(event) => selectLayout(event.target.value)}><option value="writer">Writer</option><option value="development">Development</option><option value="revision">Revision</option><option value="television">Television</option><option value="production">Production</option></select>
+      <button className="btn" onClick={saveNow} disabled={busy}>Save Project</button>
+      <button className="btn btn-ghost" onClick={createProject} disabled={busy}>Save Portable Project</button>
       <button className="btn" onClick={exportFountain}>Export Fountain</button>
       <button className="btn btn-ghost" onClick={onOpenFdx} disabled={busy}>Open FDX</button>
-      {doc.readOnly && <button className="btn btn-ghost" onClick={addEpisode} disabled={busy}>Add Episode FDX</button>}
-      <button className="btn btn-ghost" disabled>Export FDX <span className="planned-tag">planned</span></button>
+      <button className="btn btn-ghost" onClick={addEpisode} disabled={busy}>Add Episode FDX</button>
+      <button className="btn btn-ghost" onClick={exportFdx}>Export FDX</button>
       <button className="btn" onClick={() => setInspectorOpen((open) => !open)}>{inspectorOpen ? "Panel ▸" : "◂ Panel"}</button>
     </div>
-    {doc.readOnly && <div className="readonly-banner">FDX Read-Only — Editing arrives in Phase 3. <span>{doc.source?.fileName}</span></div>}
+    {doc.source?.type === "fdx" && <div className="readonly-banner">Linked FDX · edits stay in SCS until exported. <span>{doc.source.fileName}</span></div>}
+    {externalChanged && <div className="operation-message" role="alert">The linked FDX changed outside SCS. <button className="btn" onClick={reloadLinkedFdx}>Re-import and preserve metadata</button></div>}
     {operationMessage && <div className="operation-message" role="status">{operationMessage}</div>}
     {!!doc.warnings?.length && <details className="import-summary"><summary>{doc.warnings.length} import warning{doc.warnings.length === 1 ? "" : "s"} — source data was preserved where possible</summary><ul>{doc.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><strong>{warning.code}</strong>: {warning.message}</li>)}</ul></details>}
     <div className="workspace-main">
       <aside className="scene-nav">
         <div className="nav-doc-title">{doc.titlePage.title || "Untitled Screenplay"}</div>
-        <div className="nav-group"><span className="nav-act">ACT I</span><span className="nav-structure-hint">structure grouping planned</span></div>
-        <div className="nav-sequence">Sequence 1</div>
+        <div className="nav-group"><span className="nav-act">{structure.acts[0]?.title ?? "Act I"}</span><span className="nav-structure-hint">{structure.acts.length} act{structure.acts.length === 1 ? "" : "s"}</span></div>
+        <div className="nav-sequence">{structure.acts.reduce((count, act) => count + act.sequences.length, 0)} sequences · {structure.beats.length} beats</div>
         <ol className="nav-scenes">
-          {scenes.map((scene) => <li key={scene.id}><button className={`nav-scene ${activeScene?.id === scene.id ? "active" : ""}`} onClick={() => jumpToScene(scene.id)}><span className="nav-scene-num">{scene.sceneNumber ?? scene.number}</span><span className="nav-scene-heading">{scene.heading}</span></button>{activeScene?.id === scene.id && <div className="nav-beats">Beats — beat board planned</div>}</li>)}
+          {scenes.map((scene) => <li key={scene.id} draggable onDragStart={() => setDraggedScene(scene.number - 1)} onDragOver={(event) => event.preventDefault()} onDrop={() => dropScene(scene.number - 1)}><button className={`nav-scene ${activeScene?.id === scene.id ? "active" : ""}`} onClick={() => jumpToScene(scene.id)} title="Drag to reorder"><span className="nav-scene-num">{scene.sceneNumber ?? scene.number}</span><span className="nav-scene-heading">{scene.heading}</span></button>{activeScene?.id === scene.id && <div className="nav-beats">{structure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => beat.text).join(" · ") || "No beats"}</div>}</li>)}
           {!scenes.length && <li className="nav-empty">No scenes yet — start with INT. or EXT.</li>}
         </ol>
         <div className="nav-foot">{scenes.length} scene{scenes.length === 1 ? "" : "s"} · ~{pages} page{pages === 1 ? "" : "s"}</div>
       </aside>
       {mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
-      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => { if (!doc.readOnly) setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } }); }} versions={versions} onSaveVersion={saveDraftVersion} words={words} pages={pages} episodeDocuments={episodeDocs} readOnly={doc.readOnly} />}
+      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} structure={structure} breakdown={breakdown} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} versions={versions} draftChanges={draftChanges} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} episodeDocuments={episodeDocs} />}
     </div>
     <div className="statusbar"><span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span><span>{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span><span>~{pages} pages</span><span>{words} words</span><div className="toolbar-spacer" /><span>{doc.readOnly ? `Linked source · ${doc.source?.fileName ?? "FDX"}` : savedAt ? `Saved locally · ${savedAt}` : "Not saved yet"}</span><span className="status-draft">Draft: current · drafts panel →</span></div>
   </div>;

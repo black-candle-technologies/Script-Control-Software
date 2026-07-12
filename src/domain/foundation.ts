@@ -4,8 +4,7 @@ import type { FoundationStatus } from "./status.ts";
  * The architecture / status signals shown on the dashboard.
  *
  * This list is the single source of truth for "what is real today". It is kept
- * deliberately honest: the runtime stack is `active`, the data shapes are
- * `drafted`, and the storage choices are `planned`.
+ * deliberately honest about capabilities that are active or optional.
  */
 export interface FoundationSignal {
   id: string;
@@ -37,25 +36,25 @@ export const foundationSignals: FoundationSignal[] = [
   {
     id: "project-format",
     label: "Project format",
-    status: "drafted",
-    detail: "The portable .scs folder layout is specified in docs/PROJECT_FORMAT.md.",
+    status: "active",
+    detail: "Portable project folders round-trip documents, versions, metadata and Fountain scripts.",
   },
   {
     id: "domain-models",
     label: "Domain models",
-    status: "drafted",
-    detail: "Hierarchy, television, recognition and versioning shapes are modelled in src/domain.",
+    status: "active",
+    detail: "Hierarchy, television, recognition, compiler and versioning behavior is active.",
   },
   {
     id: "sqlite",
     label: "SQLite index",
     status: "planned",
-    detail: "A local database for fast indexing and search of structured story data.",
+    detail: "Optional future index; current in-memory project search needs no database.",
   },
   {
     id: "json-portability",
     label: "JSON portability",
-    status: "planned",
-    detail: "JSON export so projects are never trapped away from FDX-compatible tools.",
+    status: "active",
+    detail: "Portable project metadata and breakdown reports export as JSON.",
   },
 ];

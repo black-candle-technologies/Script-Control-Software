@@ -6,7 +6,7 @@ import Dashboard from "./components/Dashboard.tsx";
 import { defaultAppInfo, emptyDocument, type AppInfo, type ScreenplayDocument } from "./domain/index.ts";
 import { sampleScreenplay } from "./domain/sample.ts";
 import { loadDocument } from "./storage.ts";
-import { chooseAndParseFdx, messageFrom } from "./services/fdxService.ts";
+import { chooseAndOpenProject, chooseAndParseFdx, messageFrom } from "./services/fdxService.ts";
 import "./App.css";
 
 type View = "home" | "write" | "foundation";
@@ -15,6 +15,7 @@ function App() {
   const [appInfo, setAppInfo] = useState<AppInfo>(defaultAppInfo);
   const [view, setView] = useState<View>("home");
   const [doc, setDoc] = useState<ScreenplayDocument | null>(null);
+  const [projectDocuments, setProjectDocuments] = useState<ScreenplayDocument[]>([]);
   const [docNonce, setDocNonce] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
@@ -35,6 +36,8 @@ function App() {
           ? sampleScreenplay()
           : emptyDocument();
     setDoc(next);
+    if (choice !== "saved") localStorage.removeItem("scs.versions.v1");
+    setProjectDocuments([]);
     setDocNonce((n) => n + 1);
     setView("write");
   };
@@ -48,11 +51,32 @@ function App() {
       const imported = await chooseAndParseFdx();
       if (!imported) return;
       setDoc(imported);
+      localStorage.removeItem("scs.versions.v1");
+      setProjectDocuments([]);
       setDocNonce((n) => n + 1);
       setView("write");
     } catch (error) {
       setImportError(messageFrom(error));
       setView("home");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const openProject = async () => {
+    setImporting(true);
+    setImportError(null);
+    try {
+      const project = await chooseAndOpenProject();
+      if (!project) return;
+      const [first] = project.documents;
+      setDoc(first);
+      setProjectDocuments(project.documents);
+      localStorage.setItem("scs.versions.v1", JSON.stringify(project.versions));
+      setDocNonce((nonce) => nonce + 1);
+      setView("write");
+    } catch (error) {
+      setImportError(messageFrom(error));
     } finally {
       setImporting(false);
     }
@@ -88,21 +112,21 @@ function App() {
           savedTitle={savedTitle}
           onOpen={open}
           onOpenFdx={openFdx}
+          onOpenProject={openProject}
           importError={importError}
           importing={importing}
           onShowFoundation={() => setView("foundation")}
         />
       )}
 
-      {view === "write" && doc && <Workspace key={docNonce} initialDoc={doc} onOpenFdx={openFdx} />}
+      {view === "write" && doc && <Workspace key={docNonce} initialDoc={doc} initialDocuments={projectDocuments} onOpenFdx={openFdx} />}
 
       {view === "foundation" && (
         <main className="content">
           <div className="hero">
             <h1>Foundation status</h1>
             <p className="positioning">
-              The architecture behind the writing workspace — what is real today versus drafted or
-              planned.
+              The architecture behind the writing workspace and its active local-first capabilities.
             </p>
           </div>
           <Dashboard />

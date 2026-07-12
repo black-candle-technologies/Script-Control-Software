@@ -7,6 +7,7 @@ import {
   deriveLocations,
   deriveScenes,
   estimatePages,
+  paginateBlocks,
   countWords,
   normalizeCharacterName,
   parseHeading,
@@ -143,4 +144,11 @@ test("counts are sane for the sample", () => {
   const doc = sample();
   assert.ok(countWords(doc.blocks) > 150);
   assert.equal(estimatePages(doc.blocks), 2);
+});
+
+test("pagination creates visible pages without losing blocks", () => {
+  const blocks = Array.from({ length: 60 }, (_, index) => ({ id: `b${index}`, type: "action" as const, text: "A line." }));
+  const pages = paginateBlocks(blocks);
+  assert.equal(pages.length, 3);
+  assert.deepEqual(pages.flat(), blocks);
 });

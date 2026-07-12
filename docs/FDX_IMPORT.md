@@ -1,11 +1,7 @@
-# FDX import
+# FDX Interoperability
 
-SCS Phase 1 opens local `.fdx` files through the desktop file picker. Parsing happens in Rust and the normalized document is shown in the existing screenplay workspace.
+Rust parses local FDX XML into typed blocks, styled text runs, scenes, cast, locations, source metadata, and preservation warnings. Unknown paragraph types and attributes remain attached to imported blocks.
 
-Imported FDX documents are intentionally read-only. The original file is never changed, copied, or moved. The toolbar identifies this state as **FDX Read-Only — Editing arrives in Phase 3**.
+Imported documents are editable. SCS keeps its development metadata outside the FDX payload and exports clean screenplay paragraphs. The linked source is watched; external changes require an explicit re-import that preserves SCS metadata.
 
-Choose **Open FDX** on the home screen or toolbar. To place the linked file in a portable SCS wrapper, choose **Create SCS Project** and save the generated `scs.project.json`. If the linked FDX is renamed, moved, deleted, or no longer readable, SCS cannot reopen it until the manifest is repaired or a new wrapper is created.
-
-Import errors are writer-facing messages for cancellation, incorrect extensions, missing or unreadable files, malformed XML, and empty scripts. Recoverable parser conditions appear in the import summary without blocking the viewer.
-
-FDX export and round-trip editing are not available. Keep backups of original scripts.
+Fixture coverage lives under `src-tauri/test-fixtures/` and includes malformed XML, styled text, scene numbers, unknown types, character extensions, unusual headings, and multiple television episodes.
