@@ -59,6 +59,7 @@ fn save_project_bundle(
     documents: Vec<Value>,
     fountain_scripts: Vec<String>,
     versions: Vec<Value>,
+    version_history: Value,
     workspace: Value,
     expected_updated_at: Option<String>,
 ) -> Result<ProjectBundle, String> {
@@ -69,6 +70,7 @@ fn save_project_bundle(
         documents,
         fountain_scripts,
         versions,
+        version_history,
         workspace,
         expected_updated_at,
     )

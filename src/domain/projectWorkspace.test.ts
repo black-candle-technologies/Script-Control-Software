@@ -19,7 +19,7 @@ test("normalization migrates an older bundle and rejects malformed documents", (
   const document = emptyDocument("Legacy");
   delete document.id;
   const session = normalizeProjectSession({ name: "Legacy Project", projectType: "featureFilm", documents: [document], versions: [] });
-  assert.equal(session.schemaVersion, 3);
+  assert.equal(session.schemaVersion, 4);
   assert.match(session.documents[0].id!, /^document-/);
   assert.equal(session.workspace.collaborators[0].role, "owner");
   assert.throws(() => normalizeProjectSession({ documents: [{ titlePage: {}, blocks: [{ type: "action" }] }] }), /block 1/i);

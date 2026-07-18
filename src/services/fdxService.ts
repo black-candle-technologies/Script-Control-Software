@@ -5,6 +5,7 @@ import {
   toFountain,
   type ProjectSession,
   type ProjectWorkspace,
+  type VersionHistory,
   type ScreenplayDocument,
 } from "../domain/index.ts";
 
@@ -17,6 +18,7 @@ interface StoredProjectBundle {
   updatedAt: string;
   documents: unknown[];
   versions: unknown[];
+  versionHistory?: VersionHistory;
   workspace?: ProjectWorkspace;
 }
 
@@ -53,6 +55,7 @@ export async function saveProjectSession(session: ProjectSession, saveAs = false
     documents: session.documents,
     fountainScripts: session.documents.map(toFountain),
     versions: session.versions,
+    versionHistory: session.versionHistory,
     workspace: session.workspace,
     expectedUpdatedAt: !saveAs && session.projectPath ? session.updatedAt : null,
   });
@@ -60,6 +63,7 @@ export async function saveProjectSession(session: ProjectSession, saveAs = false
     ...stored,
     projectId: stored.id,
     workspace: stored.workspace ?? session.workspace,
+    versionHistory: stored.versionHistory ?? session.versionHistory,
     projectPath: path,
     activeDocumentId: session.activeDocumentId,
   });

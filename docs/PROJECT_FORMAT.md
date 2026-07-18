@@ -19,7 +19,7 @@ MyProject.scs/
 
 ## `scs.project.json`
 
-Schema version 3 stores project identity/type, timestamps, complete screenplay documents, shared project workspace data, episode documents, and draft snapshots. It is UTF-8, pretty-printed JSON and may be copied, diffed, or versioned with ordinary tools. Older manifests are migrated on open; malformed documents and duplicate block IDs are rejected before the editor renders them.
+Schema version 4 stores project identity/type, timestamps, complete screenplay documents, shared project workspace data, episode documents, and project-wide history. History contains named snapshots, milestones, Alternate Draft branches, and merge ancestry; each snapshot deliberately excludes its containing history so files cannot grow recursively. It is UTF-8, pretty-printed JSON and may be copied, diffed, or versioned with ordinary tools. Older manifests are migrated on open; malformed documents, snapshots, and duplicate block IDs are rejected before the editor renders them.
 
 ## `scripts/`
 

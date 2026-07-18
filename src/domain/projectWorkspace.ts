@@ -1,5 +1,6 @@
 import { emptyDocument, emptyWorkspace, type ScreenplayDocument } from "./screenplay.ts";
 import type { DraftSnapshot } from "./studio.ts";
+import type { VersionHistory } from "./versioning.ts";
 
 export type ProjectSessionType = "featureFilm" | "television";
 export type CollaboratorRole =
@@ -133,14 +134,16 @@ export interface ProjectWorkspace {
 }
 
 export interface ProjectSession {
-  schemaVersion: 3;
+  schemaVersion: 4;
   projectId: string;
   name: string;
   projectType: ProjectSessionType;
   createdAt: string;
   updatedAt: string;
   documents: ScreenplayDocument[];
+  /** Legacy per-document snapshots retained only for schema migration. */
   versions: DraftSnapshot[];
+  versionHistory: VersionHistory;
   workspace: ProjectWorkspace;
   projectPath: string;
   activeDocumentId: string;
@@ -176,7 +179,7 @@ export function createProjectSession(document = emptyDocument(), projectType: Pr
   syncSeriesDocuments(workspace.series, [document]);
   const now = new Date().toISOString();
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     projectId: `project-${crypto.randomUUID()}`,
     name: document.titlePage.title || (projectType === "television" ? "Untitled Show" : "Untitled Screenplay"),
     projectType,
@@ -184,6 +187,7 @@ export function createProjectSession(document = emptyDocument(), projectType: Pr
     updatedAt: now,
     documents: [document],
     versions: [],
+    versionHistory: emptyVersionHistory(),
     workspace,
     projectPath: "",
     activeDocumentId: document.id!,
@@ -203,6 +207,7 @@ export function normalizeProjectSession(value: unknown): ProjectSession {
   session.createdAt = string(value.createdAt) || session.createdAt;
   session.updatedAt = string(value.updatedAt) || session.updatedAt;
   session.versions = Array.isArray(value.versions) ? value.versions.filter(isSnapshot).map((item) => structuredClone(item)) : [];
+  session.versionHistory = normalizeVersionHistory(value.versionHistory);
   session.workspace = normalizeProjectWorkspace(value.workspace);
   session.projectPath = string(value.projectPath);
   session.activeDocumentId = documents.some((document) => document.id === value.activeDocumentId)
@@ -210,6 +215,54 @@ export function normalizeProjectSession(value: unknown): ProjectSession {
     : documents[0].id!;
   syncSeriesDocuments(session.workspace.series, documents);
   return session;
+}
+
+export function emptyVersionHistory(): VersionHistory {
+  return { snapshots: [], branches: [], milestones: [], activeBranchId: "main" };
+}
+
+function normalizeVersionHistory(value: unknown): VersionHistory {
+  if (!isRecord(value)) return emptyVersionHistory();
+  const snapshots = Array.isArray(value.snapshots) ? value.snapshots.flatMap((snapshot) => {
+    if (!isRecord(snapshot) || typeof snapshot.id !== "string" || typeof snapshot.name !== "string" || typeof snapshot.createdAt !== "string" || !isRecord(snapshot.session)) return [];
+    try {
+      const session = normalizeProjectSession({ ...snapshot.session, versionHistory: undefined });
+      return [{
+        id: snapshot.id,
+        name: snapshot.name,
+        description: string(snapshot.description),
+        createdAt: snapshot.createdAt,
+        parentIds: Array.isArray(snapshot.parentIds) ? snapshot.parentIds.filter((id): id is string => typeof id === "string") : [],
+        branchId: typeof snapshot.branchId === "string" ? snapshot.branchId : undefined,
+        session,
+      }];
+    } catch {
+      return [];
+    }
+  }) : [];
+  const snapshotIds = new Set(snapshots.map((snapshot) => snapshot.id));
+  const branches = Array.isArray(value.branches) ? value.branches.filter((branch): branch is VersionHistory["branches"][number] =>
+    isRecord(branch)
+    && typeof branch.id === "string"
+    && typeof branch.name === "string"
+    && typeof branch.baseSnapshotId === "string"
+    && typeof branch.headSnapshotId === "string"
+    && snapshotIds.has(branch.baseSnapshotId)
+    && snapshotIds.has(branch.headSnapshotId),
+  ).map((branch) => ({ ...branch })) : [];
+  const branchIds = new Set(branches.map((branch) => branch.id));
+  const milestones = Array.isArray(value.milestones) ? value.milestones.filter((milestone): milestone is VersionHistory["milestones"][number] =>
+    isRecord(milestone)
+    && typeof milestone.id === "string"
+    && typeof milestone.name === "string"
+    && typeof milestone.description === "string"
+    && typeof milestone.snapshotId === "string"
+    && snapshotIds.has(milestone.snapshotId),
+  ).map((milestone) => ({ ...milestone })) : [];
+  const activeBranchId = typeof value.activeBranchId === "string" && branchIds.has(value.activeBranchId)
+    ? value.activeBranchId
+    : branches[0]?.id ?? "main";
+  return { snapshots, branches, milestones, activeBranchId };
 }
 
 export function syncSeriesDocuments(series: SeriesWorkspace, documents: ScreenplayDocument[]): void {

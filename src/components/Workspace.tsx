@@ -6,10 +6,15 @@ import {
   analysisToCsv,
   analysisToJson,
   analysisToMarkdown,
+  addMilestone,
   buildStructure,
+  compareSnapshots,
   compareDrafts,
   compileBreakdown,
   compileAnalysis,
+  createAlternateDraft,
+  createProjectSnapshot,
+  createVersionHistory,
   countWords,
   detectObjects,
   deriveCharacters,
@@ -20,17 +25,23 @@ import {
   emptyWorkspace,
   estimatePages,
   moveScene,
+  mergeSnapshots,
   parseFountain,
   reconcileSceneMetadata,
   resolveStoryStructure,
+  restoreProjectSnapshot,
+  saveSnapshot,
   toFdxWithWarnings,
   toFountain,
   type ScreenplayDocument,
   type ScreenplayElementType,
-  type DraftSnapshot,
   type AnalysisCsvSection,
   type CoverageHook,
+  type MergeConflict,
   type ProjectSession,
+  type ProjectSnapshot,
+  type SnapshotComparison,
+  type SnapshotDiffMode,
   syncSeriesDocuments,
 } from "../domain/index.ts";
 import { saveSession } from "../storage.ts";
@@ -56,7 +67,9 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const [mode, setMode] = useState<"formatted" | "source">("formatted");
   const [sourceText, setSourceText] = useState("");
   const [savedAt, setSavedAt] = useState<string | null>(null);
-  const versions = session.versions;
+  const versionHistory = session.versionHistory;
+  const [versionComparison, setVersionComparison] = useState<SnapshotComparison | null>(null);
+  const [mergeConflicts, setMergeConflicts] = useState<MergeConflict[]>([]);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -139,15 +152,22 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const structure = useMemo(() => buildStructure(doc.blocks), [doc.blocks]);
   const customStructure = useMemo(() => resolveStoryStructure(doc.blocks, workspace.storyStructure), [doc.blocks, workspace.storyStructure]);
   const breakdown = useMemo(() => compileBreakdown(doc.blocks), [doc.blocks]);
-  const draftChanges = useMemo(() => versions.length > 1 ? compareDrafts(versions[1].document, versions[0].document) : [], [versions]);
+  const activeBranchSnapshots = useMemo(() => versionHistory.snapshots.filter((snapshot) => snapshot.branchId === versionHistory.activeBranchId), [versionHistory]);
+  const recentSnapshots = activeBranchSnapshots.slice(-2);
+  const draftChanges = useMemo(() => {
+    if (recentSnapshots.length < 2) return [];
+    const before = recentSnapshots[0].session.documents.find((document) => document.id === doc.id);
+    const after = recentSnapshots[1].session.documents.find((document) => document.id === doc.id);
+    return before && after ? compareDrafts(before, after) : [];
+  }, [doc.id, recentSnapshots]);
   const analysis = useMemo(() => compileAnalysis(doc, {
     entityOverrides: workspace.entityOverrides,
     plotThreads: workspace.plotThreads,
     treatmentSections: treatmentCoverage(workspace),
     resolvedBeatIds: workspace.resolvedBeatIds,
     storyStructure: customStructure,
-    revision: versions.length > 1 ? { fromLabel: versions[1].label, toLabel: versions[0].label, changes: draftChanges } : undefined,
-  }), [customStructure, doc, draftChanges, versions, workspace.entityOverrides, workspace.plotThreads, workspace.resolvedBeatIds, workspace.treatments]);
+    revision: recentSnapshots.length > 1 ? { fromLabel: recentSnapshots[0].name, toLabel: recentSnapshots[1].name, changes: draftChanges } : undefined,
+  }), [customStructure, doc, draftChanges, recentSnapshots, workspace.entityOverrides, workspace.plotThreads, workspace.resolvedBeatIds, workspace.treatments]);
   const words = useMemo(() => countWords(doc.blocks), [doc.blocks]);
   const pages = useMemo(() => estimatePages(doc.blocks), [doc.blocks]);
   const activeIndex = doc.blocks.findIndex((block) => block.id === activeBlockId);
@@ -259,15 +279,106 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     }
   };
 
-  const saveDraftVersion = () => setSession((current) => {
-    // ponytail: keep 50 local snapshots; portable projects can retain longer history outside browser storage
-    const next: DraftSnapshot[] = [{ id: `draft-${Date.now()}`, label: `Draft ${current.versions.length + 1}`, note: "Saved draft version", createdAt: new Date().toISOString(), milestone: false, document: structuredClone(current.documents[activeEpisode]) }, ...current.versions].slice(0, 50);
-    return { ...current, versions: next };
+  const projectSnapshot = (current: ProjectSession, name: string, description: string, parentIds: string[] = []) => createProjectSnapshot(current, {
+    id: `draft-${Date.now()}-${crypto.randomUUID()}`,
+    name,
+    description,
+    createdAt: new Date().toISOString(),
+    parentIds,
+    branchId: current.versionHistory.activeBranchId || "main",
   });
 
-  const restoreVersion = (version: DraftSnapshot) => {
-    setDoc(JSON.parse(JSON.stringify(version.document)) as ScreenplayDocument);
-    setOperationMessage(`Restored ${version.label}.`);
+  const saveDraftVersion = (name = `Draft ${versionHistory.snapshots.length + 1}`, description = "Saved draft version", milestone = false) => {
+    setSession((current) => {
+      const snapshot = projectSnapshot(current, name, description);
+      let history = current.versionHistory.snapshots.length
+        ? saveSnapshot(current.versionHistory, snapshot)
+        : createVersionHistory(snapshot, { id: "main", name: "Main Draft" });
+      if (milestone) history = addMilestone(history, { id: `milestone-${crypto.randomUUID()}`, name, snapshotId: snapshot.id, description });
+      return { ...current, versionHistory: history };
+    });
+    setOperationMessage(`Saved project version “${name}”.`);
+  };
+
+  const sessionWithHistory = (restored: ProjectSession, current: ProjectSession, history = current.versionHistory): ProjectSession => ({
+    ...restored,
+    schemaVersion: 4,
+    projectId: current.projectId,
+    projectPath: current.projectPath,
+    updatedAt: current.updatedAt,
+    versionHistory: history,
+    versions: current.versions,
+  });
+
+  const restoreVersion = (snapshot: ProjectSnapshot) => {
+    const next = sessionWithHistory(restoreProjectSnapshot(snapshot), session);
+    setSession(next);
+    setActiveEpisode(Math.max(0, next.documents.findIndex((document) => document.id === next.activeDocumentId)));
+    setActiveBlockId(null);
+    setOperationMessage(`Restored ${snapshot.name}; Project History was preserved.`);
+  };
+
+  const compareProjectVersions = (fromId: string, toId: string, compareMode: SnapshotDiffMode) => {
+    const from = versionHistory.snapshots.find((snapshot) => snapshot.id === fromId);
+    const to = versionHistory.snapshots.find((snapshot) => snapshot.id === toId);
+    if (from && to) setVersionComparison(compareSnapshots(from, to, compareMode));
+  };
+
+  const createAlternate = (name: string, fromSnapshotId: string) => {
+    const source = versionHistory.snapshots.find((snapshot) => snapshot.id === fromSnapshotId);
+    if (!source) return;
+    const id = `alternate-${crypto.randomUUID()}`;
+    const history = createAlternateDraft(versionHistory, { id, name, fromSnapshotId });
+    const next = sessionWithHistory(restoreProjectSnapshot(source), session, history);
+    setSession(next);
+    setActiveEpisode(Math.max(0, next.documents.findIndex((document) => document.id === next.activeDocumentId)));
+    setActiveBlockId(null);
+    setOperationMessage(`Created Alternate Draft “${name}”.`);
+  };
+
+  const switchAlternate = (branchId: string) => {
+    if (branchId === versionHistory.activeBranchId) return;
+    let history = versionHistory;
+    const active = history.branches.find((branch) => branch.id === history.activeBranchId);
+    const activeHead = history.snapshots.find((snapshot) => snapshot.id === active?.headSnapshotId);
+    if (active && activeHead && versionableFingerprint(session) !== versionableFingerprint(activeHead.session)) {
+      history = saveSnapshot(history, projectSnapshot(session, "Auto-save before switching drafts", "Working changes preserved automatically."), active.id);
+    }
+    const target = history.branches.find((branch) => branch.id === branchId);
+    const snapshot = history.snapshots.find((item) => item.id === target?.headSnapshotId);
+    if (!target || !snapshot) return;
+    history = { ...history, activeBranchId: branchId };
+    const next = sessionWithHistory(restoreProjectSnapshot(snapshot), session, history);
+    setSession(next);
+    setActiveEpisode(Math.max(0, next.documents.findIndex((document) => document.id === next.activeDocumentId)));
+    setActiveBlockId(null);
+    setOperationMessage(`Switched to ${target.name}.`);
+  };
+
+  const combineDrafts = (sourceBranchId: string, resolution: "ours" | "theirs") => {
+    let history = versionHistory;
+    const active = history.branches.find((branch) => branch.id === history.activeBranchId);
+    const source = history.branches.find((branch) => branch.id === sourceBranchId);
+    if (!active || !source) return;
+    let ours = history.snapshots.find((snapshot) => snapshot.id === active.headSnapshotId);
+    if (!ours || versionableFingerprint(session) !== versionableFingerprint(ours.session)) {
+      const working = projectSnapshot(session, "Working draft before combine", "Automatic safety snapshot.");
+      history = history.snapshots.length ? saveSnapshot(history, working, active.id) : createVersionHistory(working);
+      ours = working;
+    }
+    const theirs = history.snapshots.find((snapshot) => snapshot.id === source.headSnapshotId);
+    const base = findCommonSnapshot(history.snapshots, ours.id, theirs?.id ?? "");
+    if (!theirs || !base) return;
+    const result = mergeSnapshots(base, ours, theirs, resolution);
+    const mergedSession = sessionWithHistory(result.merged, session, history);
+    const combined = projectSnapshot(mergedSession, `Combined ${source.name} into ${active.name}`, `${result.conflicts.length} conflict${result.conflicts.length === 1 ? "" : "s"}; kept ${resolution}.`, [ours.id, theirs.id]);
+    history = saveSnapshot(history, combined, active.id);
+    const next = { ...result.merged, projectPath: session.projectPath, updatedAt: session.updatedAt, versions: session.versions, versionHistory: history };
+    setSession(next);
+    setMergeConflicts(result.conflicts);
+    setActiveEpisode(Math.max(0, next.documents.findIndex((document) => document.id === next.activeDocumentId)));
+    setActiveBlockId(null);
+    setOperationMessage(result.clean ? `Combined ${source.name} without conflicts.` : `Combined ${source.name}; ${result.conflicts.length} conflict${result.conflicts.length === 1 ? "" : "s"} kept ${resolution}.`);
   };
 
   const reloadLinkedFdx = async () => {
@@ -357,7 +468,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
         <div className="nav-foot">{scenes.length} scene{scenes.length === 1 ? "" : "s"} · ~{pages} page{pages === 1 ? "" : "s"}</div>
       </aside>
       {mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
-      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versions={versions} draftChanges={draftChanges} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} episodeDocuments={episodeDocs} />}
+      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versionHistory={versionHistory} versionComparison={versionComparison} mergeConflicts={mergeConflicts} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onCompareVersions={compareProjectVersions} onCreateAlternateDraft={createAlternate} onSwitchAlternateDraft={switchAlternate} onCombineDrafts={combineDrafts} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} episodeDocuments={episodeDocs} />}
     </div>
     <div className="statusbar"><span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span><span>{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span><span>~{pages} pages</span><span>{words} words</span><div className="toolbar-spacer" /><span>{doc.readOnly ? `Linked source · ${doc.source?.fileName ?? "FDX"}` : savedAt ? `Saved locally · ${savedAt}` : "Not saved yet"}</span><span className="status-draft">Draft: current · drafts panel →</span></div>
   </div>;
@@ -365,6 +476,33 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
 
 function documentFingerprint(document: ScreenplayDocument): string {
   return JSON.stringify([document.titlePage, document.blocks]);
+}
+
+function versionableFingerprint(session: ProjectSession): string {
+  const { versionHistory: _history, versions: _legacy, projectPath: _path, updatedAt: _updated, ...content } = session;
+  return JSON.stringify(content);
+}
+
+function findCommonSnapshot(snapshots: ProjectSnapshot[], leftId: string, rightId: string): ProjectSnapshot | undefined {
+  const byId = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const ancestors = new Set<string>();
+  const left = [leftId];
+  while (left.length) {
+    const id = left.shift()!;
+    if (ancestors.has(id)) continue;
+    ancestors.add(id);
+    left.push(...(byId.get(id)?.parentIds ?? []));
+  }
+  const right = [rightId];
+  const seen = new Set<string>();
+  while (right.length) {
+    const id = right.shift()!;
+    if (ancestors.has(id)) return byId.get(id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    right.push(...(byId.get(id)?.parentIds ?? []));
+  }
+  return undefined;
 }
 
 function printContent(title: string, content: string): void {

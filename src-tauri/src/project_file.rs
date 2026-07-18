@@ -51,6 +51,8 @@ pub struct ProjectBundle {
     pub documents: Vec<Value>,
     pub versions: Vec<Value>,
     #[serde(default = "empty_object")]
+    pub version_history: Value,
+    #[serde(default = "empty_object")]
     pub workspace: Value,
 }
 
@@ -62,6 +64,7 @@ pub fn save_bundle(
     documents: Vec<Value>,
     fountain_scripts: Vec<String>,
     versions: Vec<Value>,
+    version_history: Value,
     workspace: Value,
     expected_updated_at: Option<String>,
 ) -> Result<ProjectBundle, String> {
@@ -92,7 +95,7 @@ pub fn save_bundle(
         fs::write(root.join("scripts").join(name), script)
             .map_err(|error| format!("A screenplay could not be saved: {error}"))?;
     }
-    validate_bundle_values(&documents, &versions, &workspace)?;
+    validate_bundle_values(&documents, &versions, &version_history, &workspace)?;
     let existing = if path.exists() {
         Some(read_bundle(path)?)
     } else {
@@ -105,7 +108,7 @@ pub fn save_bundle(
     }
     let timestamp = crate::fdx::now();
     let bundle = ProjectBundle {
-        schema_version: 3,
+        schema_version: 4,
         id: existing
             .as_ref()
             .map(|bundle| bundle.id.clone())
@@ -118,6 +121,7 @@ pub fn save_bundle(
         updated_at: timestamp,
         documents,
         versions,
+        version_history,
         workspace,
     };
     let json = serde_json::to_string_pretty(&bundle)
@@ -153,23 +157,30 @@ pub fn read_bundle(path: &Path) -> Result<ProjectBundle, String> {
                 updated_at: manifest.updated_at,
                 documents,
                 versions: Vec::new(),
+                version_history: empty_object(),
                 workspace: empty_object(),
             }
         }
     };
-    if bundle.schema_version > 3 || bundle.documents.is_empty() {
+    if bundle.schema_version > 4 || bundle.documents.is_empty() {
         return Err("This project is empty or uses a newer SCS format.".into());
     }
-    validate_bundle_values(&bundle.documents, &bundle.versions, &bundle.workspace)?;
+    validate_bundle_values(
+        &bundle.documents,
+        &bundle.versions,
+        &bundle.version_history,
+        &bundle.workspace,
+    )?;
     Ok(bundle)
 }
 
 fn validate_bundle_values(
     documents: &[Value],
     versions: &[Value],
+    version_history: &Value,
     workspace: &Value,
 ) -> Result<(), String> {
-    if documents.is_empty() || !workspace.is_object() {
+    if documents.is_empty() || !workspace.is_object() || !version_history.is_object() {
         return Err("Project metadata is malformed.".into());
     }
     for (document_index, document) in documents.iter().enumerate() {
@@ -188,6 +199,47 @@ fn validate_bundle_values(
         if let Some(document) = version.get("document") {
             validate_document(document)
                 .map_err(|error| format!("Draft version {}: {error}", version_index + 1))?;
+        }
+    }
+    validate_version_history(version_history)?;
+    Ok(())
+}
+
+fn validate_version_history(history: &Value) -> Result<(), String> {
+    let history = history.as_object().ok_or("Project history is malformed.")?;
+    let snapshots = history
+        .get("snapshots")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for (index, snapshot) in snapshots.iter().enumerate() {
+        let snapshot = snapshot
+            .as_object()
+            .ok_or_else(|| format!("Project snapshot {} is malformed.", index + 1))?;
+        if !matches!(snapshot.get("id"), Some(Value::String(_)))
+            || !matches!(snapshot.get("name"), Some(Value::String(_)))
+            || !matches!(snapshot.get("createdAt"), Some(Value::String(_)))
+        {
+            return Err(format!("Project snapshot {} is malformed.", index + 1));
+        }
+        let session = snapshot
+            .get("session")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("Project snapshot {} has no session.", index + 1))?;
+        let documents = session
+            .get("documents")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("Project snapshot {} has no documents.", index + 1))?;
+        for document in documents {
+            validate_document(document)
+                .map_err(|error| format!("Project snapshot {}: {error}", index + 1))?;
+        }
+    }
+    for field in ["branches", "milestones"] {
+        if let Some(value) = history.get(field) {
+            if !value.is_array() {
+                return Err(format!("Project history {field} are malformed."));
+            }
         }
     }
     Ok(())
@@ -341,6 +393,12 @@ mod tests {
         let root = std::env::temp_dir().join(format!("scs-project-{}", std::process::id()));
         let path = root.join("scs.project.json");
         let document = serde_json::json!({"titlePage":{"title":"Test","author":""},"blocks":[],"sceneNotes":{}});
+        let history = serde_json::json!({
+            "snapshots":[{"id":"draft-1","name":"First draft","createdAt":"2026-01-01T00:00:00Z","session":{"documents":[document.clone()]}}],
+            "branches":[],
+            "milestones":[],
+            "activeBranchId":"main"
+        });
         let saved = save_bundle(
             &path,
             "Test".into(),
@@ -348,11 +406,13 @@ mod tests {
             vec![document.clone()],
             vec!["Title: Test\n".into()],
             Vec::new(),
+            history.clone(),
             empty_object(),
             None,
         )
         .unwrap();
         assert_eq!(saved.documents[0], document);
+        assert_eq!(saved.version_history, history);
         assert_eq!(read_bundle(&path).unwrap().name, "Test");
         assert_eq!(
             fs::read_to_string(root.join("scripts/main.fountain")).unwrap(),
@@ -400,7 +460,8 @@ mod tests {
             {"id":"same","type":"action","text":"One"},
             {"id":"same","type":"dialogue","text":"Two"}
         ]});
-        let error = validate_bundle_values(&[malformed], &[], &empty_object()).unwrap_err();
+        let error = validate_bundle_values(&[malformed], &[], &empty_object(), &empty_object())
+            .unwrap_err();
         assert!(error.contains("duplicate id"));
     }
 
@@ -417,6 +478,7 @@ mod tests {
             vec!["Title: Test\n".into()],
             vec![],
             empty_object(),
+            empty_object(),
             None,
         )
         .unwrap();
@@ -427,6 +489,7 @@ mod tests {
             vec![document],
             vec!["Title: Test\n".into()],
             vec![],
+            empty_object(),
             empty_object(),
             Some("stale timestamp".into()),
         )

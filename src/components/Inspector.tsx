@@ -9,16 +9,19 @@ import {
   type CharacterRef,
   type CustomStoryStructure,
   type DetectedObject,
-  type DraftChange,
-  type DraftSnapshot,
   type EntityOverride,
   type LocationRef,
   type Scene,
   type ScreenplayBlock,
   type ScreenplayDocument,
+  type MergeConflict,
+  type ProjectSnapshot,
   type ScriptAnalysis,
+  type SnapshotComparison,
+  type SnapshotDiffMode,
   type StoryBoardView,
   type TreatmentDocument,
+  type VersionHistory,
   type WorkspaceData,
 } from "../domain/index.ts";
 
@@ -37,10 +40,15 @@ interface InspectorProps {
   workspace: WorkspaceData;
   onWorkspace: (patch: Partial<WorkspaceData>) => void;
   onJumpToScene: (sceneId: string) => void;
-  versions: DraftSnapshot[];
-  draftChanges: DraftChange[];
-  onSaveVersion: () => void;
-  onRestoreVersion: (version: DraftSnapshot) => void;
+  versionHistory: VersionHistory;
+  versionComparison: SnapshotComparison | null;
+  mergeConflicts: MergeConflict[];
+  onSaveVersion: (name: string, description: string, milestone: boolean) => void;
+  onRestoreVersion: (version: ProjectSnapshot) => void;
+  onCompareVersions: (fromId: string, toId: string, mode: SnapshotDiffMode) => void;
+  onCreateAlternateDraft: (name: string, fromSnapshotId: string) => void;
+  onSwitchAlternateDraft: (branchId: string) => void;
+  onCombineDrafts: (sourceBranchId: string, resolution: "ours" | "theirs") => void;
   onExportBreakdown: (format: "md" | "csv" | "json" | "pdf", section?: AnalysisCsvSection) => void;
   onExportTreatment: (format: "md" | "pdf") => void;
   episodeDocuments: ScreenplayDocument[];
@@ -329,10 +337,54 @@ function PlacesTab({ analysis, workspace, onWorkspace }: InspectorProps) {
   </details>)}</div>;
 }
 
-function DraftsTab({ versions, draftChanges, onSaveVersion, onRestoreVersion }: InspectorProps) {
-  return <div className="insp-stack"><button className="btn btn-primary" onClick={onSaveVersion}>Save Draft Version</button><Hint>Snapshots include script and development metadata. The newest two versions are compared scene by scene.</Hint>
-    {draftChanges.length > 0 && <><h4>Changed scenes</h4><ul className="insp-list">{draftChanges.map((change, index) => <li key={`${change.scene}-${index}`}>{change.summary}</li>)}</ul></>}
-    <div className="version-list">{versions.map((version) => <div className="version-row" key={version.id}><div className="version-top"><span className="version-label">{version.label}</span>{version.milestone && <span className="milestone-tag">milestone</span>}<span className="version-when">{new Date(version.createdAt).toLocaleString()}</span></div><div className="version-note">{version.note}</div><button className="link-btn" onClick={() => onRestoreVersion(version)}>Restore</button></div>)}</div>
+function DraftsTab({ versionHistory, versionComparison, mergeConflicts, onSaveVersion, onRestoreVersion, onCompareVersions, onCreateAlternateDraft, onSwitchAlternateDraft, onCombineDrafts }: InspectorProps) {
+  const snapshots = [...versionHistory.snapshots].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [milestone, setMilestone] = useState(false);
+  const [alternateName, setAlternateName] = useState("");
+  const [alternateBase, setAlternateBase] = useState("");
+  const [compareFrom, setCompareFrom] = useState("");
+  const [compareTo, setCompareTo] = useState("");
+  const [compareMode, setCompareMode] = useState<SnapshotDiffMode>("scene");
+  const [mergeSource, setMergeSource] = useState("");
+  const activeBranch = versionHistory.branches.find((branch) => branch.id === versionHistory.activeBranchId);
+  const milestones = new Map(versionHistory.milestones.map((item) => [item.snapshotId, item]));
+  const save = () => {
+    const label = name.trim() || `Draft ${versionHistory.snapshots.length + 1}`;
+    onSaveVersion(label, description, milestone);
+    setName(""); setDescription(""); setMilestone(false);
+  };
+  const comparisonRows = versionComparison ? [
+    ...versionComparison.documentChanges.map((change) => `${change.kind}: ${change.title}`),
+    ...versionComparison.blockChanges.map((change) => `${change.kind}: ${change.documentId} / ${change.blockId}`),
+    ...versionComparison.metadataChanges.map((change) => `changed: ${change.path}`),
+  ] : [];
+  const modes: { value: SnapshotDiffMode; label: string }[] = [
+    { value: "page", label: "Script pages" }, { value: "scene", label: "Scenes" }, { value: "dialogue", label: "Dialogue only" },
+    { value: "structure", label: "Structure" }, { value: "character", label: "Characters" }, { value: "object", label: "Objects / props" },
+    { value: "treatment", label: "Treatments" }, { value: "episode", label: "Episodes" }, { value: "season", label: "Season" },
+    { value: "document", label: "Documents" }, { value: "block", label: "All script blocks" }, { value: "metadata", label: "All metadata" },
+  ];
+  return <div className="insp-stack">
+    <Hint>Project History snapshots every episode and shared project field. Alternate Drafts branch safely and can be combined with explicit conflict preference.</Hint>
+    <h4>Save Draft Version</h4>
+    <input className="insp-notes-input" value={name} placeholder={`Draft ${versionHistory.snapshots.length + 1} name`} onChange={(event) => setName(event.target.value)} />
+    <textarea className="insp-notes-input" value={description} placeholder="What changed?" onChange={(event) => setDescription(event.target.value)} />
+    <label className="check-row"><input type="checkbox" checked={milestone} onChange={(event) => setMilestone(event.target.checked)} /> Mark as milestone</label>
+    <button className="btn btn-primary" onClick={save}>Save Draft Version</button>
+    {!!versionHistory.branches.length && <><h4>Alternate Drafts</h4><label className="insp-card-meta">Working draft<select className="element-select" value={versionHistory.activeBranchId} onChange={(event) => onSwitchAlternateDraft(event.target.value)}>{versionHistory.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label></>}
+    {!!snapshots.length && <div className="insp-card">
+      <input className="insp-notes-input" value={alternateName} placeholder="Alternate draft name" onChange={(event) => setAlternateName(event.target.value)} />
+      <select className="element-select" value={alternateBase} onChange={(event) => setAlternateBase(event.target.value)}><option value="">Branch from latest…</option>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select>
+      <button className="btn btn-ghost" disabled={!alternateName.trim()} onClick={() => { onCreateAlternateDraft(alternateName, alternateBase || snapshots[0].id); setAlternateName(""); }}>Create Alternate Draft</button>
+    </div>}
+    {versionHistory.branches.length > 1 && <div className="insp-card"><h4>Combine Drafts</h4><select className="element-select" value={mergeSource} onChange={(event) => setMergeSource(event.target.value)}><option value="">Choose alternate…</option>{versionHistory.branches.filter((branch) => branch.id !== versionHistory.activeBranchId).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select><div className="btn-row"><button className="btn" disabled={!mergeSource} onClick={() => onCombineDrafts(mergeSource, "ours")}>Combine, keep current conflicts</button><button className="btn btn-ghost" disabled={!mergeSource} onClick={() => onCombineDrafts(mergeSource, "theirs")}>Combine, keep alternate conflicts</button></div></div>}
+    {!!mergeConflicts.length && <><h4>Last combine conflicts</h4><ul className="insp-list">{mergeConflicts.map((conflict) => <li key={conflict.path}>{conflict.kind}: {conflict.path} · kept {conflict.resolution}</li>)}</ul></>}
+    {snapshots.length > 1 && <><h4>Compare Drafts</h4><select className="element-select" value={compareFrom} onChange={(event) => setCompareFrom(event.target.value)}><option value="">Earlier draft…</option>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select><select className="element-select" value={compareTo} onChange={(event) => setCompareTo(event.target.value)}><option value="">Later draft…</option>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select><select className="element-select" value={compareMode} onChange={(event) => setCompareMode(event.target.value as SnapshotDiffMode)}>{modes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select><button className="btn btn-ghost" disabled={!compareFrom || !compareTo || compareFrom === compareTo} onClick={() => onCompareVersions(compareFrom, compareTo, compareMode)}>Compare</button></>}
+    {versionComparison && <div className="insp-card"><div className="insp-card-title">{versionComparison.mode} comparison</div>{comparisonRows.length ? <ul className="insp-list">{comparisonRows.slice(0, 200).map((row, index) => <li key={`${row}-${index}`}>{row}</li>)}</ul> : <Hint>No differences in this view.</Hint>}</div>}
+    <h4>Project History{activeBranch ? ` · ${activeBranch.name}` : ""}</h4>
+    <div className="version-list">{snapshots.map((snapshot) => <div className="version-row" key={snapshot.id}><div className="version-top"><span className="version-label">{snapshot.name}</span>{milestones.has(snapshot.id) && <span className="milestone-tag">milestone</span>}<span className="version-when">{new Date(snapshot.createdAt).toLocaleString()}</span></div><div className="version-note">{snapshot.description || "No description"} · {versionHistory.branches.find((branch) => branch.id === snapshot.branchId)?.name ?? snapshot.branchId ?? "Main Draft"}</div><button className="link-btn" onClick={() => onRestoreVersion(snapshot)}>Restore</button></div>)}</div>
   </div>;
 }
 
