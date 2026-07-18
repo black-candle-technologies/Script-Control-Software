@@ -144,6 +144,8 @@ export interface ScriptSource {
   fileName: string;
   fdxVersion?: string;
   lastImportedAt: string;
+  /** Filesystem timestamp captured with the import, used to detect changes across app restarts. */
+  lastImportedModifiedAt?: number;
 }
 
 export interface ImportWarning {
@@ -351,10 +353,12 @@ export function reconcileSceneMetadata(previous: ScreenplayDocument, parsed: Scr
   const remapRecord = <T>(record: Record<string, T> | undefined) => Object.fromEntries(
     Object.entries(record ?? {}).flatMap(([id, value]) => remap.has(id) ? [[remap.get(id)!, value] as const] : []),
   );
-  const workspace = { ...emptyWorkspace(), ...previous.workspace, ...parsed.workspace };
+  // FDX/Fountain imports contain a normalized empty workspace. SCS development
+  // data belongs to the project and must win when script text is re-imported.
+  const workspace = { ...emptyWorkspace(), ...parsed.workspace, ...previous.workspace };
   workspace.sceneMeta = remapRecord(previous.workspace?.sceneMeta);
   workspace.omittedSceneIds = (previous.workspace?.omittedSceneIds ?? []).flatMap((id) => remap.get(id) ?? []);
-  return { ...previous, ...parsed, blocks, sceneNotes: remapRecord(previous.sceneNotes), workspace };
+  return { ...previous, ...parsed, id: previous.id, blocks, sceneNotes: remapRecord(previous.sceneNotes), workspace };
 }
 
 function reconcileBlockIds(previous: ScreenplayBlock[], parsed: ScreenplayBlock[]): ScreenplayBlock[] {

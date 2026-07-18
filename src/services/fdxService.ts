@@ -22,6 +22,13 @@ interface StoredProjectBundle {
   workspace?: ProjectWorkspace;
 }
 
+export interface FdxFileInfo {
+  path: string;
+  fileName: string;
+  modifiedAt: number;
+  size: number;
+}
+
 export async function chooseAndParseFdx(): Promise<ScreenplayDocument | null> {
   const selected = await open({
     multiple: false,
@@ -29,14 +36,23 @@ export async function chooseAndParseFdx(): Promise<ScreenplayDocument | null> {
     filters: [{ name: "Final Draft", extensions: ["fdx"] }],
   });
   if (!selected) return null;
-  return normalizeImportedDocument(await invoke<ScreenplayDocument>("parse_fdx", { path: selected }));
+  return importLinkedDocument(selected);
 }
 
 export async function parseLinkedFdx(path: string): Promise<ScreenplayDocument> {
-  return normalizeImportedDocument(await invoke<ScreenplayDocument>("parse_fdx", { path }));
+  return importLinkedDocument(path);
 }
 
 export const linkedFileModifiedAt = (path: string) => invoke<number>("file_modified_at", { path });
+
+export async function chooseWatchFolder(defaultPath = ""): Promise<string | null> {
+  const selected = await open({ multiple: false, directory: true, title: "Choose Final Draft watch folder", defaultPath: defaultPath || undefined });
+  return typeof selected === "string" ? selected : null;
+}
+
+export const listFdxFiles = (folderPath: string, recursive = true) => invoke<FdxFileInfo[]>("list_fdx_files", { folderPath, recursive });
+export const openFdxInExternalEditor = (path: string) => invoke<void>("open_fdx_in_external_editor", { path });
+export const revealInFileManager = (path: string) => invoke<void>("reveal_in_file_manager", { path });
 
 export async function saveProjectSession(session: ProjectSession, saveAs = false): Promise<ProjectSession | null> {
   let path = saveAs ? "" : session.projectPath;
@@ -98,4 +114,13 @@ function normalizeImportedDocument(document: ScreenplayDocument): ScreenplayDocu
     documents: [{ ...document, readOnly: false }],
     projectType: "featureFilm",
   }).documents[0];
+}
+
+async function importLinkedDocument(path: string): Promise<ScreenplayDocument> {
+  const [document, modifiedAt] = await Promise.all([
+    invoke<ScreenplayDocument>("parse_fdx", { path }),
+    linkedFileModifiedAt(path),
+  ]);
+  const normalized = normalizeImportedDocument(document);
+  return normalized.source ? { ...normalized, source: { ...normalized.source, lastImportedModifiedAt: modifiedAt } } : normalized;
 }

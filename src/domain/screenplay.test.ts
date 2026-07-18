@@ -6,6 +6,7 @@ import {
   deriveCharacters,
   deriveLocations,
   deriveScenes,
+  emptyWorkspace,
   estimatePages,
   paginateBlocks,
   countWords,
@@ -184,4 +185,36 @@ test("scene-linked metadata follows matching scenes after a parser regenerates i
   assert.equal(reconciled.sceneNotes[newRoad.id], "road note");
   assert.equal(reconciled.workspace?.sceneMeta?.[newRoad.id].summary, "Chase");
   assert.deepEqual(reconciled.workspace?.omittedSceneIds, [newHome.id]);
+});
+
+test("external re-import preserves the document identity and every SCS workspace field", () => {
+  const previous = parseFountain("INT. HOME - DAY\n\nOld.\n");
+  previous.id = "stable-document";
+  previous.workspace = {
+    ...emptyWorkspace(),
+    treatment: "Treatment",
+    showBible: "Bible",
+    continuity: "Continuity",
+    seasonArc: "Arc",
+    productionNotes: "Production",
+    comments: [{ id: "comment", author: "Writer", text: "Note", createdAt: "2026-01-01", resolved: false }],
+    entityStatuses: { MARA: "confirmed" },
+    entityNotes: { MARA: "Lead" },
+    resolvedBeatIds: ["beat-1"],
+    plotThreads: [{ id: "plot-1", label: "Mystery", keywords: ["box"], sceneIds: [] }],
+  };
+  const parsed = { ...parseFountain("INT. HOME - DAY\n\nNew.\n"), id: "replacement-id", workspace: emptyWorkspace() };
+  const reconciled = reconcileSceneMetadata(previous, parsed);
+
+  assert.equal(reconciled.id, "stable-document");
+  assert.equal(reconciled.workspace?.treatment, "Treatment");
+  assert.equal(reconciled.workspace?.showBible, "Bible");
+  assert.equal(reconciled.workspace?.continuity, "Continuity");
+  assert.equal(reconciled.workspace?.seasonArc, "Arc");
+  assert.equal(reconciled.workspace?.productionNotes, "Production");
+  assert.deepEqual(reconciled.workspace?.comments, previous.workspace.comments);
+  assert.deepEqual(reconciled.workspace?.entityStatuses, previous.workspace.entityStatuses);
+  assert.deepEqual(reconciled.workspace?.entityNotes, previous.workspace.entityNotes);
+  assert.deepEqual(reconciled.workspace?.resolvedBeatIds, previous.workspace.resolvedBeatIds);
+  assert.deepEqual(reconciled.workspace?.plotThreads, previous.workspace.plotThreads);
 });

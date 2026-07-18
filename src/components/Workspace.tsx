@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import Editor from "./Editor.tsx";
 import Inspector from "./Inspector.tsx";
 import LayoutManager from "./LayoutManager.tsx";
+import CompanionDashboard from "./CompanionDashboard.tsx";
 import {
   ELEMENT_TYPES,
   analysisToCsv,
@@ -67,7 +68,18 @@ import {
   syncSeriesDocuments,
 } from "../domain/index.ts";
 import { saveSession } from "../storage.ts";
-import { chooseAndParseFdx, linkedFileModifiedAt, messageFrom, parseLinkedFdx, saveProjectSession } from "../services/fdxService.ts";
+import {
+  chooseAndParseFdx,
+  chooseWatchFolder,
+  linkedFileModifiedAt,
+  listFdxFiles,
+  messageFrom,
+  openFdxInExternalEditor,
+  parseLinkedFdx,
+  revealInFileManager,
+  saveProjectSession,
+  type FdxFileInfo,
+} from "../services/fdxService.ts";
 
 interface WorkspaceProps {
   initialSession: ProjectSession;
@@ -102,6 +114,8 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const layout = activeLayout.id;
   const [externalChanged, setExternalChanged] = useState(false);
   const [externalConflict, setExternalConflict] = useState(false);
+  const [externalModifiedAt, setExternalModifiedAt] = useState<number | null>(null);
+  const [watchFiles, setWatchFiles] = useState<FdxFileInfo[]>([]);
   const [draggedScene, setDraggedScene] = useState<number | null>(null);
   const focusNonce = useRef(0);
   const sessionRef = useRef(session);
@@ -122,14 +136,20 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     const path = doc.source?.type === "fdx" ? doc.source.path : null;
     if (!path) return;
     const documentId = doc.id!;
-    let baseline = 0;
+    let baseline = doc.source?.lastImportedModifiedAt ?? 0;
     let stopped = false;
     const check = async () => {
       try {
         const stamp = await linkedFileModifiedAt(path);
-        if (baseline && stamp !== baseline && !stopped) {
+        if (!baseline && !stopped) {
+          baseline = stamp;
+          setSession((current) => ({ ...current, documents: current.documents.map((document) => document.id === documentId && document.source ? { ...document, source: { ...document.source, lastImportedModifiedAt: stamp } } : document) }));
+          return;
+        }
+        if (stamp !== baseline && !stopped) {
           const current = sessionRef.current.documents.find((document) => document.id === documentId);
           setExternalConflict(Boolean(current && documentFingerprint(current) !== linkedBaselines.current.get(documentId)));
+          setExternalModifiedAt(stamp);
           setExternalChanged(true);
         }
         baseline = stamp;
@@ -138,7 +158,27 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     void check();
     const timer = window.setInterval(check, 5000);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [doc.id, doc.source?.path]);
+  }, [doc.id, doc.source?.lastImportedModifiedAt, doc.source?.path]);
+
+  useEffect(() => {
+    const folder = session.workspace.sync.folderPath;
+    if (!folder) {
+      setWatchFiles([]);
+      return;
+    }
+    let stopped = false;
+    const refresh = async () => {
+      try {
+        const files = await listFdxFiles(folder, session.workspace.sync.watchRecursive);
+        if (!stopped) setWatchFiles(files);
+      } catch (error) {
+        if (!stopped) setOperationMessage(messageFrom(error));
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [session.workspace.sync.folderPath, session.workspace.sync.watchRecursive]);
 
   const scenes = useMemo(() => doc.readOnly && doc.scenes ? doc.scenes.map((scene, index) => ({
     id: scene.id,
@@ -182,6 +222,14 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     revision: recentSnapshots.length > 1 ? { fromLabel: recentSnapshots[0].name, toLabel: recentSnapshots[1].name, changes: draftChanges } : undefined,
   }), [customStructure, doc, draftChanges, recentSnapshots, workspace.entityOverrides, workspace.plotThreads, workspace.resolvedBeatIds, workspace.treatments]);
   const seriesReport = useMemo(() => compileSeriesWorkspace(session), [session]);
+  const companionStats = useMemo(() => ({
+    scenes: session.documents.reduce((count, document) => count + deriveScenes(document.blocks).length, 0),
+    characters: new Set(session.documents.flatMap((document) => deriveCharacters(document.blocks).map((character) => character.name))).size,
+    objects: new Set(session.documents.flatMap((document) => detectObjects(document.blocks).map((object) => object.name))).size,
+    treatments: session.documents.reduce((count, document) => count + (document.workspace?.treatments?.length ?? 0), 0),
+    versions: versionHistory.snapshots.length,
+    continuity: session.workspace.series.continuity.length,
+  }), [session.documents, session.workspace.series.continuity.length, versionHistory.snapshots.length]);
   const revisionSets = workspace.revisionSets ?? [];
   const productionPageRows = useMemo(() => productionPages(doc, workspace.pageLock, revisionSets), [doc, revisionSets, workspace.pageLock]);
   const productionReport = useMemo(() => compileProductionReports(doc, workspace.shootingEighthsPerDay ?? 40), [doc, workspace.shootingEighthsPerDay]);
@@ -505,10 +553,12 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     try {
       if (externalConflict) saveDraftVersion();
       const imported = await parseLinkedFdx(doc.source.path);
-      setDoc(reconcileSceneMetadata(doc, imported));
-      linkedBaselines.current.set(doc.id!, documentFingerprint(imported));
+      const reconciled = reconcileSceneMetadata(doc, imported);
+      setDoc(reconciled);
+      linkedBaselines.current.set(doc.id!, documentFingerprint(reconciled));
       setExternalChanged(false);
       setExternalConflict(false);
+      setExternalModifiedAt(null);
       setOperationMessage("Re-imported external FDX; SCS development metadata was preserved.");
     } catch (error) {
       setOperationMessage(messageFrom(error));
@@ -520,9 +570,100 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const keepLocalAfterConflict = () => {
     saveDraftVersion();
     linkedBaselines.current.set(doc.id!, documentFingerprint(doc));
+    if (doc.source && externalModifiedAt) setDoc({ ...doc, source: { ...doc.source, lastImportedModifiedAt: externalModifiedAt } });
     setExternalChanged(false);
     setExternalConflict(false);
+    setExternalModifiedAt(null);
     setOperationMessage("Kept the SCS draft and saved a recovery version. Export FDX when you are ready to hand it back.");
+  };
+
+  const refreshWatchFiles = async (folder = session.workspace.sync.folderPath, recursive = session.workspace.sync.watchRecursive) => {
+    if (!folder) return;
+    setBusy(true);
+    try {
+      setWatchFiles(await listFdxFiles(folder, recursive));
+      setOperationMessage("Final Draft watch folder refreshed.");
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const chooseFdxWatchFolder = async () => {
+    try {
+      const folderPath = await chooseWatchFolder(session.workspace.sync.folderPath);
+      if (!folderPath) return;
+      setSession((current) => ({ ...current, workspace: { ...current.workspace, sync: { ...current.workspace.sync, mode: "folder", folderPath } } }));
+      await refreshWatchFiles(folderPath, session.workspace.sync.watchRecursive);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+
+  const setWatchRecursive = (watchRecursive: boolean) => {
+    setSession((current) => ({ ...current, workspace: { ...current.workspace, sync: { ...current.workspace.sync, watchRecursive } } }));
+  };
+
+  const reviewWatchFile = async (file: FdxFileInfo) => {
+    const currentSession = sessionRef.current;
+    const linkedIndex = currentSession.documents.findIndex((document) => document.source?.type === "fdx" && document.source.path === file.path);
+    const linked = currentSession.documents[linkedIndex];
+    if (linked) {
+      const baseline = linkedBaselines.current.get(linked.id!);
+      if (baseline && documentFingerprint(linked) !== baseline) {
+        setActiveEpisode(linkedIndex);
+        setSession((current) => ({ ...current, activeDocumentId: linked.id! }));
+        setExternalConflict(true);
+        setExternalChanged(true);
+        setExternalModifiedAt(file.modifiedAt);
+        setOperationMessage("Both copies changed. Review the conflict banner before replacing script text.");
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      const imported = await parseLinkedFdx(file.path);
+      if (linked) {
+        const reconciled = reconcileSceneMetadata(linked, imported);
+        setSession((current) => ({ ...current, documents: current.documents.map((document) => document.id === linked.id ? reconciled : document) }));
+        linkedBaselines.current.set(linked.id!, documentFingerprint(reconciled));
+        setOperationMessage(`Re-imported ${file.fileName}; SCS development metadata was preserved.`);
+      } else {
+        const index = currentSession.documents.length;
+        const documents = [...currentSession.documents, imported];
+        const projectWorkspace = structuredClone(currentSession.workspace);
+        syncSeriesDocuments(projectWorkspace.series, documents);
+        setSession({ ...currentSession, projectType: documents.length > 1 ? "television" : currentSession.projectType, documents, workspace: projectWorkspace, activeDocumentId: imported.id! });
+        setActiveEpisode(index);
+        linkedBaselines.current.set(imported.id!, documentFingerprint(imported));
+        setOperationMessage(`Linked ${file.fileName} to this project.`);
+      }
+      setExternalChanged(false);
+      setExternalConflict(false);
+      setExternalModifiedAt(null);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openExternalFile = async (path: string) => {
+    try {
+      await openFdxInExternalEditor(path);
+      setOperationMessage("Opened the linked FDX in its default editor.");
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+
+  const revealExternalPath = async (path: string) => {
+    try {
+      await revealInFileManager(path);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
   };
 
   const selectLayout = (next: string) => {
@@ -611,7 +752,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
 
   const scriptPanel = <div className={`script-split ${activeLayout.reference === "none" ? "single" : "with-reference"}`}>
     <div className="script-panel-current">
-      {mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} productionPages={productionPageRows} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
+      {activeLayout.id === "companion" ? <CompanionDashboard documents={session.documents} files={watchFiles} folderPath={session.workspace.sync.folderPath} recursive={session.workspace.sync.watchRecursive} busy={busy} stats={companionStats} onChooseFolder={() => void chooseFdxWatchFolder()} onRefresh={() => void refreshWatchFiles()} onRecursive={setWatchRecursive} onReviewFile={(file) => void reviewWatchFile(file)} onOpenFile={(path) => void openExternalFile(path)} onReveal={(path) => void revealExternalPath(path)} /> : mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} productionPages={productionPageRows} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
     </div>
     {activeLayout.reference !== "none" && <ReferencePanel document={referenceDocument} label={activeLayout.reference === "previous-episode" ? "Previous episode" : "Previous draft"} activeSceneNumber={activeScene?.number ?? 1} onSynchronizedScene={(number) => scenes[number - 1] && jumpToScene(scenes[number - 1].id)} />}
   </div>;
@@ -641,6 +782,8 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
       <button className="btn btn-ghost" onClick={createProject} disabled={busy}>Save Portable Project</button>
       <button className="btn" onClick={exportFountain}>Export Fountain</button>
       <button className="btn btn-ghost" onClick={onOpenFdx} disabled={busy}>Open FDX</button>
+      {doc.source?.type === "fdx" && <button className="btn btn-ghost" onClick={() => void openExternalFile(doc.source!.path)}>Open Externally</button>}
+      {doc.source?.type === "fdx" && <button className="btn btn-ghost" onClick={() => void revealExternalPath(doc.source!.path)}>Reveal FDX</button>}
       <button className="btn btn-ghost" onClick={addEpisode} disabled={busy}>Add Episode FDX</button>
       <button className="btn btn-ghost" onClick={addBlankEpisode} disabled={busy}>New Episode</button>
       <button className="btn btn-ghost" onClick={exportFdx}>Export FDX</button>

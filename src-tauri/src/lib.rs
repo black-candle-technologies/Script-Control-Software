@@ -1,8 +1,10 @@
 mod domain;
+mod external_files;
 mod fdx;
 mod project_file;
 
 use domain::{AppInfo, PhaseStatus, SampleProject};
+use external_files::{list_fdx_files, open_fdx_in_external_editor, reveal_in_file_manager};
 use fdx::ScreenplayDocument;
 use project_file::{ProjectBundle, ProjectManifest, ProjectType};
 use serde_json::Value;
@@ -108,7 +110,10 @@ pub fn run() {
             create_project_manifest,
             save_project_bundle,
             open_project_bundle,
-            file_modified_at
+            file_modified_at,
+            list_fdx_files,
+            open_fdx_in_external_editor,
+            reveal_in_file_manager
         ])
         .run(tauri::generate_context!())
         .expect("error while running Script Control Software");

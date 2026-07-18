@@ -114,6 +114,7 @@ export interface SavedLayout {
 export interface SyncSettings {
   mode: "none" | "folder" | "git";
   folderPath: string;
+  watchRecursive: boolean;
   remoteUrl: string;
   branch: string;
   lastRemoteHash: string;
@@ -155,7 +156,7 @@ const BUILTIN_LAYOUTS: SavedLayout[] = [
   { id: "revision", name: "Revision", navigator: "left", inspector: "right", reference: "previous-draft", navigatorWidth: 240, inspectorWidth: 440 },
   { id: "television", name: "Television", navigator: "left", inspector: "right", reference: "previous-episode", navigatorWidth: 260, inspectorWidth: 440 },
   { id: "production", name: "Production", navigator: "left", inspector: "right", reference: "none", navigatorWidth: 240, inspectorWidth: 460 },
-  { id: "companion", name: "Companion", navigator: "left", inspector: "right", reference: "none", navigatorWidth: 280, inspectorWidth: 520 },
+  { id: "companion", name: "Companion", navigator: "hidden", inspector: "right", reference: "none", navigatorWidth: 280, inspectorWidth: 460 },
 ];
 
 export function defaultProjectWorkspace(): ProjectWorkspace {
@@ -169,7 +170,7 @@ export function defaultProjectWorkspace(): ProjectWorkspace {
     layouts: BUILTIN_LAYOUTS.map((layout) => ({ ...layout })),
     activeLayoutId: "writer",
     shortcuts: { commandPalette: "mod+k", save: "mod+s", saveVersion: "mod+shift+s" },
-    sync: { mode: "none", folderPath: "", remoteUrl: "", branch: "main", lastRemoteHash: "", lastSyncedAt: "" },
+    sync: { mode: "none", folderPath: "", watchRecursive: true, remoteUrl: "", branch: "main", lastRemoteHash: "", lastSyncedAt: "" },
   };
 }
 
@@ -370,6 +371,7 @@ function normalizeProjectWorkspace(value: unknown): ProjectWorkspace {
       ...fallback.sync,
       ...sync,
       folderPath: string(sync.folderPath),
+      watchRecursive: typeof sync.watchRecursive === "boolean" ? sync.watchRecursive : true,
       remoteUrl: string(sync.remoteUrl),
       branch: string(sync.branch) || "main",
       lastRemoteHash: string(sync.lastRemoteHash),
