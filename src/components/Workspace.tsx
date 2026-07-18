@@ -12,6 +12,7 @@ import {
   compareDrafts,
   compileBreakdown,
   compileAnalysis,
+  compileSeriesWorkspace,
   createAlternateDraft,
   createProjectSnapshot,
   createVersionHistory,
@@ -168,6 +169,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     storyStructure: customStructure,
     revision: recentSnapshots.length > 1 ? { fromLabel: recentSnapshots[0].name, toLabel: recentSnapshots[1].name, changes: draftChanges } : undefined,
   }), [customStructure, doc, draftChanges, recentSnapshots, workspace.entityOverrides, workspace.plotThreads, workspace.resolvedBeatIds, workspace.treatments]);
+  const seriesReport = useMemo(() => compileSeriesWorkspace(session), [session]);
   const words = useMemo(() => countWords(doc.blocks), [doc.blocks]);
   const pages = useMemo(() => estimatePages(doc.blocks), [doc.blocks]);
   const activeIndex = doc.blocks.findIndex((block) => block.id === activeBlockId);
@@ -185,6 +187,15 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const jumpToScene = (sceneId: string) => {
     const imported = doc.scenes?.find((scene) => scene.id === sceneId);
     setFocusRequest({ id: imported ? doc.blocks[imported.blockStart].id : sceneId, nonce: ++focusNonce.current });
+  };
+
+  const selectEpisode = (documentId: string) => {
+    const index = episodeDocs.findIndex((document) => document.id === documentId);
+    if (index < 0) return;
+    setActiveEpisode(index);
+    setSession((current) => ({ ...current, activeDocumentId: documentId }));
+    setActiveBlockId(null);
+    setMode("formatted");
   };
 
   const toggleMode = () => {
@@ -427,8 +438,8 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   return <div className={`workspace layout-${layout}`}>
     {paletteOpen && <div className="command-backdrop" onMouseDown={() => setPaletteOpen(false)}><div className="command-palette" onMouseDown={(event) => event.stopPropagation()}><input autoFocus value={query} placeholder="Search project or run a command…" onChange={(event) => setQuery(event.target.value)} />{query ? searchResults.map((result) => <button key={result.label} onClick={() => { result.action(); setPaletteOpen(false); }}>{result.label}</button>) : <><button onClick={() => { saveNow(); setPaletteOpen(false); }}>Save Project</button><button onClick={() => { saveDraftVersion(); setPaletteOpen(false); }}>Save Draft Version</button><button onClick={() => { exportFdx(); setPaletteOpen(false); }}>Export FDX</button><button onClick={() => { setInspectorOpen((open) => !open); setPaletteOpen(false); }}>Toggle Inspector</button></>}</div></div>}
     {episodeDocs.length > 1 && <div className="workspace-episodes" aria-label="Television episodes">
-      {episodeDocs.map((episode, index) => <button key={episode.id ?? episode.source?.path ?? index} className={`episode-tab ${index === activeEpisode ? "active" : ""}`} onClick={() => { setActiveEpisode(index); setSession((current) => ({ ...current, activeDocumentId: episode.id! })); setActiveBlockId(null); setMode("formatted"); }}>
-        {episode.titlePage.title || `Episode ${index + 1}`}
+      {episodeDocs.map((episode, index) => <button key={episode.id ?? episode.source?.path ?? index} className={`episode-tab ${index === activeEpisode ? "active" : ""}`} onClick={() => selectEpisode(episode.id!)}>
+        {session.workspace.series.episodes[episode.id!]?.title || episode.titlePage.title || `Episode ${index + 1}`}
       </button>)}
     </div>}
     <div className="toolbar">
@@ -468,7 +479,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
         <div className="nav-foot">{scenes.length} scene{scenes.length === 1 ? "" : "s"} · ~{pages} page{pages === 1 ? "" : "s"}</div>
       </aside>
       {mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
-      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versionHistory={versionHistory} versionComparison={versionComparison} mergeConflicts={mergeConflicts} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onCompareVersions={compareProjectVersions} onCreateAlternateDraft={createAlternate} onSwitchAlternateDraft={switchAlternate} onCombineDrafts={combineDrafts} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} episodeDocuments={episodeDocs} />}
+      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versionHistory={versionHistory} versionComparison={versionComparison} mergeConflicts={mergeConflicts} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onCompareVersions={compareProjectVersions} onCreateAlternateDraft={createAlternate} onSwitchAlternateDraft={switchAlternate} onCombineDrafts={combineDrafts} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} projectWorkspace={session.workspace} seriesReport={seriesReport} activeDocumentId={doc.id!} onProjectWorkspace={(patch) => setSession((current) => ({ ...current, workspace: { ...current.workspace, ...patch } }))} onSelectEpisode={selectEpisode} />}
     </div>
     <div className="statusbar"><span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span><span>{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span><span>~{pages} pages</span><span>{words} words</span><div className="toolbar-spacer" /><span>{doc.readOnly ? `Linked source · ${doc.source?.fileName ?? "FDX"}` : savedAt ? `Saved locally · ${savedAt}` : "Not saved yet"}</span><span className="status-draft">Draft: current · drafts panel →</span></div>
   </div>;

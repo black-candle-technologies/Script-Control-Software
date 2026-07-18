@@ -76,6 +76,7 @@ export interface DraftChange {
 }
 
 const OBJECT_TERMS: Record<string, string[]> = {
+  prop: ["key", "box", "bottle", "bag", "briefcase", "package"],
   weapon: ["gun", "pistol", "rifle", "knife", "sword", "weapon"],
   vehicle: ["car", "truck", "bus", "van", "motorcycle", "bicycle", "boat", "plane"],
   document: ["letter", "book", "document", "file", "passport", "photograph", "photo", "map"],

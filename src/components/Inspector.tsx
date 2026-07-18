@@ -1,25 +1,28 @@
 import { useMemo, useState } from "react";
 import {
-  aggregateEpisodes,
   moveStoryScene,
   parseHeading,
   type Breakdown,
   type AnalysisCsvSection,
   type AnalysisEntityKind,
   type CharacterRef,
+  type ContinuityRecord,
   type CustomStoryStructure,
   type DetectedObject,
   type EntityOverride,
+  type EpisodeMeta,
   type LocationRef,
   type Scene,
   type ScreenplayBlock,
-  type ScreenplayDocument,
   type MergeConflict,
   type ProjectSnapshot,
+  type ProjectWorkspace,
+  type SeriesWorkspaceReport,
   type ScriptAnalysis,
   type SnapshotComparison,
   type SnapshotDiffMode,
   type StoryBoardView,
+  type StoryLine,
   type TreatmentDocument,
   type VersionHistory,
   type WorkspaceData,
@@ -51,7 +54,11 @@ interface InspectorProps {
   onCombineDrafts: (sourceBranchId: string, resolution: "ours" | "theirs") => void;
   onExportBreakdown: (format: "md" | "csv" | "json" | "pdf", section?: AnalysisCsvSection) => void;
   onExportTreatment: (format: "md" | "pdf") => void;
-  episodeDocuments: ScreenplayDocument[];
+  projectWorkspace: ProjectWorkspace;
+  seriesReport: SeriesWorkspaceReport;
+  activeDocumentId: string;
+  onProjectWorkspace: (patch: Partial<ProjectWorkspace>) => void;
+  onSelectEpisode: (documentId: string) => void;
 }
 
 const TABS = ["Scene", "Story", "Treatment", "Cast", "Props", "Places", "Drafts", "Breakdown", "Series", "Production", "Team", "Assist"] as const;
@@ -433,9 +440,74 @@ function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown }: I
   </div>;
 }
 
-function SeriesTab({ episodeDocuments, workspace, onWorkspace }: InspectorProps) {
-  const aggregate = aggregateEpisodes(episodeDocuments);
-  return <div className="insp-stack"><Hint>{episodeDocuments.length} episode workspace · shared references aggregate across tabs.</Hint><h4>Show bible</h4><textarea className="insp-notes-input" value={workspace.showBible} onChange={(event) => onWorkspace({ showBible: event.target.value })} placeholder="World, tone, format, canon…" /><h4>Season arc / A-B-C stories</h4><textarea className="insp-notes-input" value={workspace.seasonArc} onChange={(event) => onWorkspace({ seasonArc: event.target.value })} placeholder="A story, B story, cold open, act breaks, tag…" /><h4>Continuity</h4><textarea className="insp-notes-input" value={workspace.continuity} onChange={(event) => onWorkspace({ continuity: event.target.value })} placeholder="Timeline, knowledge, unresolved questions…" /><h4>Recurring cast</h4><div className="chip-row">{aggregate.characters.map((name) => <span className="chip" key={name}>{name}</span>)}</div><h4>Recurring locations</h4><div className="chip-row">{aggregate.locations.map((name) => <span className="chip" key={name}>{name}</span>)}</div></div>;
+function SeriesTab({ projectWorkspace, seriesReport, activeDocumentId, scenes, onProjectWorkspace, onSelectEpisode }: InspectorProps) {
+  const series = projectWorkspace.series;
+  const activeMeta = series.episodes[activeDocumentId];
+  const activeEpisode = seriesReport.episodes.find((episode) => episode.documentId === activeDocumentId);
+  const [recordKind, setRecordKind] = useState<ContinuityRecord["kind"]>("timeline");
+  const [recordTitle, setRecordTitle] = useState("");
+  const [recordDetail, setRecordDetail] = useState("");
+  const saveSeries = (patch: Partial<typeof series>) => onProjectWorkspace({ series: { ...series, ...patch } });
+  const updateEpisode = (patch: Partial<EpisodeMeta>) => {
+    if (!activeMeta) return;
+    const episodes = { ...series.episodes, [activeDocumentId]: { ...activeMeta, ...patch } };
+    const seasons = series.seasons.map((season) => ({
+      ...season,
+      episodeIds: Object.values(episodes).filter((episode) => episode.seasonId === season.id).sort((a, b) => a.number - b.number).map((episode) => episode.documentId),
+    }));
+    saveSeries({ episodes, seasons });
+  };
+  const updateStory = (id: string, patch: Partial<StoryLine>) => updateEpisode({ storyLines: activeMeta.storyLines.map((line) => line.id === id ? { ...line, ...patch } : line) });
+  const toggleStoryScene = (line: StoryLine, sceneId: string) => updateStory(line.id, { sceneIds: line.sceneIds.includes(sceneId) ? line.sceneIds.filter((id) => id !== sceneId) : [...line.sceneIds, sceneId] });
+  const addContinuity = () => {
+    if (!recordTitle.trim()) return;
+    saveSeries({ continuity: [...series.continuity, { id: `continuity-${crypto.randomUUID()}`, kind: recordKind, title: recordTitle.trim(), detail: recordDetail.trim(), episodeIds: [activeDocumentId], resolved: false }] });
+    setRecordTitle(""); setRecordDetail("");
+  };
+  const updateContinuity = (id: string, patch: Partial<ContinuityRecord>) => saveSeries({ continuity: series.continuity.map((record) => record.id === id ? { ...record, ...patch } : record) });
+  const activeIndex = seriesReport.episodes.findIndex((episode) => episode.documentId === activeDocumentId);
+  const previous = seriesReport.episodes[activeIndex - 1];
+  const next = seriesReport.episodes[activeIndex + 1];
+  if (!activeMeta || !activeEpisode) return <Hint>Television metadata becomes available after creating a show or adding an episode.</Hint>;
+  return <div className="insp-stack">
+    <Hint>{seriesReport.episodes.length} episode{seriesReport.episodes.length === 1 ? "" : "s"} share this show bible, season board, arcs, entities, plot threads, and continuity database.</Hint>
+    <h4>Episode references</h4>
+    <div className="btn-row">{previous && <button className="btn btn-ghost" onClick={() => onSelectEpisode(previous.documentId)}>← {previous.title}</button>}{next && <button className="btn btn-ghost" onClick={() => onSelectEpisode(next.documentId)}>{next.title} →</button>}</div>
+    <h4>Show bible</h4>
+    <textarea className="insp-notes-input treatment-input" value={series.showBible} onChange={(event) => saveSeries({ showBible: event.target.value })} placeholder="# Show Bible\n\nWorld, format, tone, canon…" />
+    <h4>Seasons</h4>
+    <button className="btn" onClick={() => { const number = Math.max(0, ...series.seasons.map((season) => season.number)) + 1; saveSeries({ seasons: [...series.seasons, { id: `season-${crypto.randomUUID()}`, number, title: `Season ${number}`, episodeIds: [], arc: "" }] }); }}>Add Season</button>
+    {series.seasons.map((season) => <div className="insp-card" key={season.id}>
+      <div className="btn-row"><input aria-label={`Season ${season.number} title`} className="insp-notes-input" value={season.title} onChange={(event) => saveSeries({ seasons: series.seasons.map((item) => item.id === season.id ? { ...item, title: event.target.value } : item) })} /><input aria-label={`${season.title} number`} className="insp-notes-input" type="number" min="1" value={season.number} onChange={(event) => saveSeries({ seasons: series.seasons.map((item) => item.id === season.id ? { ...item, number: Number(event.target.value) || 1 } : item) })} /></div>
+      <textarea className="insp-notes-input" value={season.arc} placeholder="Season arc…" onChange={(event) => saveSeries({ seasons: series.seasons.map((item) => item.id === season.id ? { ...item, arc: event.target.value } : item) })} />
+      <div className="insp-card-meta">{seriesReport.seasons.find((item) => item.id === season.id)?.summary ?? "No episodes"}</div>
+    </div>)}
+    <h4>Current episode</h4>
+    <div className="insp-card">
+      <input aria-label="Episode title" className="insp-notes-input" value={activeMeta.title} onChange={(event) => updateEpisode({ title: event.target.value })} />
+      <div className="btn-row"><label className="insp-card-meta">Episode #<input className="insp-notes-input" type="number" min="1" value={activeMeta.number} onChange={(event) => updateEpisode({ number: Number(event.target.value) || 1 })} /></label><label className="insp-card-meta">Production code<input className="insp-notes-input" value={activeMeta.productionCode} onChange={(event) => updateEpisode({ productionCode: event.target.value })} /></label></div>
+      <label className="insp-card-meta">Season<select className="element-select" value={activeMeta.seasonId} onChange={(event) => updateEpisode({ seasonId: event.target.value })}>{series.seasons.map((season) => <option key={season.id} value={season.id}>{season.title}</option>)}</select></label>
+      <div className="btn-row"><label className="check-row"><input type="checkbox" checked={activeMeta.coldOpen} onChange={(event) => updateEpisode({ coldOpen: event.target.checked })} /> Cold open</label><label className="check-row"><input type="checkbox" checked={activeMeta.tag} onChange={(event) => updateEpisode({ tag: event.target.checked })} /> Tag</label></div>
+      <p className="insp-card-desc">{activeEpisode.summary}</p>
+    </div>
+    <h4>Act breaks</h4>
+    {scenes.map((scene) => <label className="check-row" key={scene.id}><input type="checkbox" checked={activeMeta.actBreakSceneIds.includes(scene.id)} onChange={() => updateEpisode({ actBreakSceneIds: activeMeta.actBreakSceneIds.includes(scene.id) ? activeMeta.actBreakSceneIds.filter((id) => id !== scene.id) : [...activeMeta.actBreakSceneIds, scene.id] })} /> After scene {scene.number}: {scene.heading}</label>)}
+    <h4>A / B / C stories</h4>
+    <button className="btn" onClick={() => updateEpisode({ storyLines: [...activeMeta.storyLines, { id: `story-${crypto.randomUUID()}`, label: "New story", kind: "A", sceneIds: [] }] })}>Add Story Line</button>
+    {activeMeta.storyLines.map((line) => <div className="insp-card" key={line.id}><div className="btn-row"><select className="element-select" value={line.kind} onChange={(event) => updateStory(line.id, { kind: event.target.value as StoryLine["kind"] })}>{["A", "B", "C", "other"].map((kind) => <option key={kind}>{kind}</option>)}</select><input aria-label="Story line name" className="insp-notes-input" value={line.label} onChange={(event) => updateStory(line.id, { label: event.target.value })} /></div><details><summary className="link-btn">Episode board scenes</summary>{scenes.map((scene) => <label className="check-row" key={scene.id}><input type="checkbox" checked={line.sceneIds.includes(scene.id)} onChange={() => toggleStoryScene(line, scene.id)} /> {scene.heading}</label>)}</details><button className="link-btn" onClick={() => updateEpisode({ storyLines: activeMeta.storyLines.filter((item) => item.id !== line.id) })}>Remove</button></div>)}
+    <h4>Season board</h4>
+    {seriesReport.seasonBoard.map((row) => <div className="insp-card" key={row.episodeId}><button className="link-btn insp-card-title" onClick={() => onSelectEpisode(row.episodeId)}>S{row.seasonNumber}E{row.episodeNumber} · {row.title}</button><div className="insp-card-meta">{row.productionCode || "No code"} · {row.sceneCount} scenes · ~{row.pageEstimate} pages · {row.coldOpen ? "cold open · " : ""}{row.tag ? "tag · " : ""}{row.continuityIssueCount} continuity flags</div><p className="insp-card-desc">A: {row.stories.A.join(", ") || "—"}<br />B: {row.stories.B.join(", ") || "—"}<br />C: {row.stories.C.join(", ") || "—"}</p></div>)}
+    <h4>Show-level character arcs</h4>
+    {seriesReport.continuity.characters.map((character) => <label className="insp-card-meta" key={character.name}>{character.name}<textarea className="insp-notes-input" value={series.characterArcs[character.name] ?? ""} placeholder="Season-long character arc…" onChange={(event) => saveSeries({ characterArcs: { ...series.characterArcs, [character.name]: event.target.value } })} /></label>)}
+    <h4>Recurring references</h4>
+    {([["characters", seriesReport.continuity.characters], ["locations", seriesReport.continuity.locations], ["objects", seriesReport.continuity.objects]] as const).map(([label, entries]) => <details className="insp-card" key={label}><summary className="insp-card-title">{label} ({entries.filter((entry) => entry.episodeIds.length > 1).length} recurring)</summary>{entries.map((entry) => <div key={entry.name}><strong>{entry.name}</strong><div className="chip-row">{entry.episodeIds.map((id) => <button className="chip" key={id} onClick={() => onSelectEpisode(id)}>{seriesReport.episodes.find((episode) => episode.documentId === id)?.title ?? id}</button>)}</div>{!!entry.absentEpisodeIdsBetween.length && <p className="insp-card-desc">Absent between appearances: {entry.absentEpisodeIdsBetween.length} episode(s)</p>}</div>)}</details>)}
+    <h4>Plot thread history</h4>
+    {seriesReport.plotThreads.length ? seriesReport.plotThreads.map((thread) => <div className="insp-card" key={thread.id}><div className="insp-card-title">{thread.kind} · {thread.label}</div><div className="insp-card-meta">{thread.status} · {thread.episodes.length} episode(s)</div><div className="chip-row">{thread.episodes.map((episode) => <button className="chip" key={episode.episodeId} onClick={() => onSelectEpisode(episode.episodeId)}>{seriesReport.episodes.find((item) => item.documentId === episode.episodeId)?.title}: {episode.status}</button>)}</div></div>) : <Hint>Add episode story lines or plot threads in Breakdown.</Hint>}
+    <h4>Continuity database / unanswered questions</h4>
+    <div className="insp-card"><select className="element-select" value={recordKind} onChange={(event) => setRecordKind(event.target.value as ContinuityRecord["kind"])}>{["timeline", "character", "object", "location", "plot", "question"].map((kind) => <option key={kind}>{kind}</option>)}</select><input className="insp-notes-input" value={recordTitle} placeholder="Continuity item or question" onChange={(event) => setRecordTitle(event.target.value)} /><textarea className="insp-notes-input" value={recordDetail} placeholder="Canon, timeline, knowledge, or answer…" onChange={(event) => setRecordDetail(event.target.value)} /><button className="btn" onClick={addContinuity}>Add Record</button></div>
+    {series.continuity.map((record) => <div className="insp-card" key={record.id}><div className="insp-card-title">{record.kind} · {record.title}</div><textarea className="insp-notes-input" value={record.detail} onChange={(event) => updateContinuity(record.id, { detail: event.target.value })} /><label className="check-row"><input type="checkbox" checked={record.episodeIds.includes(activeDocumentId)} onChange={() => updateContinuity(record.id, { episodeIds: record.episodeIds.includes(activeDocumentId) ? record.episodeIds.filter((id) => id !== activeDocumentId) : [...record.episodeIds, activeDocumentId] })} /> Applies to this episode</label><div className="btn-row"><button className="btn btn-ghost" onClick={() => updateContinuity(record.id, { resolved: !record.resolved })}>{record.resolved ? "Reopen" : "Resolve"}</button><button className="link-btn" onClick={() => saveSeries({ continuity: series.continuity.filter((item) => item.id !== record.id) })}>Delete</button></div></div>)}
+    {!!seriesReport.continuityIssues.length && <><h4>Continuity checks</h4><ul className="insp-list">{seriesReport.continuityIssues.map((issue) => <li key={issue.id}>{issue.severity}: {issue.message}</li>)}</ul></>}
+  </div>;
 }
 
 function ProductionTab({ breakdown, workspace, onWorkspace, activeScene }: InspectorProps) {
