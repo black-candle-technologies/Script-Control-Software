@@ -1,4 +1,4 @@
-import type { ProjectWorkspace, SavedLayout } from "./projectWorkspace.ts";
+import type { ProjectWorkspace, SavedLayout, WorkspaceReferenceKind } from "./projectWorkspace.ts";
 
 export const BUILTIN_LAYOUT_IDS = ["writer", "development", "revision", "television", "production", "companion"] as const;
 
@@ -12,13 +12,16 @@ export type WorkspacePanelKind =
   | "breakdown"
   | "versions"
   | "series"
-  | "production";
+  | "production"
+  | "companion";
 
 export interface WorkspacePanelDefinition {
   id: string;
   title: string;
   kind: WorkspacePanelKind;
   closable: boolean;
+  referenceKind?: WorkspaceReferenceKind;
+  targetId?: string;
 }
 
 export interface WorkspaceTabGroup {
@@ -62,6 +65,7 @@ export type LayoutValidationCode =
   | "invalid-name"
   | "invalid-placement"
   | "invalid-width"
+  | "invalid-panel"
   | "duplicate-id"
   | "missing-panel"
   | "unassigned-panel"
@@ -94,14 +98,63 @@ export interface ShortcutValidationResult {
 }
 
 const builtinIds = new Set<string>(BUILTIN_LAYOUT_IDS);
-const panel = (id: string, title: string, kind: WorkspacePanelKind, closable = true): WorkspacePanelDefinition => ({ id, title, kind, closable });
+export const WORKSPACE_REFERENCE_KINDS: readonly WorkspaceReferenceKind[] = [
+  "none",
+  "previous-episode",
+  "next-episode",
+  "previous-draft",
+  "character",
+  "object",
+  "location",
+  "show-bible",
+  "season-arc",
+  "plot-history",
+  "timeline",
+];
+const referenceKinds = new Set<WorkspaceReferenceKind>(WORKSPACE_REFERENCE_KINDS);
+const panelKinds = new Set<WorkspacePanelKind>(["navigator", "screenplay", "inspector", "reference", "story", "treatment", "breakdown", "versions", "series", "production", "companion"]);
+const panel = (id: string, title: string, kind: WorkspacePanelKind, closable = true, referenceKind?: WorkspaceReferenceKind): WorkspacePanelDefinition => ({ id, title, kind, closable, ...(referenceKind ? { referenceKind } : {}) });
+const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const stringArray = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+const numberArray = (value: unknown): value is number[] => Array.isArray(value) && value.every((item) => typeof item === "number");
+
+function layoutFields(value: unknown): SavedLayout {
+  const input = isRecord(value) ? value : {};
+  return {
+    id: typeof input.id === "string" ? input.id : "",
+    name: typeof input.name === "string" ? input.name : "",
+    navigator: typeof input.navigator === "string" ? input.navigator as SavedLayout["navigator"] : "invalid" as SavedLayout["navigator"],
+    inspector: typeof input.inspector === "string" ? input.inspector as SavedLayout["inspector"] : "invalid" as SavedLayout["inspector"],
+    reference: typeof input.reference === "string" ? input.reference as WorkspaceReferenceKind : "invalid" as WorkspaceReferenceKind,
+    navigatorWidth: typeof input.navigatorWidth === "number" ? input.navigatorWidth : Number.NaN,
+    inspectorWidth: typeof input.inspectorWidth === "number" ? input.inspectorWidth : Number.NaN,
+  };
+}
+
+function hasTopologyShape(value: unknown): value is WorkspaceLayout {
+  if (!isRecord(value)) return false;
+  return Array.isArray(value.panels) && value.panels.every((item) => isRecord(item)
+      && typeof item.id === "string" && typeof item.title === "string" && typeof item.kind === "string" && typeof item.closable === "boolean"
+      && (item.referenceKind === undefined || typeof item.referenceKind === "string") && (item.targetId === undefined || typeof item.targetId === "string"))
+    && Array.isArray(value.tabGroups) && value.tabGroups.every((item) => isRecord(item) && typeof item.id === "string" && stringArray(item.panelIds) && typeof item.activePanelId === "string")
+    && Array.isArray(value.splits) && value.splits.every((item) => isRecord(item) && typeof item.id === "string" && typeof item.direction === "string" && stringArray(item.groupIds) && numberArray(item.sizes))
+    && Array.isArray(value.floatingPanels) && value.floatingPanels.every((item) => isRecord(item) && typeof item.panelId === "string" && [item.x, item.y, item.width, item.height].every((number) => typeof number === "number"))
+    && Array.isArray(value.synchronizedPanels) && value.synchronizedPanels.every((item) => isRecord(item) && typeof item.id === "string" && stringArray(item.panelIds) && typeof item.mode === "string");
+}
+
+function referenceTitle(kind: WorkspaceReferenceKind): string {
+  return kind.split("-").map((word) => word[0].toUpperCase() + word.slice(1)).join(" ");
+}
 
 function legacyLayoutState(layout: SavedLayout): Pick<WorkspaceLayout, "panels" | "tabGroups" | "splits" | "floatingPanels" | "synchronizedPanels"> {
-  const panels = [panel("screenplay", "Screenplay", "screenplay", false)];
-  const tabGroups: WorkspaceTabGroup[] = [{ id: "main-tabs", panelIds: ["screenplay"], activePanelId: "screenplay" }];
+  const primaryPanel = layout.id === "companion"
+    ? panel("companion", "Companion dashboard", "companion", false)
+    : panel("screenplay", "Screenplay", "screenplay", false);
+  const panels = [primaryPanel];
+  const tabGroups: WorkspaceTabGroup[] = [{ id: "main-tabs", panelIds: [primaryPanel.id], activePanelId: primaryPanel.id }];
   const floatingPanels: FloatingPanelState[] = [];
   if (layout.reference !== "none") {
-    panels.push(panel("reference", layout.reference === "previous-episode" ? "Previous Episode" : "Previous Draft", "reference"));
+    panels.push(panel("reference", referenceTitle(layout.reference), "reference", true, layout.reference));
     tabGroups.push({ id: "reference-tabs", panelIds: ["reference"], activePanelId: "reference" });
   }
   if (layout.navigator !== "hidden") {
@@ -117,22 +170,38 @@ function legacyLayoutState(layout: SavedLayout): Pick<WorkspaceLayout, "panels" 
       layout.inspector === "left" ? tabGroups.unshift(group) : tabGroups.push(group);
     }
   }
+  const addTabs = (id: string, definitions: WorkspacePanelDefinition[]) => {
+    panels.push(...definitions);
+    tabGroups.push({ id, panelIds: definitions.map((item) => item.id), activePanelId: definitions[0].id });
+  };
+  if (layout.id === "development") addTabs("development-tabs", [panel("story", "Story", "story"), panel("treatment", "Treatment", "treatment"), panel("breakdown", "Breakdown", "breakdown")]);
+  if (layout.id === "revision") addTabs("versions-tabs", [panel("versions", "Versions", "versions")]);
+  if (layout.id === "television") addTabs("series-tabs", [panel("series", "Series", "series")]);
+  if (layout.id === "production") addTabs("production-tabs", [panel("breakdown", "Breakdown", "breakdown"), panel("production", "Production", "production")]);
   const splits = tabGroups.length > 1 ? [{ id: "main-split", direction: "horizontal" as const, groupIds: tabGroups.map((group) => group.id), sizes: tabGroups.map(() => 1 / tabGroups.length) }] : [];
-  const synchronizedPanels = layout.reference === "none" ? [] : [{ id: "script-reference", panelIds: ["screenplay", "reference"], mode: "active-scene" as const }];
+  const synchronizedPanels = layout.reference === "none" ? [] : [{ id: "script-reference", panelIds: [primaryPanel.id, "reference"], mode: "active-scene" as const }];
   return { panels, tabGroups, splits, floatingPanels, synchronizedPanels };
 }
 
 /** Upgrade a legacy preset without changing its existing SavedLayout fields. */
 export function normalizeWorkspaceLayout(layout: SavedLayout | WorkspaceLayout): WorkspaceLayout {
-  const fallback = legacyLayoutState(layout);
-  const extended = layout as Partial<WorkspaceLayout>;
+  const fields = layoutFields(layout);
+  const fallback = legacyLayoutState(fields);
+  if (!hasTopologyShape(layout)) return { ...fields, ...fallback };
   return {
-    ...layout,
-    panels: Array.isArray(extended.panels) ? extended.panels.map((item) => ({ ...item })) : fallback.panels,
-    tabGroups: Array.isArray(extended.tabGroups) ? extended.tabGroups.map((item) => ({ ...item, panelIds: [...item.panelIds] })) : fallback.tabGroups,
-    splits: Array.isArray(extended.splits) ? extended.splits.map((item) => ({ ...item, groupIds: [...item.groupIds], sizes: [...item.sizes] })) : fallback.splits,
-    floatingPanels: Array.isArray(extended.floatingPanels) ? extended.floatingPanels.map((item) => ({ ...item })) : fallback.floatingPanels,
-    synchronizedPanels: Array.isArray(extended.synchronizedPanels) ? extended.synchronizedPanels.map((item) => ({ ...item, panelIds: [...item.panelIds] })) : fallback.synchronizedPanels,
+    ...fields,
+    panels: layout.panels.map((item) => ({
+      ...item,
+      ...(item.kind === "reference" ? {
+        referenceKind: item.referenceKind
+          ?? (fields.reference !== "none" && referenceKinds.has(fields.reference) ? fields.reference : "previous-draft"),
+        ...(typeof item.targetId === "string" && item.targetId.trim() ? { targetId: item.targetId.trim() } : {}),
+      } : {}),
+    })),
+    tabGroups: layout.tabGroups.map((item) => ({ ...item, panelIds: [...item.panelIds] })),
+    splits: layout.splits.map((item) => ({ ...item, groupIds: [...item.groupIds], sizes: [...item.sizes] })),
+    floatingPanels: layout.floatingPanels.map((item) => ({ ...item })),
+    synchronizedPanels: layout.synchronizedPanels.map((item) => ({ ...item, panelIds: [...item.panelIds] })),
   };
 }
 
@@ -142,7 +211,7 @@ export function validateWorkspaceLayout(input: SavedLayout | WorkspaceLayout): L
   const add = (code: LayoutValidationCode, path: string, message: string) => errors.push({ code, path, message });
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(layout.id)) add("invalid-id", "id", "Layout id must contain only letters, numbers, underscores, or hyphens.");
   if (!layout.name.trim()) add("invalid-name", "name", "Layout name is required.");
-  if (!["left", "right", "hidden"].includes(layout.navigator) || !["left", "right", "floating", "hidden"].includes(layout.inspector) || !["none", "previous-episode", "previous-draft"].includes(layout.reference)) add("invalid-placement", "placement", "A panel placement is invalid.");
+  if (!["left", "right", "hidden"].includes(layout.navigator) || !["left", "right", "floating", "hidden"].includes(layout.inspector) || !referenceKinds.has(layout.reference)) add("invalid-placement", "placement", "A panel placement is invalid.");
   if (![layout.navigatorWidth, layout.inspectorWidth].every((width) => Number.isFinite(width) && width >= 160 && width <= 1200)) add("invalid-width", "width", "Panel widths must be between 160 and 1200 pixels.");
 
   const panelIds = new Set<string>();
@@ -150,6 +219,7 @@ export function validateWorkspaceLayout(input: SavedLayout | WorkspaceLayout): L
     if (panelIds.has(item.id)) add("duplicate-id", `panels.${index}.id`, `Panel id ${item.id} is duplicated.`);
     panelIds.add(item.id);
     if (!item.id || !item.title.trim()) add("invalid-name", `panels.${index}`, "Panels need an id and title.");
+    if (!panelKinds.has(item.kind) || (item.kind === "reference" && (!item.referenceKind || !referenceKinds.has(item.referenceKind)))) add("invalid-panel", `panels.${index}`, "A panel kind or reference source is invalid.");
   });
   const groupIds = new Set<string>();
   const groupedPanels = new Set<string>();
@@ -206,8 +276,10 @@ function checked(layout: SavedLayout | WorkspaceLayout): WorkspaceLayout {
 }
 
 export function getWorkspaceLayout(workspace: ProjectWorkspace, id: string): WorkspaceLayout | undefined {
-  const layout = workspace.layouts.find((item) => item.id === id);
-  return layout ? normalizeWorkspaceLayout(layout as WorkspaceLayout) : undefined;
+  const layout = Array.isArray(workspace.layouts) ? workspace.layouts.find((item) => isRecord(item) && item.id === id) : undefined;
+  if (!layout) return undefined;
+  const normalized = normalizeWorkspaceLayout(layout as unknown as WorkspaceLayout);
+  return validateWorkspaceLayout(normalized).valid ? normalized : undefined;
 }
 
 export function saveCustomLayout(workspace: ProjectWorkspace, layout: WorkspaceLayout): ProjectWorkspace {

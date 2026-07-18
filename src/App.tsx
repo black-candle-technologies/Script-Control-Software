@@ -5,7 +5,7 @@ import Workspace from "./components/Workspace.tsx";
 import Dashboard from "./components/Dashboard.tsx";
 import { createProjectSession, defaultAppInfo, emptyDocument, type AppInfo, type ProjectSession } from "./domain/index.ts";
 import { sampleScreenplay } from "./domain/sample.ts";
-import { clearSession, loadSession } from "./storage.ts";
+import { loadSession } from "./storage.ts";
 import { chooseAndOpenProject, chooseAndParseFdx, messageFrom } from "./services/fdxService.ts";
 import "./App.css";
 
@@ -28,6 +28,7 @@ function App() {
   }, []);
 
   const open = (choice: DocChoice) => {
+    if (!confirmProjectReplacement(Boolean(session), choice !== "saved")) return;
     const next =
       choice === "saved"
         ? loadSession() ?? createProjectSession(sampleScreenplay())
@@ -39,7 +40,6 @@ function App() {
             );
     if (choice === "new-show") next.name = "Untitled Show";
     setSession(next);
-    if (choice !== "saved") clearSession();
     setDocNonce((n) => n + 1);
     setView("write");
   };
@@ -47,13 +47,13 @@ function App() {
   const savedTitle = view === "home" ? loadSession()?.name || null : null;
 
   const openFdx = async () => {
+    if (!confirmProjectReplacement(Boolean(session))) return;
     setImporting(true);
     setImportError(null);
     try {
       const imported = await chooseAndParseFdx();
       if (!imported) return;
       setSession(createProjectSession(imported));
-      clearSession();
       setDocNonce((n) => n + 1);
       setView("write");
     } catch (error) {
@@ -65,6 +65,7 @@ function App() {
   };
 
   const openProject = async () => {
+    if (!confirmProjectReplacement(Boolean(session))) return;
     setImporting(true);
     setImportError(null);
     try {
@@ -132,6 +133,11 @@ function App() {
       )}
     </div>
   );
+}
+
+function confirmProjectReplacement(hasActiveSession: boolean, protectLocalRecovery = true): boolean {
+  return (!hasActiveSession && (!protectLocalRecovery || !loadSession()))
+    || window.confirm("Open a different project? Your current local recovery will be replaced when the new project autosaves. Save a portable copy first if you need to keep both.");
 }
 
 export default App;

@@ -8,14 +8,20 @@ import {
   normalizeWorkspaceLayout,
   saveCustomLayout,
   validateKeyboardShortcuts,
+  WORKSPACE_REFERENCE_KINDS,
   type ProjectWorkspace,
   type SavedLayout,
   type WorkspaceLayout,
+  type WorkspacePanelDefinition,
+  type WorkspacePanelKind,
+  type WorkspaceReferenceKind,
+  type WorkspaceTabGroup,
 } from "../domain/index.ts";
 
 interface LayoutManagerProps {
   workspace: ProjectWorkspace;
   layout: WorkspaceLayout;
+  referenceTargets?: Partial<Record<WorkspaceReferenceKind, { id: string; label: string }[]>>;
   onWorkspace: (workspace: ProjectWorkspace) => void;
   onClose: () => void;
 }
@@ -30,12 +36,41 @@ const shortcutActions = [
   ["nextEpisode", "Next episode"],
 ] as const;
 
-export default function LayoutManager({ workspace, layout, onWorkspace, onClose }: LayoutManagerProps) {
+const panelCatalog: readonly [WorkspacePanelKind, string][] = [
+  ["navigator", "Navigator"],
+  ["screenplay", "Screenplay"],
+  ["inspector", "Inspector"],
+  ["reference", "Reference"],
+  ["story", "Story"],
+  ["treatment", "Treatment"],
+  ["breakdown", "Breakdown"],
+  ["versions", "Versions"],
+  ["series", "Series"],
+  ["production", "Production"],
+  ["companion", "Companion dashboard"],
+];
+
+const referenceLabels: Record<WorkspaceReferenceKind, string> = {
+  none: "None",
+  "previous-episode": "Previous episode",
+  "next-episode": "Next episode",
+  "previous-draft": "Previous draft",
+  character: "Character",
+  object: "Object",
+  location: "Location",
+  "show-bible": "Show bible",
+  "season-arc": "Season arc",
+  "plot-history": "Plot history",
+  timeline: "Timeline",
+};
+
+export default function LayoutManager({ workspace, layout, referenceTargets = {}, onWorkspace, onClose }: LayoutManagerProps) {
   const [draft, setDraft] = useState(layout);
+  const [panelKind, setPanelKind] = useState<WorkspacePanelKind>("reference");
   const [shortcutDraft, setShortcutDraft] = useState<Record<string, string>>(workspace.shortcuts);
   const [message, setMessage] = useState("");
   const builtin = BUILTIN_LAYOUT_IDS.includes(draft.id as (typeof BUILTIN_LAYOUT_IDS)[number]);
-  const topology = useMemo(() => normalizeWorkspaceLayout(layoutFields(draft)), [draft]);
+  const topology = useMemo(() => normalizeWorkspaceLayout(draft), [draft]);
 
   useEffect(() => {
     setDraft(layout);
@@ -45,8 +80,118 @@ export default function LayoutManager({ workspace, layout, onWorkspace, onClose 
   useEffect(() => setShortcutDraft(workspace.shortcuts), [workspace.shortcuts]);
 
   const update = <K extends keyof SavedLayout>(key: K, value: SavedLayout[K]) => {
-    setDraft((current) => normalizeWorkspaceLayout(layoutFields({ ...current, [key]: value })));
+    setDraft((current) => {
+      if (key !== "reference") return normalizeWorkspaceLayout({ ...current, [key]: value });
+      let updated = false;
+      const panels = current.panels.map((panel) => {
+        if (updated || panel.kind !== "reference") return panel;
+        updated = true;
+        return { ...panel, referenceKind: value as WorkspaceReferenceKind };
+      });
+      return normalizeWorkspaceLayout({ ...current, [key]: value, panels });
+    });
   };
+
+  const updateTopology = (change: (current: WorkspaceLayout) => WorkspaceLayout) => {
+    setDraft((current) => syncLegacyFields(change(current)));
+    setMessage("");
+  };
+
+  const addPanel = () => updateTopology((current) => {
+    const label = panelCatalog.find(([kind]) => kind === panelKind)![1];
+    const id = uniqueId(panelKind, current.panels.map((item) => item.id));
+    const nextPanel: WorkspacePanelDefinition = {
+      id,
+      title: label,
+      kind: panelKind,
+      closable: true,
+      ...(panelKind === "reference" ? { referenceKind: "previous-draft" as const } : {}),
+    };
+    const tabGroups = current.tabGroups.length
+      ? current.tabGroups.map((group, index) => index === 0 ? { ...group, panelIds: [...group.panelIds, id] } : group)
+      : [{ id: "main-tabs", panelIds: [id], activePanelId: id }];
+    return rebuildGroups({ ...current, panels: [...current.panels, nextPanel] }, tabGroups);
+  });
+
+  const removePanel = (panelId: string) => updateTopology((current) => {
+    if (current.panels.length === 1) return current;
+    const tabGroups = current.tabGroups.map((group) => {
+      const panelIds = group.panelIds.filter((id) => id !== panelId);
+      return { ...group, panelIds, activePanelId: panelIds.includes(group.activePanelId) ? group.activePanelId : panelIds[0] ?? "" };
+    }).filter((group) => group.panelIds.length);
+    return rebuildGroups({
+      ...current,
+      panels: current.panels.filter((panel) => panel.id !== panelId),
+      floatingPanels: current.floatingPanels.filter((panel) => panel.panelId !== panelId),
+      synchronizedPanels: current.synchronizedPanels
+        .map((sync) => ({ ...sync, panelIds: sync.panelIds.filter((id) => id !== panelId) }))
+        .filter((sync) => sync.panelIds.length > 1),
+    }, tabGroups);
+  });
+
+  const updatePanel = (panelId: string, change: Partial<WorkspacePanelDefinition>) => updateTopology((current) => ({
+    ...current,
+    panels: current.panels.map((panel) => panel.id === panelId ? { ...panel, ...change } : panel),
+  }));
+
+  const updateFloatingPanel = (panelId: string, change: Partial<Omit<WorkspaceLayout["floatingPanels"][number], "panelId">>) => updateTopology((current) => ({
+    ...current,
+    floatingPanels: current.floatingPanels.map((panel) => panel.panelId === panelId ? { ...panel, ...change } : panel),
+  }));
+
+  const movePanel = (panelId: string, groupId: string) => updateTopology((current) => {
+    let tabGroups = current.tabGroups.map((group) => {
+      const panelIds = group.panelIds.filter((id) => id !== panelId);
+      return { ...group, panelIds, activePanelId: panelIds.includes(group.activePanelId) ? group.activePanelId : panelIds[0] ?? "" };
+    }).filter((group) => group.panelIds.length || group.id === groupId);
+    if (groupId !== "floating") tabGroups = tabGroups.map((group) => group.id === groupId
+      ? { ...group, panelIds: [...group.panelIds, panelId], activePanelId: panelId }
+      : group);
+    return rebuildGroups({
+      ...current,
+      floatingPanels: groupId === "floating"
+        ? [...current.floatingPanels.filter((panel) => panel.panelId !== panelId), {
+          panelId,
+          x: 40 + current.floatingPanels.length * 48,
+          y: 40 + current.floatingPanels.length * 48,
+          width: 420,
+          height: 520,
+        }]
+        : current.floatingPanels.filter((panel) => panel.panelId !== panelId),
+    }, tabGroups);
+  });
+
+  const addTabGroup = () => updateTopology((current) => {
+    const id = uniqueId("tabs", current.tabGroups.map((group) => group.id));
+    return rebuildGroups(current, [...current.tabGroups, { id, panelIds: [], activePanelId: "" }]);
+  });
+
+  const removeTabGroup = (groupId: string) => updateTopology((current) => {
+    if (current.tabGroups.length === 1) return current;
+    const removed = current.tabGroups.find((group) => group.id === groupId)!;
+    const remaining = current.tabGroups.filter((group) => group.id !== groupId);
+    remaining[0] = {
+      ...remaining[0],
+      panelIds: [...remaining[0].panelIds, ...removed.panelIds],
+      activePanelId: remaining[0].activePanelId || removed.activePanelId,
+    };
+    return rebuildGroups(current, remaining);
+  });
+
+  const moveTabGroup = (index: number, offset: number) => updateTopology((current) => {
+    const tabGroups = [...current.tabGroups];
+    const nextIndex = index + offset;
+    if (nextIndex < 0 || nextIndex >= tabGroups.length) return current;
+    [tabGroups[index], tabGroups[nextIndex]] = [tabGroups[nextIndex], tabGroups[index]];
+    return rebuildGroups(current, tabGroups);
+  });
+
+  const setActiveTab = (groupId: string, activePanelId: string) => updateTopology((current) => ({
+    ...current,
+    tabGroups: current.tabGroups.map((group) => group.id === groupId ? { ...group, activePanelId } : group),
+  }));
+
+  const setSplitDirection = (direction: "horizontal" | "vertical") => updateTopology((current) => rebuildGroups(current, current.tabGroups, direction));
 
   const duplicate = () => {
     try {
@@ -61,7 +206,7 @@ export default function LayoutManager({ workspace, layout, onWorkspace, onClose 
 
   const saveLayout = () => {
     try {
-      const next = saveCustomLayout(workspace, normalizeWorkspaceLayout(layoutFields(draft)));
+      const next = saveCustomLayout(workspace, normalizeWorkspaceLayout(draft));
       onWorkspace(next);
       setMessage("Workspace layout saved in this project.");
     } catch (error) {
@@ -107,24 +252,51 @@ export default function LayoutManager({ workspace, layout, onWorkspace, onClose 
         <div className="layout-manager-section">
           <h3>Active layout</h3>
           <label>Name<input value={draft.name} disabled={builtin} onChange={(event) => update("name", event.target.value)} /></label>
-          <label>Navigator<select value={draft.navigator} disabled={builtin} onChange={(event) => update("navigator", event.target.value as SavedLayout["navigator"])}><option value="left">Dock left</option><option value="right">Dock right</option><option value="hidden">Hidden</option></select></label>
-          <label>Inspector<select value={draft.inspector} disabled={builtin} onChange={(event) => update("inspector", event.target.value as SavedLayout["inspector"])}><option value="left">Dock left</option><option value="right">Dock right</option><option value="floating">Float over script</option><option value="hidden">Hidden</option></select></label>
-          <label>Reference split<select value={draft.reference} disabled={builtin} onChange={(event) => update("reference", event.target.value as SavedLayout["reference"])}><option value="none">None</option><option value="previous-draft">Previous draft</option><option value="previous-episode">Previous episode</option></select></label>
+          <label>Primary reference<select value={draft.reference} disabled={builtin} onChange={(event) => update("reference", event.target.value as SavedLayout["reference"])}>{WORKSPACE_REFERENCE_KINDS.map((kind) => <option key={kind} value={kind}>{referenceLabels[kind]}</option>)}</select></label>
           <label>Navigator width <output>{draft.navigatorWidth}px</output><input type="range" min="180" max="520" step="10" value={draft.navigatorWidth} disabled={builtin} onChange={(event) => update("navigatorWidth", Number(event.target.value))} /></label>
           <label>Inspector width <output>{draft.inspectorWidth}px</output><input type="range" min="220" max="720" step="10" value={draft.inspectorWidth} disabled={builtin} onChange={(event) => update("inspectorWidth", Number(event.target.value))} /></label>
           <div className="btn-row"><button className="btn" onClick={duplicate}>Duplicate as custom</button><button className="btn btn-primary" disabled={builtin} onClick={saveLayout}>Save layout</button><button className="btn btn-ghost" disabled={builtin} onClick={remove}>Delete</button></div>
-          {builtin && <p className="insp-hint">Built-in presets stay dependable. Duplicate one to change its docks, split, floating inspector, or widths.</p>}
+          {builtin && <p className="insp-hint">Built-in presets stay dependable. Duplicate one, then use the panel composer to change docks, tabs, splits, floating panels, or widths.</p>}
         </div>
         <div className="layout-manager-section">
-          <h3>Panel topology</h3>
-          <dl className="layout-topology">
-            <div><dt>Panels</dt><dd>{topology.panels.map((panel) => panel.title).join(", ")}</dd></div>
-            <div><dt>Tab groups</dt><dd>{topology.tabGroups.map((group) => group.panelIds.join(" + ")).join(" / ")}</dd></div>
-            <div><dt>Split</dt><dd>{topology.splits[0]?.direction ?? "Single panel"}</dd></div>
-            <div><dt>Floating</dt><dd>{topology.floatingPanels.map((panel) => panel.panelId).join(", ") || "None"}</dd></div>
-            <div><dt>Synchronized</dt><dd>{topology.synchronizedPanels.map((group) => `${group.panelIds.join(" + ")} (${group.mode})`).join(", ") || "None"}</dd></div>
-          </dl>
-          <p className="insp-hint">The script and reference split follow the same active scene. Inspector tabs share the current selection and project data.</p>
+          <h3>Panel composer</h3>
+          <div className="btn-row">
+            <select aria-label="Panel kind" value={panelKind} disabled={builtin} onChange={(event) => setPanelKind(event.target.value as WorkspacePanelKind)}>{panelCatalog.map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select>
+            <button className="btn" disabled={builtin} onClick={addPanel}>Add panel</button>
+          </div>
+          {topology.panels.map((panel) => {
+            const floating = topology.floatingPanels.find((item) => item.panelId === panel.id);
+            const groupId = floating
+              ? "floating"
+              : topology.tabGroups.find((group) => group.panelIds.includes(panel.id))?.id ?? "";
+            return <div className="layout-topology" key={panel.id}>
+              <label>Title<input value={panel.title} disabled={builtin} onChange={(event) => updatePanel(panel.id, { title: event.target.value })} /></label>
+              <label>Panel<span>{panelCatalog.find(([kind]) => kind === panel.kind)?.[1] ?? panel.kind}</span></label>
+              <label>Tab group<select value={groupId} disabled={builtin} onChange={(event) => movePanel(panel.id, event.target.value)}>{topology.tabGroups.map((group) => <option key={group.id} value={group.id}>{group.id}</option>)}<option value="floating">Floating</option></select></label>
+              {panel.kind === "reference" && <>
+                <label>Reference<select value={panel.referenceKind ?? "previous-draft"} disabled={builtin} onChange={(event) => updatePanel(panel.id, { referenceKind: event.target.value as WorkspaceReferenceKind })}>{WORKSPACE_REFERENCE_KINDS.map((kind) => <option key={kind} value={kind}>{referenceLabels[kind]}</option>)}</select></label>
+                <label>Target{referenceTargets[panel.referenceKind ?? "none"]?.length ? <select value={panel.targetId ?? ""} disabled={builtin} onChange={(event) => updatePanel(panel.id, { targetId: event.target.value || undefined })}><option value="">Automatic first match</option>{referenceTargets[panel.referenceKind ?? "none"]!.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}</select> : <input value={panel.targetId ?? ""} disabled={builtin} placeholder="Optional character, object, or location id" onChange={(event) => updatePanel(panel.id, { targetId: event.target.value || undefined })} />}</label>
+              </>}
+              {floating && <div className="floating-frame-controls">
+                <label>Left<input aria-label={`${panel.title} floating left`} type="number" min="0" step="10" value={floating.x} disabled={builtin} onChange={(event) => updateFloatingPanel(panel.id, { x: Math.max(0, Number(event.target.value)) })} /></label>
+                <label>Top<input aria-label={`${panel.title} floating top`} type="number" min="0" step="10" value={floating.y} disabled={builtin} onChange={(event) => updateFloatingPanel(panel.id, { y: Math.max(0, Number(event.target.value)) })} /></label>
+                <label>Width<input aria-label={`${panel.title} floating width`} type="number" min="200" step="10" value={floating.width} disabled={builtin} onChange={(event) => updateFloatingPanel(panel.id, { width: Math.max(200, Number(event.target.value)) })} /></label>
+                <label>Height<input aria-label={`${panel.title} floating height`} type="number" min="120" step="10" value={floating.height} disabled={builtin} onChange={(event) => updateFloatingPanel(panel.id, { height: Math.max(120, Number(event.target.value)) })} /></label>
+              </div>}
+              <button className="btn btn-ghost" disabled={builtin || topology.panels.length === 1} onClick={() => removePanel(panel.id)}>Remove panel</button>
+            </div>;
+          })}
+          <div className="btn-row">
+            <label>Split<select value={topology.splits[0]?.direction ?? "horizontal"} disabled={builtin || topology.tabGroups.length < 2} onChange={(event) => setSplitDirection(event.target.value as "horizontal" | "vertical")}><option value="horizontal">Horizontal</option><option value="vertical">Vertical</option></select></label>
+            <button className="btn" disabled={builtin} onClick={addTabGroup}>Add tab group</button>
+          </div>
+          {topology.tabGroups.map((group, index) => <div className="layout-topology" key={group.id}>
+            <strong>{group.id}</strong>
+            <label>Active tab<select value={group.activePanelId} disabled={builtin || !group.panelIds.length} onChange={(event) => setActiveTab(group.id, event.target.value)}>{group.panelIds.map((id) => <option key={id} value={id}>{topology.panels.find((panel) => panel.id === id)?.title ?? id}</option>)}</select></label>
+            {!group.panelIds.length && <span className="insp-hint">Move a panel here before saving.</span>}
+            <div className="btn-row"><button className="btn btn-ghost" disabled={builtin || index === 0} onClick={() => moveTabGroup(index, -1)}>Up</button><button className="btn btn-ghost" disabled={builtin || index === topology.tabGroups.length - 1} onClick={() => moveTabGroup(index, 1)}>Down</button><button className="btn btn-ghost" disabled={builtin || topology.tabGroups.length === 1} onClick={() => removeTabGroup(group.id)}>Remove group</button></div>
+          </div>)}
+          <p className="insp-hint">Each panel belongs to one tab group or floats. Empty groups must receive a panel before the layout can be saved.</p>
         </div>
         <div className="layout-manager-section layout-shortcuts">
           <h3>Keyboard shortcuts</h3>
@@ -138,14 +310,34 @@ export default function LayoutManager({ workspace, layout, onWorkspace, onClose 
   </div>;
 }
 
-function layoutFields(layout: SavedLayout): SavedLayout {
+function uniqueId(prefix: string, ids: string[]): string {
+  if (!ids.includes(prefix)) return prefix;
+  for (let suffix = 2; ; suffix++) if (!ids.includes(`${prefix}-${suffix}`)) return `${prefix}-${suffix}`;
+}
+
+function rebuildGroups(layout: WorkspaceLayout, tabGroups: WorkspaceTabGroup[], direction = layout.splits[0]?.direction ?? "horizontal"): WorkspaceLayout {
   return {
-    id: layout.id,
-    name: layout.name,
-    navigator: layout.navigator,
-    inspector: layout.inspector,
-    reference: layout.reference,
-    navigatorWidth: layout.navigatorWidth,
-    inspectorWidth: layout.inspectorWidth,
+    ...layout,
+    tabGroups,
+    splits: tabGroups.length > 1 ? [{
+      id: layout.splits[0]?.id ?? "main-split",
+      direction,
+      groupIds: tabGroups.map((group) => group.id),
+      sizes: tabGroups.map(() => 1 / tabGroups.length),
+    }] : [],
   };
+}
+
+function syncLegacyFields(layout: WorkspaceLayout): WorkspaceLayout {
+  const reference = layout.panels.find((panel) => panel.kind === "reference")?.referenceKind ?? "none";
+  const navigator = layout.panels.some((panel) => panel.kind === "navigator")
+    ? layout.navigator === "hidden" ? "left" : layout.navigator
+    : "hidden";
+  const inspectorPanel = layout.panels.find((panel) => panel.kind === "inspector");
+  const inspector = !inspectorPanel
+    ? "hidden"
+    : layout.floatingPanels.some((panel) => panel.panelId === inspectorPanel.id)
+      ? "floating"
+      : layout.inspector === "hidden" || layout.inspector === "floating" ? "right" : layout.inspector;
+  return normalizeWorkspaceLayout({ ...layout, reference, navigator, inspector });
 }

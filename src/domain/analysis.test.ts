@@ -10,6 +10,7 @@ import {
   analyzeObjects,
   applyEntityOverrides,
   compileAnalysis,
+  createManualObjectOverride,
   type AnalysisEntities,
   type EntityOverride,
   type ProductionCategory,
@@ -120,6 +121,47 @@ test("entity overrides confirm, reject, rename, merge, and split without mutatin
   assert.equal(changed.locations.find((location) => location.id === "location-rooftop")?.status, "rejected");
 });
 
+test("manual object overrides add arbitrary props and reuse matching recognized entities", () => {
+  const characters = analyzeCharacters(document);
+  const entities: AnalysisEntities = { characters, locations: analyzeLocations(document), objects: analyzeObjects(document, characters) };
+  const before = JSON.stringify(entities);
+  const locketOverride = createManualObjectOverride("  Hero's Locket  ", " wardrobe ");
+
+  assert.deepEqual(locketOverride, {
+    action: "add",
+    kind: "object",
+    entityId: "object-hero-s-locket",
+    name: "HERO'S LOCKET",
+    category: "wardrobe",
+  });
+  const changed = applyEntityOverrides(entities, [locketOverride, locketOverride]);
+  const locket = changed.objects.find((object) => object.id === locketOverride.entityId);
+  assert.equal(JSON.stringify(entities), before);
+  assert.equal(changed.objects.filter((object) => object.id === locketOverride.entityId).length, 1);
+  assert.equal(locket?.name, "HERO'S LOCKET");
+  assert.equal(locket?.status, "confirmed");
+  assert.equal(locket?.category, "wardrobe");
+  assert.equal(locket?.productionCategory, "wardrobe");
+  assert.equal(locket?.confidence, 1);
+  assert.deepEqual(locket?.sceneNumbers, []);
+
+  const reused = applyEntityOverrides(entities, [createManualObjectOverride("gun", "prop")]);
+  assert.equal(reused.objects.filter((object) => object.id === "object-gun").length, 1);
+  assert.equal(reused.objects.find((object) => object.id === "object-gun")?.status, "confirmed");
+  assert.equal(reused.objects.find((object) => object.id === "object-gun")?.productionCategory, "props");
+  assert.ok(compileAnalysis(document, { entityOverrides: [locketOverride] }).entities.objects.some((object) => object.name === "HERO'S LOCKET"));
+  assert.notEqual(createManualObjectOverride("C++").entityId, createManualObjectOverride("C#").entityId);
+  assert.throws(() => createManualObjectOverride("   "), /Object name is required/);
+});
+
+test("CSV export neutralizes formula-leading screenplay text", () => {
+  const hostile = structuredClone(document);
+  hostile.title = "=2+2";
+  const csv = analysisToCsv(compileAnalysis(hostile), "summary");
+  assert.match(csv, /'=2\+2/);
+  assert.doesNotMatch(csv, /(?:^|,)\s*=2\+2/m);
+});
+
 test("compiler supplies structure, coverage, warnings, revisions, and every production report", () => {
   const report = compileAnalysis(document, {
     resolvedBeatIds: ["beat1"],
@@ -153,7 +195,26 @@ test("compiler supplies structure, coverage, warnings, revisions, and every prod
   assert.deepEqual(Object.keys(report.production), categories);
   assert.ok(report.production.animals.length > 0);
   assert.ok(report.production.highComplexityScenes.length > 0);
-  assert.match(analysisToMarkdown(report), /## Production/);
+  const markdown = analysisToMarkdown(report);
+  for (const heading of ["Overview", "Scenes", "Characters", "Character Arcs", "Locations", "Objects and Props", "Acts", "Sequences", "Beats", "Plot Threads", "Treatment Coverage", "Unresolved Beats", "Pacing Warnings", "Revision", "Production"]) {
+    assert.match(markdown, new RegExp(`## ${heading}`));
+  }
+  assert.match(markdown, /Garage revised\./);
+  assert.match(markdown, /Escape/);
+  assert.match(markdown, /Mara, a wary mechanic/);
+
+  const allCsv = analysisToCsv(report, "all");
+  assert.match(allCsv, /^section,record,data/m);
+  for (const section of ["summary", "episode", "scenes", "characters", "locations", "objects", "acts", "sequences", "beats", "characterArcs", "plotThreads", "treatmentCoverage", "unresolvedBeats", "pacingWarnings", "revision", "production.cast", "production.highComplexityScenes"]) {
+    assert.match(allCsv, new RegExp(`^${section},`, "m"));
+  }
+  assert.match(allCsv, /Garage revised\./);
+  assert.match(analysisToCsv(report, "locations"), /^location,first_scene,last_scene/m);
+  assert.match(analysisToCsv(report, "structure"), /^type,id,parent_id/m);
+  assert.match(analysisToCsv(report, "arcs"), /^character,first_scene,last_scene/m);
+  assert.match(analysisToCsv(report, "coverage"), /^source,id,label,status/m);
+  assert.match(analysisToCsv(report, "warnings"), /^source,code_or_id,severity_or_status/m);
+  assert.match(analysisToCsv(report, "revision"), /^from,to,total,added/m);
   assert.match(analysisToCsv(report, "production"), /^category,scene,heading,item,evidence/m);
   assert.equal(JSON.parse(analysisToJson(report)).title, "Signal Fire");
 });

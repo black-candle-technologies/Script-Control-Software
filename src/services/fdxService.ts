@@ -2,7 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   normalizeProjectSession,
+  documentsForPortableStorage,
+  restoreLocalDocumentState,
+  restoreLocalWorkspaceState,
+  screenplayTextFingerprint,
   toFountain,
+  versionHistoryForPortableStorage,
+  versionsForPortableStorage,
+  workspaceForPortableStorage,
   type ProjectSession,
   type ProjectWorkspace,
   type VersionHistory,
@@ -68,14 +75,14 @@ export async function saveProjectSession(session: ProjectSession, saveAs = false
     path,
     name: session.name,
     projectType: session.projectType,
-    documents: session.documents,
+    documents: documentsForPortableStorage(session.documents),
     fountainScripts: session.documents.map(toFountain),
-    versions: session.versions,
-    versionHistory: session.versionHistory,
-    workspace: session.workspace,
+    versions: versionsForPortableStorage(session.versions),
+    versionHistory: versionHistoryForPortableStorage(session.versionHistory),
+    workspace: workspaceForPortableStorage(session.workspace),
     expectedUpdatedAt: !saveAs && session.projectPath ? session.updatedAt : null,
   });
-  return normalizeProjectSession({
+  const normalized = normalizeProjectSession({
     ...stored,
     projectId: stored.id,
     workspace: stored.workspace ?? session.workspace,
@@ -83,6 +90,11 @@ export async function saveProjectSession(session: ProjectSession, saveAs = false
     projectPath: path,
     activeDocumentId: session.activeDocumentId,
   });
+  return {
+    ...normalized,
+    documents: restoreLocalDocumentState(normalized.documents, session.documents),
+    workspace: restoreLocalWorkspaceState(normalized.workspace, session.workspace),
+  };
 }
 
 export async function chooseAndOpenProject(): Promise<ProjectSession | null> {
@@ -92,12 +104,16 @@ export async function chooseAndOpenProject(): Promise<ProjectSession | null> {
     filters: [{ name: "SCS Project", extensions: ["json"] }],
   });
   if (!selected) return null;
-  const stored = await invoke<StoredProjectBundle>("open_project_bundle", { path: selected });
+  return openProjectSession(selected);
+}
+
+export async function openProjectSession(path: string): Promise<ProjectSession> {
+  const stored = await invoke<StoredProjectBundle>("open_project_bundle", { path });
   return normalizeProjectSession({
     ...stored,
     projectId: stored.id,
     workspace: stored.workspace,
-    projectPath: selected,
+    projectPath: path,
   });
 }
 
@@ -122,5 +138,5 @@ async function importLinkedDocument(path: string): Promise<ScreenplayDocument> {
     linkedFileModifiedAt(path),
   ]);
   const normalized = normalizeImportedDocument(document);
-  return normalized.source ? { ...normalized, source: { ...normalized.source, lastImportedModifiedAt: modifiedAt } } : normalized;
+  return normalized.source ? { ...normalized, source: { ...normalized.source, lastImportedModifiedAt: modifiedAt, lastImportedFingerprint: screenplayTextFingerprint(normalized) } } : normalized;
 }

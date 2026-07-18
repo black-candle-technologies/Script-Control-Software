@@ -9,11 +9,13 @@ SCS is a local-first desktop workspace for screenwriting and film/television dev
 - Screenplay keyboard flow, undo/redo, element switching, completion, smart uppercase, and visible page boundaries.
 - Drag-reorderable scenes with act/sequence/scene/beat hierarchy, summaries, tags, status, notes, and Markdown treatments.
 - Deterministic character, location, object, production-category, dialogue, pacing, and shooting-complexity analysis.
-- Persistent draft snapshots, restore, milestones, and scene-aware comparisons.
+- Whole-project/episode/season/show-bible snapshots, Alternate Draft branches, milestones, scoped restore, readable semantic comparisons, and previewed per-conflict three-way merges.
 - Feature and television projects with episode tabs, shared cast/locations, show bible, season arcs, and continuity notes.
 - Revision colors, locked-page records, omitted scenes, draft labels, department notes, and Markdown/CSV/JSON/PDF report output.
-- Saved workspace presets, project-wide search, command palette, review comments, and opt-in assistant prompts that send no data.
-- Portable `.scs` folders and linked-FDX change detection with metadata-preserving re-import.
+- Runtime-composed tab/split/floating workspaces, independently targeted draft/episode/entity/bible/arc/history/timeline references, project-wide search, command palette, and customizable shortcuts.
+- Linked-FDX watch folders, external-editor handoff, two-sided change detection, metadata-preserving re-import, and Companion mode.
+- Nine collaboration roles, scoped comments/suggestions, version approvals, writer-room tasks, provider-folder sync, per-conflict merge choices, and optional safe HTTPS Git sync.
+- Portable `.scs` folders with crash-recoverable, stale-write-protected manifests, open screenplay fallbacks, and machine-local recovery.
 
 ## Run locally
 
@@ -28,6 +30,7 @@ Verification:
 
 ```sh
 pnpm check
+pnpm test:e2e
 cargo test --manifest-path src-tauri/Cargo.toml
 pnpm build
 ```
@@ -54,5 +57,13 @@ MyProject.scs/
 - Deterministic core: recognition and reports do not require AI.
 - Interoperable: screenplay text remains available as FDX/Fountain.
 - Writer-controlled: entity candidates, revisions, comments, and assistant use stay opt-in.
+
+## Guides
+
+- [Workspace layouts, search, and shortcuts](docs/WORKSPACES.md)
+- [Collaboration, shared folders, roles, and Git sync](docs/COLLABORATION.md)
+- [FDX interoperability and Companion mode](docs/FDX_IMPORT.md)
+- [Portable project format](docs/PROJECT_FORMAT.md)
+- [Television workflow](docs/TELEVISION.md) and [production workflow](docs/PRODUCTION.md)
 
 See [ROADMAP.md](ROADMAP.md) for product direction and [CONTRIBUTING.md](CONTRIBUTING.md) for development checks.

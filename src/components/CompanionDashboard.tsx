@@ -17,7 +17,7 @@ interface CompanionDashboardProps {
 }
 
 export default function CompanionDashboard({ documents, files, folderPath, recursive, busy, stats, onChooseFolder, onRefresh, onRecursive, onReviewFile, onOpenFile, onReveal }: CompanionDashboardProps) {
-  const linkedByPath = new Map(documents.flatMap((document) => document.source?.type === "fdx" ? [[document.source.path, document] as const] : []));
+  const linkedByPath = new Map(documents.flatMap((document) => document.source?.type === "fdx" && document.source.path ? [[document.source.path, document] as const] : []));
   return <main className="companion-dashboard">
     <header className="companion-header">
       <div><span className="insp-kicker">Final Draft companion</span><h2>Development dashboard</h2><p>Keep writing in your FDX editor while SCS watches scripts and maintains the project database.</p></div>

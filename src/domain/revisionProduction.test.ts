@@ -69,6 +69,22 @@ test("revision colors advance and changed blocks receive exportable revision run
   assert.notEqual(metadata.revisions[0].blockIds, marked.revision.blockIds);
 });
 
+test("a deletion-only revision still identifies a printable revision page", () => {
+  const before = document([
+    block("scene-1", "scene_heading", "INT. ROOM - DAY"),
+    block("cut-line", "dialogue", "Cut this line."),
+    block("remaining", "action", "The scene continues."),
+  ]);
+  const current = document([
+    block("scene-1", "scene_heading", "INT. ROOM - DAY"),
+    block("remaining", "action", "The scene continues."),
+  ]);
+  const summary = summarizeRevision(before, current, blueRevision());
+  assert.deepEqual(summary.removedBlockIds, ["cut-line"]);
+  assert.deepEqual(summary.revisedPages, ["1"]);
+  assert.equal(summary.totalChanges, 1);
+});
+
 test("locked pagination assigns A-pages to overflow without renumbering later pages", () => {
   const originalBlocks = Array.from({ length: 30 }, (_, index) => block(`base-${index}`, "action", `Line ${index}`));
   const original = document(originalBlocks);

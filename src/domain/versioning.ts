@@ -1,6 +1,19 @@
 import { compileAnalysis } from "./analysis.ts";
-import type { ProjectSession } from "./projectWorkspace.ts";
-import { deriveScenes, paginateBlocks, type ScreenplayBlock, type ScreenplayDocument } from "./screenplay.ts";
+import {
+  documentsForPortableStorage,
+  restoreLocalDocumentState,
+  syncSeriesDocuments,
+  versionsForPortableStorage,
+  workspaceForPortableStorage,
+  type ProjectSession,
+} from "./projectWorkspace.ts";
+import { deriveCharacters, deriveScenes, paginateBlocks, type ScreenplayBlock, type ScreenplayDocument } from "./screenplay.ts";
+
+export type SnapshotScope =
+  | { kind: "project" }
+  | { kind: "episode"; documentId: string }
+  | { kind: "season"; seasonId: string }
+  | { kind: "show-bible" };
 
 export interface ProjectSnapshot {
   id: string;
@@ -9,6 +22,8 @@ export interface ProjectSnapshot {
   createdAt: string;
   parentIds: string[];
   branchId?: string;
+  /** Missing on older snapshots and therefore treated as project-wide. */
+  scope?: SnapshotScope;
   session: ProjectSession;
 }
 
@@ -40,6 +55,7 @@ export interface SnapshotDetails {
   description?: string;
   parentIds?: readonly string[];
   branchId?: string;
+  scope?: SnapshotScope;
 }
 
 export type SnapshotDiffMode =
@@ -54,12 +70,15 @@ export type SnapshotDiffMode =
   | "object"
   | "treatment"
   | "episode"
-  | "season";
+  | "season"
+  | "show-bible";
 
 export interface DocumentChange {
   kind: "added" | "removed" | "modified";
   documentId: string;
   title: string;
+  before?: ScreenplayDocument;
+  after?: ScreenplayDocument;
 }
 
 export interface BlockChange {
@@ -82,12 +101,17 @@ export interface SnapshotComparison {
   fromSnapshotId: string;
   toSnapshotId: string;
   mode: SnapshotDiffMode;
+  scope: SnapshotScope;
   documentChanges: DocumentChange[];
   blockChanges: BlockChange[];
   metadataChanges: MetadataChange[];
 }
 
 export type MergeResolution = "ours" | "theirs";
+export interface MergeResolutionPlan {
+  default: MergeResolution;
+  paths: Record<string, MergeResolution>;
+}
 export type MergeConflictKind = "value" | "delete-edit" | "add-add" | "order";
 
 export interface MergeConflict {
@@ -108,11 +132,15 @@ export interface SnapshotMergeResult {
 
 export function createProjectSnapshot(session: ProjectSession, details: SnapshotDetails): ProjectSnapshot {
   if (!details.id.trim() || !details.name.trim() || !details.createdAt.trim()) throw new Error("Snapshot id, name, and createdAt are required.");
+  const scope = details.scope ? validateSnapshotScope(session, details.scope) : undefined;
   const snapshotSession = clone(session);
   // History belongs to the containing project, not to each historical state.
   // Clearing it prevents recursively nested snapshots and keeps portable files small.
   snapshotSession.versionHistory = { snapshots: [], branches: [], milestones: [], activeBranchId: "main" };
   snapshotSession.versions = [];
+  snapshotSession.projectPath = "";
+  snapshotSession.documents = documentsForPortableStorage(snapshotSession.documents);
+  snapshotSession.workspace = workspaceForPortableStorage(snapshotSession.workspace);
   return {
     id: details.id,
     name: details.name.trim(),
@@ -120,16 +148,190 @@ export function createProjectSnapshot(session: ProjectSession, details: Snapshot
     createdAt: details.createdAt,
     parentIds: [...details.parentIds ?? []],
     branchId: details.branchId,
+    ...(scope ? { scope } : {}),
     session: snapshotSession,
   };
 }
 
-export function restoreProjectSnapshot(snapshot: ProjectSnapshot): ProjectSession {
-  return clone(snapshot.session);
+export function versionHistoryForPortableStorage(history: VersionHistory): VersionHistory {
+  return {
+    ...clone(history),
+    snapshots: history.snapshots.map((snapshot) => ({
+      ...clone(snapshot),
+      session: {
+        ...clone(snapshot.session),
+        projectPath: "",
+        documents: documentsForPortableStorage(snapshot.session.documents),
+        versions: versionsForPortableStorage(snapshot.session.versions),
+        workspace: workspaceForPortableStorage(snapshot.session.workspace),
+      },
+    })),
+  };
+}
+
+export function restoreProjectSnapshot(snapshot: ProjectSnapshot, current?: ProjectSession): ProjectSession {
+  const scope = snapshotScopeOf(snapshot);
+  if (scope.kind === "project") {
+    const restored = clone(snapshot.session);
+    if (current) restored.documents = restoreLocalDocumentState(restored.documents, current.documents);
+    return restored;
+  }
+  if (!current) throw new Error("Restoring an episode, season, or show-bible snapshot requires the current project.");
+  if (snapshot.session.projectId !== current.projectId) throw new Error("A scoped snapshot can only be restored into its original project.");
+  if (scope.kind === "show-bible") {
+    const restored = clone(current);
+    restored.workspace.series.showBible = snapshot.session.workspace.series.showBible;
+    return restored;
+  }
+  if (scope.kind === "episode") return restoreEpisodeSnapshot(snapshot.session, current, scope.documentId);
+  return restoreSeasonSnapshot(snapshot.session, current, scope.seasonId);
+}
+
+/** Older snapshots have no scope field and remain whole-project snapshots. */
+export function snapshotScopeOf(snapshot: ProjectSnapshot): SnapshotScope {
+  return snapshot.scope ? validateSnapshotScope(snapshot.session, snapshot.scope) : { kind: "project" };
+}
+
+function validateSnapshotScope(session: ProjectSession, scope: SnapshotScope): SnapshotScope {
+  if (scope.kind === "project") return { kind: "project" };
+  if (session.projectType !== "television") throw new Error("Episode, season, and show-bible snapshots require a television project.");
+  if (scope.kind === "show-bible") return { kind: "show-bible" };
+  if (scope.kind === "episode") {
+    const documentId = scope.documentId.trim();
+    if (!documentId || !session.documents.some((document) => document.id === documentId) || !session.workspace.series.episodes[documentId]) {
+      throw new Error(`Episode '${documentId || scope.documentId}' does not exist in this project.`);
+    }
+    return { kind: "episode", documentId };
+  }
+  if (scope.kind === "season") {
+    const seasonId = scope.seasonId.trim();
+    if (!seasonId || !session.workspace.series.seasons.some((season) => season.id === seasonId)) {
+      throw new Error(`Season '${seasonId || scope.seasonId}' does not exist in this project.`);
+    }
+    return { kind: "season", seasonId };
+  }
+  throw new Error("Snapshot scope is invalid.");
+}
+
+function comparisonScope(from: ProjectSnapshot, to: ProjectSnapshot): SnapshotScope {
+  const left = snapshotScopeOf(from);
+  const right = snapshotScopeOf(to);
+  if (sameScope(left, right)) return left;
+  if (left.kind === "project") return right;
+  if (right.kind === "project") return left;
+  throw new Error("Only snapshots of the same episode, season, or show bible can be compared.");
+}
+
+function sameScope(left: SnapshotScope, right: SnapshotScope): boolean {
+  return left.kind === right.kind
+    && (left.kind !== "episode" || right.kind !== "episode" || left.documentId === right.documentId)
+    && (left.kind !== "season" || right.kind !== "season" || left.seasonId === right.seasonId);
+}
+
+function documentsForScope(session: ProjectSession, scope: SnapshotScope): ScreenplayDocument[] {
+  if (scope.kind === "project") return session.documents;
+  if (scope.kind === "show-bible") return [];
+  if (scope.kind === "episode") return session.documents.filter((document) => document.id === scope.documentId);
+  const ids = new Set(episodeIdsForSeason(session, scope.seasonId));
+  return session.documents.filter((document) => document.id && ids.has(document.id));
+}
+
+function episodeIdsForSeason(session: ProjectSession, seasonId: string): string[] {
+  return session.documents.flatMap((document) => document.id && session.workspace.series.episodes[document.id]?.seasonId === seasonId ? [document.id] : []);
+}
+
+function seriesForScope(session: ProjectSession, scope: SnapshotScope): unknown {
+  const series = session.workspace.series;
+  if (scope.kind === "project") return series;
+  if (scope.kind === "show-bible") return { showBible: series.showBible };
+  if (scope.kind === "episode") {
+    const episode = series.episodes[scope.documentId];
+    return { episodes: episode ? { [scope.documentId]: episode } : {} };
+  }
+  const season = series.seasons.find((item) => item.id === scope.seasonId);
+  const episodeIds = new Set(episodeIdsForSeason(session, scope.seasonId));
+  const characterNames = seasonCharacterNames(session, episodeIds);
+  return {
+    seasons: season ? { [scope.seasonId]: season } : {},
+    episodes: Object.fromEntries(Object.entries(series.episodes).filter(([, episode]) => episode.seasonId === scope.seasonId)),
+    continuity: series.continuity.filter((record) => record.episodeIds.some((id) => episodeIds.has(id))),
+    characterArcs: Object.fromEntries(Object.entries(series.characterArcs).filter(([name]) => characterNames.has(name))),
+  };
+}
+
+function seasonCharacterNames(session: ProjectSession, episodeIds: ReadonlySet<string>): Set<string> {
+  return new Set(session.documents
+    .filter((document) => document.id && episodeIds.has(document.id))
+    .flatMap((document) => deriveCharacters(document.blocks).map((character) => character.name)));
+}
+
+function restoreEpisodeSnapshot(source: ProjectSession, current: ProjectSession, documentId: string): ProjectSession {
+  const document = source.documents.find((item) => item.id === documentId);
+  const episode = source.workspace.series.episodes[documentId];
+  if (!document || !episode) throw new Error(`Episode '${documentId}' is missing from its snapshot.`);
+  if (!current.workspace.series.seasons.some((season) => season.id === episode.seasonId)) {
+    throw new Error(`Season '${episode.seasonId}' must be restored before episode '${documentId}'.`);
+  }
+  const restored = clone(current);
+  const index = restored.documents.findIndex((item) => item.id === documentId);
+  if (index < 0) restored.documents.push(clone(document));
+  else restored.documents[index] = clone(document);
+  restored.workspace.series.episodes[documentId] = clone(episode);
+  syncSeriesDocuments(restored.workspace.series, restored.documents);
+  restored.documents = restoreLocalDocumentState(restored.documents, current.documents);
+  restored.activeDocumentId = documentId;
+  return restored;
+}
+
+function restoreSeasonSnapshot(source: ProjectSession, current: ProjectSession, seasonId: string): ProjectSession {
+  const season = source.workspace.series.seasons.find((item) => item.id === seasonId);
+  if (!season) throw new Error(`Season '${seasonId}' is missing from its snapshot.`);
+  const sourceIds = episodeIdsForSeason(source, seasonId);
+  const sourceIdSet = new Set(sourceIds);
+  const sourceDocuments = source.documents.filter((document) => document.id && sourceIdSet.has(document.id));
+  const restored = clone(current);
+  const currentIds = episodeIdsForSeason(restored, seasonId);
+  const affectedIds = new Set([...currentIds, ...sourceIds]);
+  const firstAffected = restored.documents.findIndex((document) => document.id && affectedIds.has(document.id));
+  const remaining = restored.documents.filter((document) => !document.id || !affectedIds.has(document.id));
+  remaining.splice(firstAffected < 0 ? remaining.length : Math.min(firstAffected, remaining.length), 0, ...clone(sourceDocuments));
+  restored.documents = remaining;
+  for (const id of affectedIds) delete restored.workspace.series.episodes[id];
+  for (const id of sourceIds) {
+    const episode = source.workspace.series.episodes[id];
+    if (!episode) throw new Error(`Episode '${id}' is missing season metadata in its snapshot.`);
+    restored.workspace.series.episodes[id] = clone(episode);
+  }
+  const seasonIndex = restored.workspace.series.seasons.findIndex((item) => item.id === seasonId);
+  const restoredSeason = { ...clone(season), episodeIds: [...sourceIds] };
+  if (seasonIndex < 0) restored.workspace.series.seasons.push(restoredSeason);
+  else restored.workspace.series.seasons[seasonIndex] = restoredSeason;
+  restored.workspace.series.seasons.sort((left, right) => left.number - right.number || left.id.localeCompare(right.id));
+  const sourceContinuity = source.workspace.series.continuity.filter((record) => record.episodeIds.some((id) => sourceIdSet.has(id)));
+  const affectedContinuityIds = new Set(sourceContinuity.map((record) => record.id));
+  restored.workspace.series.continuity = [
+    ...restored.workspace.series.continuity.filter((record) => !affectedContinuityIds.has(record.id) && !record.episodeIds.some((id) => affectedIds.has(id))),
+    ...clone(sourceContinuity),
+  ];
+  const affectedCharacterNames = new Set([
+    ...seasonCharacterNames(source, sourceIdSet),
+    ...seasonCharacterNames(current, new Set(currentIds)),
+  ]);
+  for (const name of affectedCharacterNames) delete restored.workspace.series.characterArcs[name];
+  for (const [name, arc] of Object.entries(source.workspace.series.characterArcs)) {
+    if (affectedCharacterNames.has(name)) restored.workspace.series.characterArcs[name] = arc;
+  }
+  syncSeriesDocuments(restored.workspace.series, restored.documents);
+  restored.documents = restoreLocalDocumentState(restored.documents, current.documents);
+  if (!restored.documents.some((document) => document.id === restored.activeDocumentId)) {
+    restored.activeDocumentId = sourceIds[0] ?? restored.documents[0]?.id ?? "";
+  }
+  return restored;
 }
 
 export function createVersionHistory(initial: ProjectSnapshot, branch = { id: "main", name: "Main Draft" }): VersionHistory {
   if (!branch.id.trim() || !branch.name.trim()) throw new Error("Branch id and name are required.");
+  if (snapshotScopeOf(initial).kind !== "project") throw new Error("Project History must begin with a project-wide snapshot.");
   const snapshot = clone(initial);
   snapshot.branchId ||= branch.id;
   return {
@@ -147,9 +349,16 @@ export function saveSnapshot(history: VersionHistory, snapshot: ProjectSnapshot,
   const next = clone(history);
   const saved = clone(snapshot);
   saved.branchId = branchId;
-  if (!saved.parentIds.length) saved.parentIds = [branch.headSnapshotId];
+  const scope = snapshotScopeOf(saved);
+  if (!saved.parentIds.length) {
+    if (scope.kind === "project") saved.parentIds = [branch.headSnapshotId];
+    else {
+      const previous = [...next.snapshots].reverse().find((item) => item.branchId === branchId && sameScope(snapshotScopeOf(item), scope));
+      saved.parentIds = previous ? [previous.id] : [];
+    }
+  }
   next.snapshots.push(saved);
-  next.branches.find((item) => item.id === branchId)!.headSnapshotId = saved.id;
+  if (scope.kind === "project") next.branches.find((item) => item.id === branchId)!.headSnapshotId = saved.id;
   next.activeBranchId = branchId;
   return next;
 }
@@ -157,7 +366,9 @@ export function saveSnapshot(history: VersionHistory, snapshot: ProjectSnapshot,
 export function createAlternateDraft(history: VersionHistory, branch: { id: string; name: string; fromSnapshotId: string }): VersionHistory {
   if (!branch.id.trim() || !branch.name.trim()) throw new Error("Branch id and name are required.");
   if (history.branches.some((item) => item.id === branch.id)) throw new Error(`Branch '${branch.id}' already exists.`);
-  if (!history.snapshots.some((item) => item.id === branch.fromSnapshotId)) throw new Error(`Snapshot '${branch.fromSnapshotId}' does not exist.`);
+  const source = history.snapshots.find((item) => item.id === branch.fromSnapshotId);
+  if (!source) throw new Error(`Snapshot '${branch.fromSnapshotId}' does not exist.`);
+  if (snapshotScopeOf(source).kind !== "project") throw new Error("Alternate Drafts must branch from a project-wide snapshot.");
   const next = clone(history);
   next.branches.push({ id: branch.id, name: branch.name.trim(), baseSnapshotId: branch.fromSnapshotId, headSnapshotId: branch.fromSnapshotId });
   next.activeBranchId = branch.id;
@@ -174,28 +385,33 @@ export function addMilestone(history: VersionHistory, milestone: Milestone): Ver
 }
 
 export function compareSnapshots(from: ProjectSnapshot, to: ProjectSnapshot, mode: SnapshotDiffMode): SnapshotComparison {
+  const scope = comparisonScope(from, to);
+  const beforeDocuments = documentsForScope(from.session, scope);
+  const afterDocuments = documentsForScope(to.session, scope);
   const comparison: SnapshotComparison = {
     fromSnapshotId: from.id,
     toSnapshotId: to.id,
     mode,
+    scope,
     documentChanges: [],
     blockChanges: [],
     metadataChanges: [],
   };
-  if (mode === "document") comparison.documentChanges = compareDocuments(from.session.documents, to.session.documents);
-  else if (mode === "block") comparison.blockChanges = compareBlocks(from.session.documents, to.session.documents);
-  else if (mode === "dialogue") comparison.blockChanges = compareBlocks(from.session.documents, to.session.documents).filter((change) => {
+  if (mode === "document") comparison.documentChanges = compareDocuments(beforeDocuments, afterDocuments);
+  else if (mode === "block") comparison.blockChanges = compareBlocks(beforeDocuments, afterDocuments);
+  else if (mode === "dialogue") comparison.blockChanges = compareBlocks(beforeDocuments, afterDocuments).filter((change) => {
     const type = change.after?.type ?? change.before?.type;
     return type === "character" || type === "dialogue" || type === "parenthetical";
   });
-  else if (mode === "metadata") diffMetadata(metadataView(from.session), metadataView(to.session), "", comparison.metadataChanges);
-  else diffMetadata(semanticView(from.session, mode), semanticView(to.session, mode), "", comparison.metadataChanges);
+  else if (mode === "metadata") diffMetadata(metadataView(from.session, scope), metadataView(to.session, scope), "", comparison.metadataChanges);
+  else diffMetadata(semanticView(from.session, mode, scope), semanticView(to.session, mode, scope), "", comparison.metadataChanges);
   return comparison;
 }
 
-function semanticView(session: ProjectSession, mode: Exclude<SnapshotDiffMode, "document" | "block" | "metadata" | "dialogue">): unknown {
-  if (mode === "season") return session.workspace.series;
-  return Object.fromEntries(session.documents.map((document, index) => {
+function semanticView(session: ProjectSession, mode: Exclude<SnapshotDiffMode, "document" | "block" | "metadata" | "dialogue">, scope: SnapshotScope): unknown {
+  if (mode === "show-bible") return scope.kind === "episode" || scope.kind === "season" ? {} : { showBible: session.workspace.series.showBible };
+  if (mode === "season") return seriesForScope(session, scope);
+  return Object.fromEntries(documentsForScope(session, scope).map((document, index) => {
     const id = documentId(document, index);
     if (mode === "page") return [id, paginateBlocks(document.blocks).map((page, pageIndex) => ({ page: pageIndex + 1, blocks: page.map((block) => ({ id: block.id, type: block.type, text: block.text })) }))];
     if (mode === "scene") return [id, deriveScenes(document.blocks).map((scene) => ({
@@ -220,8 +436,12 @@ function semanticView(session: ProjectSession, mode: Exclude<SnapshotDiffMode, "
   }));
 }
 
-export function mergeSnapshots(base: ProjectSnapshot, ours: ProjectSnapshot, theirs: ProjectSnapshot, resolution: MergeResolution = "ours"): SnapshotMergeResult {
-  const context: MergeContext = { conflicts: [], resolution };
+export function mergeSnapshots(base: ProjectSnapshot, ours: ProjectSnapshot, theirs: ProjectSnapshot, resolution: MergeResolution | MergeResolutionPlan = "ours"): SnapshotMergeResult {
+  if ([base, ours, theirs].some((snapshot) => snapshotScopeOf(snapshot).kind !== "project")) {
+    throw new Error("Alternate Drafts can only combine project-wide snapshots.");
+  }
+  const plan = typeof resolution === "string" ? { default: resolution, paths: {} } : resolution;
+  const context: MergeContext = { conflicts: [], resolution: plan.default, resolutions: plan.paths };
   const baseMetadata = withoutKey(base.session, "documents");
   const oursMetadata = withoutKey(ours.session, "documents");
   const theirsMetadata = withoutKey(theirs.session, "documents");
@@ -230,7 +450,7 @@ export function mergeSnapshots(base: ProjectSnapshot, ours: ProjectSnapshot, the
     ...(metadata === MISSING ? {} : metadata as Omit<ProjectSession, "documents">),
     documents: mergeDocuments(base.session.documents, ours.session.documents, theirs.session.documents, context),
   } as ProjectSession;
-  return { merged, conflicts: context.conflicts, clean: context.conflicts.length === 0, resolution };
+  return { merged, conflicts: context.conflicts, clean: context.conflicts.length === 0, resolution: plan.default };
 }
 
 function compareDocuments(before: ScreenplayDocument[], after: ScreenplayDocument[]): DocumentChange[] {
@@ -240,9 +460,9 @@ function compareDocuments(before: ScreenplayDocument[], after: ScreenplayDocumen
   for (const id of uniqueSorted([...left.keys(), ...right.keys()])) {
     const from = left.get(id)?.value;
     const to = right.get(id)?.value;
-    if (!from && to) changes.push({ kind: "added", documentId: id, title: documentTitle(to) });
-    else if (from && !to) changes.push({ kind: "removed", documentId: id, title: documentTitle(from) });
-    else if (from && to && !equal(from, to)) changes.push({ kind: "modified", documentId: id, title: documentTitle(to) });
+    if (!from && to) changes.push({ kind: "added", documentId: id, title: documentTitle(to), after: clone(to) });
+    else if (from && !to) changes.push({ kind: "removed", documentId: id, title: documentTitle(from), before: clone(from) });
+    else if (from && to && !equal(from, to)) changes.push({ kind: "modified", documentId: id, title: documentTitle(to), before: clone(from), after: clone(to) });
   }
   return changes;
 }
@@ -289,7 +509,16 @@ function compareBlocks(before: ScreenplayDocument[], after: ScreenplayDocument[]
     || a.blockId.localeCompare(b.blockId));
 }
 
-function metadataView(session: ProjectSession): unknown {
+function metadataView(session: ProjectSession, scope: SnapshotScope): unknown {
+  if (scope.kind !== "project") {
+    return {
+      workspace: { series: seriesForScope(session, scope) },
+      documents: Object.fromEntries(documentsForScope(session, scope).map((document, index) => [
+        documentId(document, index),
+        withoutKey(document, "blocks"),
+      ])),
+    };
+  }
   const { documents, versions, ...project } = session;
   return {
     ...project,
@@ -314,6 +543,7 @@ function diffMetadata(before: unknown, after: unknown, path: string, changes: Me
 interface MergeContext {
   conflicts: MergeConflict[];
   resolution: MergeResolution;
+  resolutions: Record<string, MergeResolution>;
 }
 
 const MISSING = Symbol("missing");
@@ -368,8 +598,9 @@ function mergeOrder(base: string[], ours: string[], theirs: string[], valid: Set
   else if (equal(ourOrder, baseOrder)) preferred = theirs;
   else if (equal(theirOrder, baseOrder)) preferred = ours;
   else {
-    context.conflicts.push({ path, kind: "order", base: clone(base), ours: clone(ours), theirs: clone(theirs), resolution: context.resolution });
-    preferred = context.resolution === "ours" ? ours : theirs;
+    const resolution = resolutionFor(path, context);
+    context.conflicts.push({ path, kind: "order", base: clone(base), ours: clone(ours), theirs: clone(theirs), resolution });
+    preferred = resolution === "ours" ? ours : theirs;
   }
   const secondary = preferred === ours ? theirs : ours;
   return [...preferred, ...secondary, ...base].filter((id, index, all) => valid.has(id) && all.indexOf(id) === index);
@@ -379,6 +610,10 @@ function mergeValue(base: MaybeValue, ours: MaybeValue, theirs: MaybeValue, path
   if (same(ours, theirs)) return cloneMaybe(ours);
   if (same(ours, base)) return cloneMaybe(theirs);
   if (same(theirs, base)) return cloneMaybe(ours);
+  const baseItems = base === MISSING ? [] : idRecordArray(base);
+  const ourItems = idRecordArray(ours);
+  const theirItems = idRecordArray(theirs);
+  if (baseItems && ourItems && theirItems) return mergeIdRecordArrays(baseItems, ourItems, theirItems, path, context);
   if (isRecordMaybe(ours) && isRecordMaybe(theirs) && (base === MISSING || isRecordMaybe(base))) {
     const ancestor = base === MISSING ? {} : base;
     const result: Record<string, unknown> = {};
@@ -389,8 +624,47 @@ function mergeValue(base: MaybeValue, ours: MaybeValue, theirs: MaybeValue, path
     return result;
   }
   const kind: MergeConflictKind = base === MISSING ? "add-add" : ours === MISSING || theirs === MISSING ? "delete-edit" : "value";
-  context.conflicts.push({ path: path || "/", kind, base: conflictValue(base), ours: conflictValue(ours), theirs: conflictValue(theirs), resolution: context.resolution });
-  return cloneMaybe(context.resolution === "ours" ? ours : theirs);
+  const conflictPath = path || "/";
+  const resolution = resolutionFor(conflictPath, context);
+  context.conflicts.push({ path: conflictPath, kind, base: conflictValue(base), ours: conflictValue(ours), theirs: conflictValue(theirs), resolution });
+  return cloneMaybe(resolution === "ours" ? ours : theirs);
+}
+
+function resolutionFor(path: string, context: MergeContext): MergeResolution {
+  return context.resolutions[path] ?? context.resolution;
+}
+
+type IdRecord = Record<string, unknown> & { id: string };
+
+function mergeIdRecordArrays(base: IdRecord[], ours: IdRecord[], theirs: IdRecord[], path: string, context: MergeContext): IdRecord[] {
+  const baseMap = idRecordsById(base);
+  const oursMap = idRecordsById(ours);
+  const theirsMap = idRecordsById(theirs);
+  const merged = new Map<string, IdRecord>();
+  for (const id of uniqueSorted([...baseMap.keys(), ...oursMap.keys(), ...theirsMap.keys()])) {
+    const value = mergeValue(baseMap.get(id) ?? MISSING, oursMap.get(id) ?? MISSING, theirsMap.get(id) ?? MISSING, childPath(path, id), context);
+    if (value !== MISSING) merged.set(id, value as IdRecord);
+  }
+  const order = mergeOrder(base.map(recordId), ours.map(recordId), theirs.map(recordId), new Set(merged.keys()), `${path}/order`, context);
+  return order.map((id) => merged.get(id)!).filter(Boolean);
+}
+
+function idRecordArray(value: MaybeValue): IdRecord[] | undefined {
+  if (value === MISSING || !Array.isArray(value)) return undefined;
+  const ids = new Set<string>();
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.id !== "string" || !item.id.trim() || ids.has(item.id.trim())) return undefined;
+    ids.add(item.id.trim());
+  }
+  return value as IdRecord[];
+}
+
+function idRecordsById(values: IdRecord[]): Map<string, IdRecord> {
+  return new Map(values.map((value) => [recordId(value), value]));
+}
+
+function recordId(value: IdRecord): string {
+  return value.id.trim();
 }
 
 function documentsById(documents: ScreenplayDocument[]) {

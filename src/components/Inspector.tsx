@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
+import TeamPanel, { type CollaborationSyncControls } from "./TeamPanel.tsx";
 import {
+  createManualObjectOverride,
   moveStoryScene,
   nextRevisionColor,
   parseHeading,
@@ -16,8 +18,11 @@ import {
   type LocationRef,
   type Scene,
   type ScreenplayBlock,
+  type ScreenplayDocument,
   type MergeConflict,
+  type MergeResolutionPlan,
   type ProjectSnapshot,
+  type ProjectSession,
   type ProjectWorkspace,
   type ProductionExportKind,
   type ProductionPage,
@@ -29,14 +34,17 @@ import {
   type ScriptAnalysis,
   type SnapshotComparison,
   type SnapshotDiffMode,
+  type SnapshotScope,
   type StoryBoardView,
   type StoryLine,
   type TreatmentDocument,
+  treatmentSections,
   type VersionHistory,
   type WorkspaceData,
 } from "../domain/index.ts";
 
 interface InspectorProps {
+  fixedTab?: InspectorTab;
   blocks: ScreenplayBlock[];
   scenes: Scene[];
   characters: CharacterRef[];
@@ -54,12 +62,17 @@ interface InspectorProps {
   versionHistory: VersionHistory;
   versionComparison: SnapshotComparison | null;
   mergeConflicts: MergeConflict[];
-  onSaveVersion: (name: string, description: string, milestone: boolean) => void;
+  mergePreviewReady: boolean;
+  mergePreviewSourceId: string;
+  onSaveVersion: (name: string, description: string, milestone: boolean, scope: SnapshotScope) => void;
   onRestoreVersion: (version: ProjectSnapshot) => void;
   onCompareVersions: (fromId: string, toId: string, mode: SnapshotDiffMode) => void;
   onCreateAlternateDraft: (name: string, fromSnapshotId: string) => void;
   onSwitchAlternateDraft: (branchId: string) => void;
-  onCombineDrafts: (sourceBranchId: string, resolution: "ours" | "theirs") => void;
+  onSelectCombineDraftSource: (sourceBranchId: string) => void;
+  onPreviewCombineDrafts: (sourceBranchId: string) => void;
+  onCombineDrafts: (sourceBranchId: string, resolution: MergeResolutionPlan) => void;
+  onCancelCombineDrafts: () => void;
   onExportBreakdown: (format: "md" | "csv" | "json" | "pdf", section?: AnalysisCsvSection) => void;
   onExportTreatment: (format: "md" | "pdf") => void;
   projectWorkspace: ProjectWorkspace;
@@ -75,31 +88,65 @@ interface InspectorProps {
   onUpdateRevisionMarks: (revisionId: string) => void;
   onLockPages: () => void;
   onUnlockPages: () => void;
+  onPrintRevisionPages: () => void;
   onToggleOmittedScene: (sceneId: string) => void;
   onSetSceneNumber: (sceneId: string, number: string) => void;
   onExportProduction: (kind: ProductionExportKind, targetId?: string) => void;
+  editable: boolean;
+  collaborationSession: ProjectSession;
+  onCollaborationSession: (session: ProjectSession) => void;
+  onCollaborationTarget: (documentId: string, targetId?: string) => void;
+  onCollaborationMessage: (message: string) => void;
+  collaborationSync: CollaborationSyncControls;
 }
 
 const TABS = ["Scene", "Story", "Treatment", "Cast", "Props", "Places", "Drafts", "Breakdown", "Series", "Production", "Team", "Assist"] as const;
-type Tab = (typeof TABS)[number];
+export type InspectorTab = (typeof TABS)[number];
 const Hint = ({ children }: { children: React.ReactNode }) => <p className="insp-hint">{children}</p>;
 
+function formatDiffValue(value: unknown): string {
+  if (value === undefined) return "Not present";
+  if (value === null) return "null";
+  if (typeof value === "string") return value || "(empty string)";
+  if (typeof value !== "object") return String(value);
+  const block = value as Partial<ScreenplayBlock>;
+  if (typeof block.type === "string" && typeof block.text === "string") return `${block.type.replace(/_/g, " ")}\n${block.text || "(empty block)"}`;
+  return JSON.stringify(value, null, 2);
+}
+
+function formatDocumentDiff(document?: ScreenplayDocument): string {
+  if (!document) return "Not present";
+  const scenes = document.blocks.filter((block) => block.type === "scene_heading").length;
+  return `${document.titlePage.title || "Untitled"}\n${document.blocks.length} blocks · ${scenes} scenes`;
+}
+
+const snapshotScopeLabel = (scope?: SnapshotScope) => !scope || scope.kind === "project"
+  ? "whole project"
+  : scope.kind === "episode"
+    ? `episode · ${scope.documentId}`
+    : scope.kind === "season"
+      ? `season · ${scope.seasonId}`
+      : "show bible";
+
 export default function Inspector(props: InspectorProps) {
-  const [tab, setTab] = useState<Tab>("Scene");
+  const [selectedTab, setSelectedTab] = useState<InspectorTab>(props.fixedTab ?? "Scene");
+  const tab = props.fixedTab ?? selectedTab;
   return <aside className="inspector">
-    <nav className="insp-tabs">{TABS.map((name) => <button key={name} className={`insp-tab ${name === tab ? "active" : ""}`} onClick={() => setTab(name)}>{name}</button>)}</nav>
+    {!props.fixedTab && <nav className="insp-tabs">{TABS.map((name) => <button key={name} className={`insp-tab ${name === tab ? "active" : ""}`} onClick={() => setSelectedTab(name)}>{name}</button>)}</nav>}
     <div className="insp-body">
-      {tab === "Scene" && <SceneTab {...props} />}
-      {tab === "Story" && <StoryWorkspaceTab {...props} />}
-      {tab === "Treatment" && <TreatmentWorkspaceTab {...props} />}
-      {tab === "Cast" && <CastTab {...props} />}
-      {tab === "Props" && <PropsTab {...props} />}
-      {tab === "Places" && <PlacesTab {...props} />}
-      {tab === "Drafts" && <DraftsTab {...props} />}
-      {tab === "Breakdown" && <BreakdownTab {...props} />}
-      {tab === "Series" && <SeriesTab {...props} />}
-      {tab === "Production" && <ProductionTab {...props} />}
-      {tab === "Team" && <TeamTab {...props} />}
+      {tab !== "Team" && tab !== "Assist" && <fieldset className="inspector-permission-scope" disabled={!props.editable}>
+        {tab === "Scene" && <SceneTab {...props} />}
+        {tab === "Story" && <StoryWorkspaceTab {...props} />}
+        {tab === "Treatment" && <TreatmentWorkspaceTab {...props} />}
+        {tab === "Cast" && <CastTab {...props} />}
+        {tab === "Props" && <PropsTab {...props} />}
+        {tab === "Places" && <PlacesTab {...props} />}
+        {tab === "Drafts" && <DraftsTab {...props} />}
+        {tab === "Breakdown" && <BreakdownTab {...props} />}
+        {tab === "Series" && <SeriesTab {...props} />}
+        {tab === "Production" && <ProductionTab {...props} />}
+      </fieldset>}
+      {tab === "Team" && <TeamPanel session={props.collaborationSession} activeScene={props.activeScene} onSession={props.onCollaborationSession} onOpenTarget={props.onCollaborationTarget} onMessage={props.onCollaborationMessage} sync={props.collaborationSync} />}
       {tab === "Assist" && <AssistTab {...props} />}
     </div>
   </aside>;
@@ -122,6 +169,7 @@ function SceneTab({ blocks, scenes, activeScene, sceneNotes, onSceneNote, worksp
 }
 
 function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, onJumpToScene }: InspectorProps) {
+  const [draggedStoryScene, setDraggedStoryScene] = useState<string | null>(null);
   const view = workspace.storyBoardView ?? "scene";
   const save = (next: CustomStoryStructure) => onWorkspace({ storyStructure: next });
   const updateAct = (id: string, title: string) => save({
@@ -202,10 +250,10 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
       </div>)}
     </>}
     {view === "scene" && <div className="story-card-grid">
-      {orderedScenes.map((scene, index) => <div className="insp-card" key={scene.id}>
+      {orderedScenes.map((scene, index) => <div className="insp-card" key={scene.id} draggable onDragStart={() => setDraggedStoryScene(scene.id)} onDragEnd={() => setDraggedStoryScene(null)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedStoryScene && draggedStoryScene !== scene.id) save(moveStoryScene(customStructure, draggedStoryScene, index)); setDraggedStoryScene(null); }}>
         <button className="link-btn insp-card-title" onClick={() => onJumpToScene(scene.id)}>Scene {scene.number} · {scene.heading}</button>
         <div className="insp-card-meta">{workspace.sceneMeta?.[scene.id]?.summary || "No summary"}</div>
-        <div className="btn-row"><button className="btn btn-ghost" disabled={index === 0} onClick={() => save(moveStoryScene(customStructure, scene.id, index - 1))}>↑</button><button className="btn btn-ghost" disabled={index === orderedScenes.length - 1} onClick={() => save(moveStoryScene(customStructure, scene.id, index + 1))}>↓</button></div>
+        <div className="insp-card-meta">Drag to rearrange metadata order.</div><div className="btn-row"><button className="btn btn-ghost" disabled={index === 0} onClick={() => save(moveStoryScene(customStructure, scene.id, index - 1))}>↑</button><button className="btn btn-ghost" disabled={index === orderedScenes.length - 1} onClick={() => save(moveStoryScene(customStructure, scene.id, index + 1))}>↓</button></div>
       </div>)}
     </div>}
     {view === "beat" && <>
@@ -237,6 +285,8 @@ function TreatmentWorkspaceTab({ workspace, onWorkspace, onExportTreatment, scen
   const active = documents.find((document) => document.id === workspace.activeTreatmentId) ?? documents[0];
   const [linkType, setLinkType] = useState<LinkType>("scene");
   const [linkTarget, setLinkTarget] = useState("");
+  const [linkSection, setLinkSection] = useState("");
+  const sections = treatmentSections(active.markdown);
   const targets: Record<LinkType, { id: string; label: string }[]> = {
     act: customStructure.acts.map((act) => ({ id: act.id, label: act.title })),
     sequence: customStructure.sequences.map((sequence) => ({ id: sequence.id, label: sequence.title })),
@@ -257,7 +307,8 @@ function TreatmentWorkspaceTab({ workspace, onWorkspace, onExportTreatment, scen
   const addLink = () => {
     const target = targets[linkType].find((item) => item.id === linkTarget) ?? targets[linkType][0];
     if (!target) return;
-    update({ links: [...active.links, { id: `link-${crypto.randomUUID()}`, targetType: linkType, targetId: target.id, label: target.label }] });
+    const section = sections.find((item) => item.id === linkSection);
+    update({ links: [...active.links, { id: `link-${crypto.randomUUID()}`, targetType: linkType, targetId: target.id, label: target.label, ...(section ? { sectionId: section.id, sectionLabel: section.label } : {}) }] });
   };
 
   return <div className="insp-stack">
@@ -271,12 +322,13 @@ function TreatmentWorkspaceTab({ workspace, onWorkspace, onExportTreatment, scen
     <input className="insp-notes-input" aria-label="Treatment title" value={active.title} onChange={(event) => update({ title: event.target.value })} />
     <textarea className="insp-notes-input treatment-input" value={active.markdown} placeholder="# Treatment\n\n## Act I\n…" onChange={(event) => update({ markdown: event.target.value })} />
     <h4>Linked references</h4>
+    <select className="element-select" aria-label="Treatment section" value={sections.some((section) => section.id === linkSection) ? linkSection : ""} onChange={(event) => setLinkSection(event.target.value)}><option value="">Whole treatment</option>{sections.map((section) => <option key={section.id} value={section.id}>{"—".repeat(section.level - 1)} {section.label}</option>)}</select>
     <div className="btn-row">
       <select className="element-select" value={linkType} onChange={(event) => { setLinkType(event.target.value as LinkType); setLinkTarget(""); }}>{Object.keys(targets).map((type) => <option key={type} value={type}>{type}</option>)}</select>
       <select className="element-select" value={linkTarget} onChange={(event) => setLinkTarget(event.target.value)}><option value="">Choose…</option>{targets[linkType].map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}</select>
       <button className="btn btn-ghost" onClick={addLink}>Link</button>
     </div>
-    {active.links.map((link) => <div className="chip" key={link.id}>{link.targetType}: {link.label}<button className="link-btn" aria-label={`Remove ${link.label} link`} onClick={() => update({ links: active.links.filter((item) => item.id !== link.id) })}>×</button></div>)}
+    {active.links.map((link) => <div className="chip" key={link.id}>{link.sectionLabel ? `${link.sectionLabel} → ` : ""}{link.targetType}: {link.label}<button className="link-btn" aria-label={`Remove ${link.label} link`} onClick={() => update({ links: active.links.filter((item) => item.id !== link.id) })}>×</button></div>)}
     <div className="btn-row">
       <button className="btn" onClick={() => onExportTreatment("md")}>Export Markdown</button>
       <button className="btn btn-ghost" onClick={() => onExportTreatment("pdf")}>Print PDF</button>
@@ -338,8 +390,17 @@ function CastTab({ analysis, workspace, onWorkspace }: InspectorProps) {
 
 function PropsTab({ analysis, workspace, onWorkspace }: InspectorProps) {
   const objects = analysis.entities.objects;
-  if (!objects.length) return <Hint>No production objects detected in action lines.</Hint>;
-  return <div className="insp-stack"><Hint>Object sheets include associations, likely ownership, and every continuity appearance.</Hint>{objects.map((object) => <details className="insp-card" key={object.id} open={objects.length <= 3 && object.status !== "rejected"}>
+  const [manualName, setManualName] = useState("");
+  const [manualCategory, setManualCategory] = useState("prop");
+  const addManualObject = () => {
+    const override = createManualObjectOverride(manualName, manualCategory);
+    const entityOverrides = (workspace.entityOverrides ?? []).filter((item) => !(item.action === "add" && item.kind === "object" && item.entityId === override.entityId));
+    onWorkspace({ entityOverrides: [...entityOverrides, override] });
+    setManualName("");
+  };
+  return <div className="insp-stack"><Hint>Object sheets include associations, likely ownership, and every continuity appearance. Add an item manually when prose recognition has no signal.</Hint>
+    <div className="insp-card"><div className="insp-card-title">Add object or prop</div><input aria-label="Manual object name" className="insp-notes-input" value={manualName} placeholder="Hero watch" onChange={(event) => setManualName(event.target.value)} /><div className="btn-row"><select aria-label="Manual object category" className="element-select" value={manualCategory} onChange={(event) => setManualCategory(event.target.value)}><option value="prop">Prop</option><option value="wardrobe">Wardrobe</option><option value="weapon">Weapon</option><option value="vehicle">Vehicle</option><option value="animal">Animal</option></select><button className="btn" disabled={!manualName.trim()} onClick={addManualObject}>Add Object</button></div></div>
+    {!objects.length && <Hint>No production objects detected or added yet.</Hint>}{objects.map((object) => <details className="insp-card" key={object.id} open={objects.length <= 3 && object.status !== "rejected"}>
     <summary className="insp-card-title">{object.name} <small>· {object.status}</small></summary>
     <div className="insp-card-meta">{object.productionCategory} · {object.mentions} mentions · scenes {object.sceneNumbers.join(", ") || "—"} · {Math.round(object.confidence * 100)}%</div>
     {object.likelyOwner && <p className="insp-card-desc">Likely owner: {object.likelyOwner}</p>}
@@ -363,33 +424,41 @@ function PlacesTab({ analysis, workspace, onWorkspace }: InspectorProps) {
   </details>)}</div>;
 }
 
-function DraftsTab({ versionHistory, versionComparison, mergeConflicts, onSaveVersion, onRestoreVersion, onCompareVersions, onCreateAlternateDraft, onSwitchAlternateDraft, onCombineDrafts }: InspectorProps) {
+function DraftsTab({ versionHistory, versionComparison, mergeConflicts, mergePreviewReady, mergePreviewSourceId, onSaveVersion, onRestoreVersion, onCompareVersions, onCreateAlternateDraft, onSwitchAlternateDraft, onSelectCombineDraftSource, onPreviewCombineDrafts, onCombineDrafts, onCancelCombineDrafts, collaborationSession, projectWorkspace, activeDocumentId }: InspectorProps) {
   const snapshots = [...versionHistory.snapshots].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const projectSnapshots = snapshots.filter((snapshot) => !snapshot.scope || snapshot.scope.kind === "project");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [milestone, setMilestone] = useState(false);
+  const [snapshotScope, setSnapshotScope] = useState<SnapshotScope["kind"]>("project");
   const [alternateName, setAlternateName] = useState("");
   const [alternateBase, setAlternateBase] = useState("");
   const [compareFrom, setCompareFrom] = useState("");
   const [compareTo, setCompareTo] = useState("");
   const [compareMode, setCompareMode] = useState<SnapshotDiffMode>("scene");
-  const [mergeSource, setMergeSource] = useState("");
+  const [mergeResolutions, setMergeResolutions] = useState<Record<string, "ours" | "theirs">>({});
   const activeBranch = versionHistory.branches.find((branch) => branch.id === versionHistory.activeBranchId);
+  const defaultAlternateBase = projectSnapshots.some((snapshot) => snapshot.id === activeBranch?.headSnapshotId)
+    ? activeBranch!.headSnapshotId
+    : projectSnapshots[0]?.id ?? "";
   const milestones = new Map(versionHistory.milestones.map((item) => [item.snapshotId, item]));
   const save = () => {
     const label = name.trim() || `Draft ${versionHistory.snapshots.length + 1}`;
-    onSaveVersion(label, description, milestone);
+    const episode = projectWorkspace.series.episodes[activeDocumentId];
+    const scope: SnapshotScope = snapshotScope === "episode"
+      ? { kind: "episode", documentId: activeDocumentId }
+      : snapshotScope === "season"
+        ? { kind: "season", seasonId: episode?.seasonId ?? projectWorkspace.series.seasons[0]?.id ?? "" }
+        : snapshotScope === "show-bible"
+          ? { kind: "show-bible" }
+          : { kind: "project" };
+    onSaveVersion(label, description, milestone, scope);
     setName(""); setDescription(""); setMilestone(false);
   };
-  const comparisonRows = versionComparison ? [
-    ...versionComparison.documentChanges.map((change) => `${change.kind}: ${change.title}`),
-    ...versionComparison.blockChanges.map((change) => `${change.kind}: ${change.documentId} / ${change.blockId}`),
-    ...versionComparison.metadataChanges.map((change) => `changed: ${change.path}`),
-  ] : [];
   const modes: { value: SnapshotDiffMode; label: string }[] = [
     { value: "page", label: "Script pages" }, { value: "scene", label: "Scenes" }, { value: "dialogue", label: "Dialogue only" },
     { value: "structure", label: "Structure" }, { value: "character", label: "Characters" }, { value: "object", label: "Objects / props" },
-    { value: "treatment", label: "Treatments" }, { value: "episode", label: "Episodes" }, { value: "season", label: "Season" },
+    { value: "treatment", label: "Treatments" }, { value: "episode", label: "Episodes" }, { value: "season", label: "Season" }, { value: "show-bible", label: "Show bible" },
     { value: "document", label: "Documents" }, { value: "block", label: "All script blocks" }, { value: "metadata", label: "All metadata" },
   ];
   return <div className="insp-stack">
@@ -397,25 +466,33 @@ function DraftsTab({ versionHistory, versionComparison, mergeConflicts, onSaveVe
     <h4>Save Draft Version</h4>
     <input className="insp-notes-input" value={name} placeholder={`Draft ${versionHistory.snapshots.length + 1} name`} onChange={(event) => setName(event.target.value)} />
     <textarea className="insp-notes-input" value={description} placeholder="What changed?" onChange={(event) => setDescription(event.target.value)} />
+    {collaborationSession.projectType === "television" && <label className="insp-card-meta">Version scope<select aria-label="Version scope" className="element-select" value={snapshotScope} onChange={(event) => setSnapshotScope(event.target.value as SnapshotScope["kind"])}><option value="project">Whole project</option><option value="episode">Active episode</option><option value="season">Active season</option><option value="show-bible">Show bible</option></select></label>}
     <label className="check-row"><input type="checkbox" checked={milestone} onChange={(event) => setMilestone(event.target.checked)} /> Mark as milestone</label>
     <button className="btn btn-primary" onClick={save}>Save Draft Version</button>
     {!!versionHistory.branches.length && <><h4>Alternate Drafts</h4><label className="insp-card-meta">Working draft<select className="element-select" value={versionHistory.activeBranchId} onChange={(event) => onSwitchAlternateDraft(event.target.value)}>{versionHistory.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label></>}
-    {!!snapshots.length && <div className="insp-card">
+    {!!projectSnapshots.length && <div className="insp-card">
       <input className="insp-notes-input" value={alternateName} placeholder="Alternate draft name" onChange={(event) => setAlternateName(event.target.value)} />
-      <select className="element-select" value={alternateBase} onChange={(event) => setAlternateBase(event.target.value)}><option value="">Branch from latest…</option>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select>
-      <button className="btn btn-ghost" disabled={!alternateName.trim()} onClick={() => { onCreateAlternateDraft(alternateName, alternateBase || snapshots[0].id); setAlternateName(""); }}>Create Alternate Draft</button>
+      <select className="element-select" value={alternateBase} onChange={(event) => setAlternateBase(event.target.value)}><option value="">Branch from active draft head…</option>{projectSnapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select>
+      <button className="btn btn-ghost" disabled={!alternateName.trim() || !defaultAlternateBase} onClick={() => { onCreateAlternateDraft(alternateName, alternateBase || defaultAlternateBase); setAlternateName(""); }}>Create Alternate Draft</button>
     </div>}
-    {versionHistory.branches.length > 1 && <div className="insp-card"><h4>Combine Drafts</h4><select className="element-select" value={mergeSource} onChange={(event) => setMergeSource(event.target.value)}><option value="">Choose alternate…</option>{versionHistory.branches.filter((branch) => branch.id !== versionHistory.activeBranchId).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select><div className="btn-row"><button className="btn" disabled={!mergeSource} onClick={() => onCombineDrafts(mergeSource, "ours")}>Combine, keep current conflicts</button><button className="btn btn-ghost" disabled={!mergeSource} onClick={() => onCombineDrafts(mergeSource, "theirs")}>Combine, keep alternate conflicts</button></div></div>}
-    {!!mergeConflicts.length && <><h4>Last combine conflicts</h4><ul className="insp-list">{mergeConflicts.map((conflict) => <li key={conflict.path}>{conflict.kind}: {conflict.path} · kept {conflict.resolution}</li>)}</ul></>}
+    {versionHistory.branches.length > 1 && <div className="insp-card diff-comparison"><h4>Combine Drafts</h4><select className="element-select" value={mergePreviewSourceId} onChange={(event) => { setMergeResolutions({}); onSelectCombineDraftSource(event.target.value); }}><option value="">Choose alternate…</option>{versionHistory.branches.filter((branch) => branch.id !== versionHistory.activeBranchId).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select><button className="btn" disabled={!mergePreviewSourceId} onClick={() => { setMergeResolutions({}); onPreviewCombineDrafts(mergePreviewSourceId); }}>Preview Combine</button>
+      {mergePreviewReady && <><div className="insp-card-meta">{mergeConflicts.length ? `${mergeConflicts.length} overlapping changes need an explicit choice.` : "No overlapping changes; this combine is clean."}</div>{mergeConflicts.map((conflict) => <div className="diff-row" key={conflict.path}><strong>{conflict.kind} · {conflict.path}</strong><div className="diff-values"><div><span>Base</span><pre>{formatDiffValue(conflict.base)}</pre></div><div><span>Current draft</span><pre>{formatDiffValue(conflict.ours)}</pre></div><div><span>Alternate draft</span><pre>{formatDiffValue(conflict.theirs)}</pre></div></div><label className="insp-card-meta">Use<select aria-label={`Resolve ${conflict.path}`} className="element-select" value={mergeResolutions[conflict.path] ?? "ours"} onChange={(event) => setMergeResolutions((current) => ({ ...current, [conflict.path]: event.target.value as "ours" | "theirs" }))}><option value="ours">Current draft</option><option value="theirs">Alternate draft</option></select></label></div>)}<div className="btn-row"><button className="btn btn-primary" onClick={() => { onCombineDrafts(mergePreviewSourceId, { default: "ours", paths: mergeResolutions }); setMergeResolutions({}); }}>Apply Combine</button><button className="btn btn-ghost" onClick={() => { setMergeResolutions({}); onCancelCombineDrafts(); }}>Cancel</button></div></>}
+    </div>}
     {snapshots.length > 1 && <><h4>Compare Drafts</h4><select className="element-select" value={compareFrom} onChange={(event) => setCompareFrom(event.target.value)}><option value="">Earlier draft…</option>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select><select className="element-select" value={compareTo} onChange={(event) => setCompareTo(event.target.value)}><option value="">Later draft…</option>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select><select className="element-select" value={compareMode} onChange={(event) => setCompareMode(event.target.value as SnapshotDiffMode)}>{modes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select><button className="btn btn-ghost" disabled={!compareFrom || !compareTo || compareFrom === compareTo} onClick={() => onCompareVersions(compareFrom, compareTo, compareMode)}>Compare</button></>}
-    {versionComparison && <div className="insp-card"><div className="insp-card-title">{versionComparison.mode} comparison</div>{comparisonRows.length ? <ul className="insp-list">{comparisonRows.slice(0, 200).map((row, index) => <li key={`${row}-${index}`}>{row}</li>)}</ul> : <Hint>No differences in this view.</Hint>}</div>}
+    {versionComparison && <div className="insp-card diff-comparison"><div className="insp-card-title">{versionComparison.mode} comparison</div><div className="insp-card-meta">Scope: {snapshotScopeLabel(versionComparison.scope)}</div>
+      {!versionComparison.documentChanges.length && !versionComparison.blockChanges.length && !versionComparison.metadataChanges.length && <Hint>No differences in this view.</Hint>}
+      {versionComparison.documentChanges.slice(0, 200).map((change) => <div className="diff-row" key={`document-${change.documentId}`}><strong>{change.kind} document · {change.title}</strong><code>{change.documentId}</code><div className="diff-values"><div><span>Before</span><pre>{formatDocumentDiff(change.before)}</pre></div><div><span>After</span><pre>{formatDocumentDiff(change.after)}</pre></div></div></div>)}
+      {versionComparison.blockChanges.slice(0, 200).map((change, index) => <div className="diff-row" key={`block-${change.documentId}-${change.blockId}-${change.kind}-${index}`}><strong>{change.kind} block · {change.documentId}</strong><code>{change.blockId} · {change.beforeIndex ?? "—"} → {change.afterIndex ?? "—"}</code><div className="diff-values"><div><span>Before</span><pre>{formatDiffValue(change.before)}</pre></div><div><span>After</span><pre>{formatDiffValue(change.after)}</pre></div></div></div>)}
+      {versionComparison.metadataChanges.slice(0, 200).map((change) => <div className="diff-row" key={`metadata-${change.path}`}><strong>{change.path}</strong><div className="diff-values"><div><span>Before</span><pre>{formatDiffValue(change.before)}</pre></div><div><span>After</span><pre>{formatDiffValue(change.after)}</pre></div></div></div>)}
+      {versionComparison.documentChanges.length + versionComparison.blockChanges.length + versionComparison.metadataChanges.length > 200 && <Hint>Showing the first 200 changes. Export or narrow the comparison mode for a focused review.</Hint>}
+    </div>}
     <h4>Project History{activeBranch ? ` · ${activeBranch.name}` : ""}</h4>
-    <div className="version-list">{snapshots.map((snapshot) => <div className="version-row" key={snapshot.id}><div className="version-top"><span className="version-label">{snapshot.name}</span>{milestones.has(snapshot.id) && <span className="milestone-tag">milestone</span>}<span className="version-when">{new Date(snapshot.createdAt).toLocaleString()}</span></div><div className="version-note">{snapshot.description || "No description"} · {versionHistory.branches.find((branch) => branch.id === snapshot.branchId)?.name ?? snapshot.branchId ?? "Main Draft"}</div><button className="link-btn" onClick={() => onRestoreVersion(snapshot)}>Restore</button></div>)}</div>
+    <div className="version-list">{snapshots.map((snapshot) => <div className="version-row" key={snapshot.id}><div className="version-top"><span className="version-label">{snapshot.name}</span>{milestones.has(snapshot.id) && <span className="milestone-tag">milestone</span>}<span className="milestone-tag">{snapshotScopeLabel(snapshot.scope)}</span><span className="version-when">{new Date(snapshot.createdAt).toLocaleString()}</span></div><div className="version-note">{snapshot.description || "No description"} · {versionHistory.branches.find((branch) => branch.id === snapshot.branchId)?.name ?? snapshot.branchId ?? "Main Draft"}</div><button className="link-btn" onClick={() => onRestoreVersion(snapshot)}>Restore</button></div>)}</div>
   </div>;
 }
 
 function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown }: InspectorProps) {
-  const [csvSection, setCsvSection] = useState<AnalysisCsvSection>("scenes");
+  const [csvSection, setCsvSection] = useState<AnalysisCsvSection>("all");
   const threads = workspace.plotThreads ?? [];
   const updateThread = (id: string, patch: Partial<(typeof threads)[number]>) => onWorkspace({ plotThreads: threads.map((thread) => thread.id === id ? { ...thread, ...patch } : thread) });
   const toggleThreadTarget = (id: string, field: "sceneIds" | "beatIds", targetId: string) => {
@@ -455,7 +532,7 @@ function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown }: I
     <h4>Detailed scenes</h4>
     {analysis.scenes.map((scene) => <details className="insp-card" key={scene.id}><summary className="insp-card-title">Scene {scene.sceneNumber ?? scene.number} · {scene.heading}</summary><div className="insp-card-meta">~{scene.estimatedPages} pages · {scene.dialogueWords} dialogue words · complexity {scene.complexityScore}/5</div><p className="insp-card-desc">Cast: {scene.characters.join(", ") || "—"}<br />Objects: {scene.objects.join(", ") || "—"}</p></details>)}
     <h4>Export</h4>
-    <div className="btn-row"><button className="btn btn-ghost" onClick={() => onExportBreakdown("md")}>Markdown</button><select aria-label="CSV report" className="element-select" value={csvSection} onChange={(event) => setCsvSection(event.target.value as AnalysisCsvSection)}>{(["scenes", "characters", "objects", "production"] as const).map((section) => <option key={section} value={section}>{section}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportBreakdown("csv", csvSection)}>CSV</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("json")}>JSON</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("pdf")}>Print PDF</button></div>
+    <div className="btn-row"><button className="btn btn-ghost" onClick={() => onExportBreakdown("md")}>Markdown</button><select aria-label="CSV report" className="element-select" value={csvSection} onChange={(event) => setCsvSection(event.target.value as AnalysisCsvSection)}>{(["all", "summary", "scenes", "characters", "locations", "objects", "structure", "arcs", "coverage", "warnings", "revision", "production"] as const).map((section) => <option key={section} value={section}>{section}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportBreakdown("csv", csvSection)}>CSV</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("json")}>JSON</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("pdf")}>Print PDF</button></div>
   </div>;
 }
 
@@ -466,6 +543,8 @@ function SeriesTab({ projectWorkspace, seriesReport, activeDocumentId, scenes, o
   const [recordKind, setRecordKind] = useState<ContinuityRecord["kind"]>("timeline");
   const [recordTitle, setRecordTitle] = useState("");
   const [recordDetail, setRecordDetail] = useState("");
+  const [timelineOrder, setTimelineOrder] = useState(1);
+  const [timelineDate, setTimelineDate] = useState("");
   const saveSeries = (patch: Partial<typeof series>) => onProjectWorkspace({ series: { ...series, ...patch } });
   const updateEpisode = (patch: Partial<EpisodeMeta>) => {
     if (!activeMeta) return;
@@ -480,8 +559,9 @@ function SeriesTab({ projectWorkspace, seriesReport, activeDocumentId, scenes, o
   const toggleStoryScene = (line: StoryLine, sceneId: string) => updateStory(line.id, { sceneIds: line.sceneIds.includes(sceneId) ? line.sceneIds.filter((id) => id !== sceneId) : [...line.sceneIds, sceneId] });
   const addContinuity = () => {
     if (!recordTitle.trim()) return;
-    saveSeries({ continuity: [...series.continuity, { id: `continuity-${crypto.randomUUID()}`, kind: recordKind, title: recordTitle.trim(), detail: recordDetail.trim(), episodeIds: [activeDocumentId], resolved: false }] });
+    saveSeries({ continuity: [...series.continuity, { id: `continuity-${crypto.randomUUID()}`, kind: recordKind, title: recordTitle.trim(), detail: recordDetail.trim(), episodeIds: [activeDocumentId], ...(recordKind === "timeline" ? { timelineOrder, timelineDate } : {}), resolved: false }] });
     setRecordTitle(""); setRecordDetail("");
+    if (recordKind === "timeline") setTimelineOrder((order) => order + 1);
   };
   const updateContinuity = (id: string, patch: Partial<ContinuityRecord>) => saveSeries({ continuity: series.continuity.map((record) => record.id === id ? { ...record, ...patch } : record) });
   const activeIndex = seriesReport.episodes.findIndex((episode) => episode.documentId === activeDocumentId);
@@ -522,14 +602,16 @@ function SeriesTab({ projectWorkspace, seriesReport, activeDocumentId, scenes, o
     {([["characters", seriesReport.continuity.characters], ["locations", seriesReport.continuity.locations], ["objects", seriesReport.continuity.objects]] as const).map(([label, entries]) => <details className="insp-card" key={label}><summary className="insp-card-title">{label} ({entries.filter((entry) => entry.episodeIds.length > 1).length} recurring)</summary>{entries.map((entry) => <div key={entry.name}><strong>{entry.name}</strong><div className="chip-row">{entry.episodeIds.map((id) => <button className="chip" key={id} onClick={() => onSelectEpisode(id)}>{seriesReport.episodes.find((episode) => episode.documentId === id)?.title ?? id}</button>)}</div>{!!entry.absentEpisodeIdsBetween.length && <p className="insp-card-desc">Absent between appearances: {entry.absentEpisodeIdsBetween.length} episode(s)</p>}</div>)}</details>)}
     <h4>Plot thread history</h4>
     {seriesReport.plotThreads.length ? seriesReport.plotThreads.map((thread) => <div className="insp-card" key={thread.id}><div className="insp-card-title">{thread.kind} · {thread.label}</div><div className="insp-card-meta">{thread.status} · {thread.episodes.length} episode(s)</div><div className="chip-row">{thread.episodes.map((episode) => <button className="chip" key={episode.episodeId} onClick={() => onSelectEpisode(episode.episodeId)}>{seriesReport.episodes.find((item) => item.documentId === episode.episodeId)?.title}: {episode.status}</button>)}</div></div>) : <Hint>Add episode story lines or plot threads in Breakdown.</Hint>}
+    <h4>Season timeline</h4>
+    {series.continuity.filter((record) => record.kind === "timeline").sort((left, right) => (left.timelineOrder ?? Number.MAX_SAFE_INTEGER) - (right.timelineOrder ?? Number.MAX_SAFE_INTEGER) || (left.timelineDate ?? "").localeCompare(right.timelineDate ?? "")).map((record) => <div className="insp-card" key={`timeline-${record.id}`}><div className="insp-card-title">{record.timelineOrder ?? "—"} · {record.title}</div><div className="insp-card-meta">{record.timelineDate || "Relative story order"} · {record.episodeIds.map((id) => series.episodes[id]?.title ?? id).join(", ")}</div><p className="insp-card-desc">{record.detail}</p><div className="btn-row"><input aria-label={`${record.title} timeline order`} className="insp-notes-input" type="number" value={record.timelineOrder ?? ""} onChange={(event) => updateContinuity(record.id, { timelineOrder: Number(event.target.value) || undefined })} /><input aria-label={`${record.title} story date`} className="insp-notes-input" type="datetime-local" value={record.timelineDate ?? ""} onChange={(event) => updateContinuity(record.id, { timelineDate: event.target.value })} /></div></div>)}
     <h4>Continuity database / unanswered questions</h4>
-    <div className="insp-card"><select className="element-select" value={recordKind} onChange={(event) => setRecordKind(event.target.value as ContinuityRecord["kind"])}>{["timeline", "character", "object", "location", "plot", "question"].map((kind) => <option key={kind}>{kind}</option>)}</select><input className="insp-notes-input" value={recordTitle} placeholder="Continuity item or question" onChange={(event) => setRecordTitle(event.target.value)} /><textarea className="insp-notes-input" value={recordDetail} placeholder="Canon, timeline, knowledge, or answer…" onChange={(event) => setRecordDetail(event.target.value)} /><button className="btn" onClick={addContinuity}>Add Record</button></div>
+    <div className="insp-card"><select className="element-select" value={recordKind} onChange={(event) => setRecordKind(event.target.value as ContinuityRecord["kind"])}>{["timeline", "character", "object", "location", "plot", "question"].map((kind) => <option key={kind}>{kind}</option>)}</select>{recordKind === "timeline" && <div className="btn-row"><input aria-label="Timeline order" className="insp-notes-input" type="number" min="1" value={timelineOrder} onChange={(event) => setTimelineOrder(Math.max(1, Number(event.target.value) || 1))} /><input aria-label="Story date" className="insp-notes-input" type="datetime-local" value={timelineDate} onChange={(event) => setTimelineDate(event.target.value)} /></div>}<input className="insp-notes-input" value={recordTitle} placeholder="Continuity item or question" onChange={(event) => setRecordTitle(event.target.value)} /><textarea className="insp-notes-input" value={recordDetail} placeholder="Canon, timeline, knowledge, or answer…" onChange={(event) => setRecordDetail(event.target.value)} /><button className="btn" onClick={addContinuity}>Add Record</button></div>
     {series.continuity.map((record) => <div className="insp-card" key={record.id}><div className="insp-card-title">{record.kind} · {record.title}</div><textarea className="insp-notes-input" value={record.detail} onChange={(event) => updateContinuity(record.id, { detail: event.target.value })} /><label className="check-row"><input type="checkbox" checked={record.episodeIds.includes(activeDocumentId)} onChange={() => updateContinuity(record.id, { episodeIds: record.episodeIds.includes(activeDocumentId) ? record.episodeIds.filter((id) => id !== activeDocumentId) : [...record.episodeIds, activeDocumentId] })} /> Applies to this episode</label><div className="btn-row"><button className="btn btn-ghost" onClick={() => updateContinuity(record.id, { resolved: !record.resolved })}>{record.resolved ? "Reopen" : "Resolve"}</button><button className="link-btn" onClick={() => saveSeries({ continuity: series.continuity.filter((item) => item.id !== record.id) })}>Delete</button></div></div>)}
     {!!seriesReport.continuityIssues.length && <><h4>Continuity checks</h4><ul className="insp-list">{seriesReport.continuityIssues.map((issue) => <li key={issue.id}>{issue.severity}: {issue.message}</li>)}</ul></>}
   </div>;
 }
 
-function ProductionTab({ workspace, onWorkspace, activeScene, productionPages, productionReports, revisionSets, revisionSummaries, characters, scenes, onStartRevision, onUpdateRevisionMarks, onLockPages, onUnlockPages, onToggleOmittedScene, onSetSceneNumber, onExportProduction }: InspectorProps) {
+function ProductionTab({ workspace, onWorkspace, activeScene, productionPages, productionReports, revisionSets, revisionSummaries, characters, scenes, onStartRevision, onUpdateRevisionMarks, onLockPages, onUnlockPages, onPrintRevisionPages, onToggleOmittedScene, onSetSceneNumber, onExportProduction }: InspectorProps) {
   const omitted = workspace.omittedSceneIds ?? [];
   const activeRevision = revisionSets.find((revision) => revision.id === workspace.activeRevisionId) ?? revisionSets[revisionSets.length - 1];
   const suggestedColor = nextRevisionColor((activeRevision?.color ?? "White") as RevisionColor);
@@ -542,7 +624,7 @@ function ProductionTab({ workspace, onWorkspace, activeScene, productionPages, p
     <label className="insp-card-meta">Production draft label<input className="insp-notes-input" value={workspace.productionDraftLabel ?? ""} onChange={(event) => onWorkspace({ productionDraftLabel: event.target.value })} /></label>
     {activeScene && <div className="insp-card"><div className="insp-card-title">Active scene · {activeScene.heading}</div><label className="insp-card-meta">Scene number<input className="insp-notes-input" value={activeScene.sceneNumber ?? String(activeScene.number)} onChange={(event) => onSetSceneNumber(activeScene.id, event.target.value)} /></label><button className="btn" onClick={() => onToggleOmittedScene(activeScene.id)}>{omitted.includes(activeScene.id) ? "Restore Omitted Scene" : "Mark Scene Omitted"}</button></div>}
     <h4>Page locking</h4>
-    <div className="btn-row"><button className="btn" onClick={onLockPages}>{workspace.pageLock ? "Re-lock Current Pages" : "Lock Pages"}</button>{workspace.pageLock && <button className="btn btn-ghost" onClick={onUnlockPages}>Release Lock</button>}<button className="btn btn-ghost" onClick={() => window.print()}>Print Revision Pages</button></div>
+    <div className="btn-row"><button className="btn" onClick={onLockPages}>{workspace.pageLock ? "Re-lock Current Pages" : "Lock Pages"}</button>{workspace.pageLock && <button className="btn btn-ghost" onClick={onUnlockPages}>Release Lock</button>}<button className="btn btn-ghost" disabled={!activeRevision || !revisionSummaries.some((summary) => summary.revisionId === activeRevision.id && summary.revisedPages.length)} onClick={onPrintRevisionPages}>Print Revision Pages</button></div>
     <div className="chip-row">{productionPages.map((page) => <span className="chip" key={page.label}>{page.label}{page.locked ? " 🔒" : ""}{page.color ? ` · ${page.color}` : ""}</span>)}</div>
     <h4>Colored revisions</h4>
     <div className="insp-card"><input aria-label="Revision label" className="insp-notes-input" value={revisionLabel} onChange={(event) => setRevisionLabel(event.target.value)} /><select aria-label="Revision color" className="element-select" value={revisionColor} onChange={(event) => setRevisionColor(event.target.value as RevisionColor)}>{REVISION_COLORS.map((color) => <option key={color}>{color}</option>)}</select><button className="btn" disabled={!revisionLabel.trim()} onClick={() => { onStartRevision(revisionLabel.trim(), revisionColor); const next = nextRevisionColor(revisionColor); setRevisionColor(next); setRevisionLabel(`${next} Revision`); }}>Start Revision Set</button></div>
@@ -561,12 +643,6 @@ function ProductionTab({ workspace, onWorkspace, activeScene, productionPages, p
     <div className="btn-row"><select aria-label="Scene side" className="element-select" value={sceneSide} onChange={(event) => setSceneSide(event.target.value)}><option value="">All scene sides</option>{scenes.map((scene) => <option key={scene.id} value={scene.id}>Scene {scene.sceneNumber ?? scene.number} · {scene.heading}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportProduction("scene-sides", sceneSide || undefined)}>Export Scene Sides</button></div>
     <h4>Department and revision notes</h4><textarea className="insp-notes-input" value={workspace.productionNotes} onChange={(event) => onWorkspace({ productionNotes: event.target.value })} placeholder="Wardrobe, makeup, props, department notes…" />
   </div>;
-}
-
-function TeamTab({ workspace, onWorkspace }: InspectorProps) {
-  const [text, setText] = useState("");
-  const add = () => { if (!text.trim()) return; onWorkspace({ comments: [...workspace.comments, { id: `comment-${Date.now()}`, author: "Local writer", text: text.trim(), resolved: false, createdAt: new Date().toISOString() }] }); setText(""); };
-  return <div className="insp-stack"><Hint>Local-first review comments and approvals. Project-folder sync can be handled by Git or any shared drive.</Hint><textarea className="insp-notes-input" value={text} onChange={(event) => setText(event.target.value)} placeholder="Leave a comment or suggested change…" /><button className="btn" onClick={add}>Add Comment</button>{workspace.comments.map((comment) => <div className="insp-card" key={comment.id}><div className="insp-card-title">{comment.author}</div><div className="insp-card-desc">{comment.text}</div><button className="link-btn" onClick={() => onWorkspace({ comments: workspace.comments.map((item) => item.id === comment.id ? { ...item, resolved: !item.resolved } : item) })}>{comment.resolved ? "Reopen" : "Resolve"}</button></div>)}</div>;
 }
 
 function AssistTab({ scenes, characters, breakdown, workspace }: InspectorProps) {

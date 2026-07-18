@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { foundationSignals } from "./foundation.ts";
 import { workspacePanels } from "./panels.ts";
+import { scsProjectLayout } from "./project.ts";
 import { statusLabels } from "./status.ts";
 
 test("foundation signals only use known statuses", () => {
@@ -20,6 +21,11 @@ test("optional SQLite remains planned while portable JSON is active", () => {
   const byId = Object.fromEntries(foundationSignals.map((s) => [s.id, s.status]));
   assert.equal(byId["sqlite"], "planned");
   assert.equal(byId["json-portability"], "active");
+});
+
+test("the dashboard project tree matches the open-format project writer", () => {
+  assert.ok(scsProjectLayout.some((entry) => entry.path === "  scripts/main.fountain"));
+  assert.ok(!scsProjectLayout.some((entry) => entry.path.endsWith("main.fdx") || entry.path.includes("database.sqlite")));
 });
 
 test("all eight core workspace panels are active", () => {

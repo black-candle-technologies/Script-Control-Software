@@ -82,7 +82,26 @@ export interface TreatmentDocument {
   id: string;
   title: string;
   markdown: string;
-  links: { id: string; targetType: "act" | "sequence" | "scene" | "beat" | "character" | "object" | "location"; targetId: string; label: string }[];
+  links: { id: string; targetType: "act" | "sequence" | "scene" | "beat" | "character" | "object" | "location"; targetId: string; label: string; sectionId?: string; sectionLabel?: string }[];
+}
+
+export interface TreatmentSection {
+  id: string;
+  label: string;
+  level: number;
+}
+
+export function treatmentSections(markdown: string): TreatmentSection[] {
+  const occurrences = new Map<string, number>();
+  return markdown.split(/\r?\n/).flatMap((line): TreatmentSection[] => {
+    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (!heading) return [];
+    const label = heading[2].trim();
+    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "section";
+    const occurrence = (occurrences.get(slug) ?? 0) + 1;
+    occurrences.set(slug, occurrence);
+    return [{ id: `${slug}-${occurrence}`, label, level: heading[1].length }];
+  });
 }
 
 /** Portable development metadata kept beside the screenplay, never inside FDX. */
@@ -146,6 +165,12 @@ export interface ScriptSource {
   lastImportedAt: string;
   /** Filesystem timestamp captured with the import, used to detect changes across app restarts. */
   lastImportedModifiedAt?: number;
+  /** Imported script-text baseline, used to distinguish local and external edits after restart. */
+  lastImportedFingerprint?: string;
+}
+
+export function screenplayTextFingerprint(document: Pick<ScreenplayDocument, "titlePage" | "blocks">): string {
+  return JSON.stringify([document.titlePage, document.blocks]);
 }
 
 export interface ImportWarning {
@@ -333,45 +358,156 @@ export function deriveScenes(blocks: ScreenplayBlock[]): Scene[] {
   return scenes;
 }
 
-/** Preserve scene-linked development data when a parser regenerates block ids. */
-export function reconcileSceneMetadata(previous: ScreenplayDocument, parsed: ScreenplayDocument): ScreenplayDocument {
+export interface ScreenplayReconciliation {
+  document: ScreenplayDocument;
+  /** Previous scene-heading id to the corresponding id in the imported text. */
+  sceneIds: ReadonlyMap<string, string>;
+  /** Previous paragraph id to its corresponding imported paragraph id. */
+  blockIds: ReadonlyMap<string, string>;
+}
+
+/**
+ * Preserve screenplay identity and every scene/block-linked development record
+ * when a parser regenerates paragraph ids.
+ */
+export function reconcileScreenplayDocument(previous: ScreenplayDocument, parsed: ScreenplayDocument): ScreenplayReconciliation {
   const before = deriveScenes(previous.blocks);
-  const blocks = reconcileBlockIds(previous.blocks, parsed.blocks);
+  const blockResult = reconcileBlockIds(previous.blocks, parsed.blocks);
+  const blocks = blockResult.blocks;
   const after = deriveScenes(blocks);
   const remap = new Map<string, string>();
   const available = new Set(after.map((scene) => scene.id));
   const byIdentity = sceneIdentityMap(after);
+  // Reserve every unchanged scene before considering positional fallbacks, so
+  // a deleted scene cannot steal metadata that belongs to a later match.
   for (const [index, scene] of before.entries()) {
     const same = byIdentity.get(sceneIdentity(before, index))?.find((candidate) => available.has(candidate));
+    if (!same) continue;
+    remap.set(scene.id, same);
+    available.delete(same);
+  }
+  for (const [index, scene] of before.entries()) {
+    if (remap.has(scene.id)) continue;
+    const stableId = after.find((candidate) => candidate.id === scene.id && available.has(candidate.id))?.id;
     const fallback = after[index]?.id;
-    const nextId = same ?? (fallback && available.has(fallback) ? fallback : undefined);
-    if (nextId) {
-      remap.set(scene.id, nextId);
-      available.delete(nextId);
-    }
+    const nextId = stableId ?? (fallback && available.has(fallback) ? fallback : undefined);
+    if (!nextId) continue;
+    remap.set(scene.id, nextId);
+    available.delete(nextId);
   }
   const remapRecord = <T>(record: Record<string, T> | undefined) => Object.fromEntries(
     Object.entries(record ?? {}).flatMap(([id, value]) => remap.has(id) ? [[remap.get(id)!, value] as const] : []),
   );
+  const remapSceneIds = (ids: readonly string[] | undefined) => (ids ?? []).flatMap((id) => remap.get(id) ?? []);
+  const remapBlockIds = (ids: readonly string[] | undefined) => (ids ?? []).flatMap((id) => blockResult.remap.get(id) ?? []);
   // FDX/Fountain imports contain a normalized empty workspace. SCS development
   // data belongs to the project and must win when script text is re-imported.
   const workspace = { ...emptyWorkspace(), ...parsed.workspace, ...previous.workspace };
   workspace.sceneMeta = remapRecord(previous.workspace?.sceneMeta);
-  workspace.omittedSceneIds = (previous.workspace?.omittedSceneIds ?? []).flatMap((id) => remap.get(id) ?? []);
-  return { ...previous, ...parsed, id: previous.id, blocks, sceneNotes: remapRecord(previous.sceneNotes), workspace };
+  workspace.omittedSceneIds = remapSceneIds(previous.workspace?.omittedSceneIds);
+  workspace.storyStructure = previous.workspace?.storyStructure ? {
+    ...previous.workspace.storyStructure,
+    sceneOrder: remapSceneIds(previous.workspace.storyStructure.sceneOrder),
+    sequences: previous.workspace.storyStructure.sequences.map((sequence) => ({
+      ...sequence,
+      sceneIds: remapSceneIds(sequence.sceneIds),
+    })),
+    beats: previous.workspace.storyStructure.beats.map((beat) => ({
+      ...beat,
+      ...(beat.sceneId ? { sceneId: remap.get(beat.sceneId) } : {}),
+      moments: beat.moments.map((moment) => ({ ...moment })),
+    })),
+  } : undefined;
+  workspace.treatments = previous.workspace?.treatments?.map((treatment) => ({
+    ...treatment,
+    links: treatment.links.flatMap((link) => {
+      if (link.targetType !== "scene") return [{ ...link }];
+      const targetId = remap.get(link.targetId);
+      return targetId ? [{ ...link, targetId }] : [];
+    }),
+  }));
+  workspace.plotThreads = previous.workspace?.plotThreads?.map((thread) => ({
+    ...thread,
+    ...(thread.sceneIds ? { sceneIds: remapSceneIds(thread.sceneIds) } : {}),
+    ...(thread.beatIds ? { beatIds: [...thread.beatIds] } : {}),
+    ...(thread.keywords ? { keywords: [...thread.keywords] } : {}),
+  }));
+  workspace.revisionSets = previous.workspace?.revisionSets?.map((revision) => ({
+    ...revision,
+    blockIds: remapBlockIds(revision.blockIds),
+  }));
+  workspace.pageLock = previous.workspace?.pageLock ? {
+    pages: previous.workspace.pageLock.pages.map((page) => ({ ...page, blockIds: remapBlockIds(page.blockIds) })),
+  } : undefined;
+  const document = { ...previous, ...parsed, id: previous.id, blocks, sceneNotes: remapRecord(previous.sceneNotes), workspace };
+  return { document, sceneIds: remap, blockIds: blockResult.remap };
 }
 
-function reconcileBlockIds(previous: ScreenplayBlock[], parsed: ScreenplayBlock[]): ScreenplayBlock[] {
+/** Backwards-compatible convenience for callers that need only the document. */
+export function reconcileSceneMetadata(previous: ScreenplayDocument, parsed: ScreenplayDocument): ScreenplayDocument {
+  return reconcileScreenplayDocument(previous, parsed).document;
+}
+
+function reconcileBlockIds(previous: ScreenplayBlock[], parsed: ScreenplayBlock[]): { blocks: ScreenplayBlock[]; remap: Map<string, string> } {
   const available = new Set(previous.map((block) => block.id));
-  return parsed.map((block, index) => {
+  const reserved = new Set([...available, ...parsed.map((block) => block.id)]);
+  const emitted = new Set<string>();
+  const matches = new Map<number, ScreenplayBlock>();
+  const explicitId = (block: ScreenplayBlock) => block.metadata?.Id ?? block.metadata?.id;
+
+  // Final Draft paragraph Id attributes are authoritative across text edits.
+  parsed.forEach((block, index) => {
+    const id = explicitId(block);
+    if (!id) return;
+    const match = previous.find((candidate) => available.has(candidate.id) && explicitId(candidate) === id);
+    if (match) {
+      matches.set(index, match);
+      available.delete(match.id);
+    }
+  });
+  // Preserve unchanged paragraphs, preferring their existing position.
+  parsed.forEach((block, index) => {
+    if (matches.has(index)) return;
     const samePosition = previous[index];
     const match = samePosition && available.has(samePosition.id) && samePosition.type === block.type && samePosition.text === block.text
       ? samePosition
       : previous.find((candidate) => available.has(candidate.id) && candidate.type === block.type && candidate.text === block.text);
-    if (!match) return block;
-    available.delete(match.id);
+    if (match) {
+      matches.set(index, match);
+      available.delete(match.id);
+    }
+  });
+  // Source-mode edits regenerate ids. A remaining same-position, same-kind
+  // paragraph is the safest identity match after explicit and exact matches.
+  parsed.forEach((block, index) => {
+    if (matches.has(index)) return;
+    const candidate = previous[index];
+    if (candidate && available.has(candidate.id) && candidate.type === block.type) {
+      matches.set(index, candidate);
+      available.delete(candidate.id);
+    }
+  });
+  const uniqueParsedId = (preferred: string, index: number) => {
+    if (preferred && !available.has(preferred) && !emitted.has(preferred)) {
+      emitted.add(preferred);
+      return preferred;
+    }
+    const base = preferred || `block-${index + 1}`;
+    let id = `${base}-imported`;
+    for (let suffix = 2; reserved.has(id) || emitted.has(id) || available.has(id); suffix++) id = `${base}-imported-${suffix}`;
+    reserved.add(id);
+    emitted.add(id);
+    return id;
+  };
+  const remap = new Map<string, string>();
+  const blocks = parsed.map((block, index) => {
+    const match = matches.get(index);
+    if (!match) return { ...block, id: uniqueParsedId(block.id, index) };
+    emitted.add(match.id);
+    remap.set(match.id, match.id);
     return { ...block, id: match.id };
   });
+  return { blocks, remap };
 }
 
 function sceneIdentity(scenes: Scene[], index: number): string {

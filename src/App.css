@@ -596,6 +596,78 @@ button.wordmark {
   overflow: hidden;
 }
 
+.workspace-layout-runtime.split-horizontal { flex-direction: row; }
+.workspace-layout-runtime.split-vertical { flex-direction: column; }
+
+.workspace-tab-group {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+
+.workspace-layout-runtime.split-vertical > .workspace-tab-group {
+  border-right: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-panel-tabs {
+  min-height: 32px;
+  display: flex;
+  overflow-x: auto;
+  flex-shrink: 0;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-panel-tabs button {
+  padding: 0.4rem 0.65rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font: 600 0.68rem/1.2 Inter, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.workspace-panel-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--accent-soft); }
+
+.workspace-panel-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.workspace-panel-body[hidden] { display: none; }
+
+.workspace-panel-body > .scene-nav,
+.workspace-panel-body > .inspector,
+.workspace-panel-body > .reference-panel,
+.workspace-panel-body > .script-split { width: 100%; max-width: none; height: 100%; border-left: 0; border-right: 0; }
+
+.workspace-panel-empty { margin: auto; max-width: 26rem; padding: 1rem; color: var(--text-faint); text-align: center; }
+
+.workspace-floating-panel {
+  position: absolute;
+  z-index: 30;
+  min-width: 200px;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.48);
+}
+
+.workspace-floating-panel > header { padding: 0.4rem 0.65rem; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 0.7rem; font-weight: 700; }
+
 /* ---- Scene navigator ----------------------------------------------------- */
 
 .scene-nav {
@@ -894,6 +966,9 @@ button.wordmark {
   min-width: 0;
   min-height: 0;
   display: flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .reference-panel {
@@ -967,6 +1042,35 @@ button.wordmark {
   font-size: 0.78rem;
   line-height: 1.5;
 }
+
+.reference-prose {
+  margin: 0 0 0.8rem;
+  white-space: pre-wrap;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+.reference-info-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0 0 0.5rem;
+  padding: 0.6rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised-2);
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.reference-info-card:hover:not(:disabled) { border-color: var(--accent); }
+.reference-info-card:disabled { cursor: default; opacity: 0.85; }
+.reference-info-card span { color: var(--text-faint); font-size: 0.68rem; }
+.reference-info-card p { margin: 0.15rem 0 0; white-space: pre-wrap; color: var(--text-muted); font-size: 0.72rem; }
 
 .floating-inspector {
   position: absolute;
@@ -1048,6 +1152,9 @@ button.wordmark {
 
 .layout-topology { margin: 0; display: flex; flex-direction: column; gap: 0.45rem; }
 .layout-topology div { padding-bottom: 0.4rem; border-bottom: 1px solid var(--border); }
+.layout-topology .floating-frame-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; }
+.layout-manager-section .floating-frame-controls label { display: flex; align-items: center; justify-content: space-between; gap: 0.35rem; }
+.layout-manager-section .floating-frame-controls input { width: 5.5rem; }
 .layout-topology dt { font-size: 0.68rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.08em; }
 .layout-topology dd { margin: 0.15rem 0 0; font-size: 0.76rem; line-height: 1.4; }
 
@@ -1134,6 +1241,108 @@ button.wordmark {
 .companion-empty { margin-top: 0.8rem; padding: 1rem; border: 1px dashed var(--border-strong); border-radius: 7px; color: var(--text-faint); font-size: 0.76rem; }
 .companion-workflow ol { margin: 0.65rem 0 0; padding-left: 1.2rem; color: var(--text-muted); font-size: 0.75rem; line-height: 1.55; }
 
+.inspector-permission-scope {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.inspector-permission-scope:disabled { opacity: 0.72; }
+
+.team-person {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(115px, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.74rem;
+}
+
+.team-person select {
+  min-width: 0;
+  padding: 0.28rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-raised-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.team-person .link-btn:disabled { cursor: not-allowed; opacity: 0.45; }
+
+.team-suggestion {
+  margin: 0.3rem 0;
+  padding: 0.45rem 0.55rem;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 0.74rem;
+  white-space: pre-wrap;
+}
+
+.team-check,
+.team-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.74rem;
+}
+
+.team-task {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised-2);
+}
+
+.team-task span { display: flex; flex-direction: column; gap: 0.1rem; }
+.team-task small { color: var(--text-faint); }
+
+.sync-path {
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  font: 0.68rem/1.4 "SFMono-Regular", Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.sync-conflict {
+  padding: 0.65rem;
+  border: 1px solid var(--status-active);
+  border-radius: 7px;
+  background: var(--bg-raised-2);
+}
+
+.sync-conflict p { margin: 0.35rem 0; color: var(--text-muted); font-size: 0.72rem; }
+
+.sync-conflict-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.35rem 0.55rem;
+  margin: 0.55rem 0;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-raised);
+  font-size: 0.7rem;
+}
+
+.sync-conflict-row code { overflow-wrap: anywhere; color: var(--text); }
+.sync-conflict-row > span { color: var(--text-faint); }
+.sync-conflict-row select,
+.sync-conflict-row details { grid-column: 1 / -1; }
+.sync-conflict-row pre { max-height: 10rem; overflow: auto; white-space: pre-wrap; color: var(--text-muted); }
+
+.diff-comparison { display: grid; gap: 0.65rem; }
+.diff-row { display: grid; gap: 0.35rem; padding-top: 0.65rem; border-top: 1px solid var(--border); }
+.diff-row code { overflow-wrap: anywhere; color: var(--text-muted); }
+.diff-values { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.55rem; }
+.diff-values span { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-muted); }
+.diff-values pre { max-height: 14rem; margin: 0.2rem 0 0; padding: 0.55rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-raised-2); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
+
 @media (max-width: 1050px) {
   .companion-header, .companion-file { align-items: stretch; flex-direction: column; }
   .companion-stats { grid-template-columns: repeat(3, 1fr); }
@@ -1147,6 +1356,14 @@ button.wordmark {
 
 @media print {
   .topbar, .toolbar, .scene-nav, .inspector, .statusbar, .readonly-banner, .operation-message, .import-summary, .title-card-hint { display: none !important; }
+  body.print-revision-pages .title-card,
+  body.print-revision-pages .page[data-print-revised="false"] { display: none !important; }
+  body.print-revision-pages .workspace-tab-group:not([data-print-screenplay="true"]),
+  body.print-revision-pages .workspace-floating-panel,
+  body.print-revision-pages .workspace-panel-tabs,
+  body.print-revision-pages .workspace-panel-body:not([data-print-screenplay="true"]) { display: none !important; }
+  body.print-revision-pages .workspace-tab-group[data-print-screenplay="true"],
+  body.print-revision-pages .workspace-panel-body[data-print-screenplay="true"] { display: block !important; width: 100% !important; border: 0 !important; }
   .workspace-main, .editor-scroll { display: block; overflow: visible; background: white; padding: 0; }
   .page-surface { box-shadow: none; }
   .page { break-after: page; margin: 0; }

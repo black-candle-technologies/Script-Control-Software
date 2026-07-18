@@ -153,7 +153,17 @@ export function summarizeRevision(previous: ScreenplayDocument, current: Screenp
     ...scenesForBlocks(current, changedIds),
     ...scenesForBlocks(previous, new Set(removedBlockIds)),
   ]);
-  const revisedPages = productionPages(current, lock, [revision]).filter((item) => item.revisionIds.includes(revision.id)).map((item) => item.label);
+  const currentPages = productionPages(current, lock, [revision]);
+  const revisedPageLabels = new Set(currentPages.filter((item) => item.revisionIds.includes(revision.id)).map((item) => item.label));
+  const removedIds = new Set(removedBlockIds);
+  productionPages(previous, lock).forEach((previousPage, index) => {
+    if (!previousPage.blockIds.some((id) => removedIds.has(id))) return;
+    const target = currentPages.find((page) => page.label === previousPage.label)
+      ?? currentPages.find((page) => page.basePage === previousPage.basePage)
+      ?? currentPages[Math.min(index, Math.max(0, currentPages.length - 1))];
+    if (target) revisedPageLabels.add(target.label);
+  });
+  const revisedPages = currentPages.filter((page) => revisedPageLabels.has(page.label)).map((page) => page.label);
   return {
     revisionId: revision.id,
     label: revision.label,

@@ -16,6 +16,7 @@ import {
 } from "../domain/index.ts";
 
 interface EditorProps {
+  documentId: string;
   blocks: ScreenplayBlock[];
   onBlocksChange: (blocks: ScreenplayBlock[]) => void;
   titlePage: TitlePage;
@@ -27,12 +28,19 @@ interface EditorProps {
   productionPages?: ProductionPage[];
 }
 
+interface EditorHistory {
+  blocks: ScreenplayBlock[];
+  undo: ScreenplayBlock[][];
+  redo: ScreenplayBlock[][];
+}
+
 function resize(el: HTMLTextAreaElement) {
   el.style.height = "0";
   el.style.height = `${el.scrollHeight}px`;
 }
 
 export default function Editor({
+  documentId,
   blocks,
   onBlocksChange,
   titlePage,
@@ -45,8 +53,14 @@ export default function Editor({
   const refs = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; pos: number } | null>(null);
   const lastFocusNonce = useRef(0);
-  const undo = useRef<ScreenplayBlock[][]>([]);
-  const redo = useRef<ScreenplayBlock[][]>([]);
+  const histories = useRef(new Map<string, EditorHistory>());
+  const history = histories.current.get(documentId) ?? { blocks, undo: [], redo: [] };
+  if (!histories.current.has(documentId)) histories.current.set(documentId, history);
+  else if (history.blocks !== blocks) {
+    history.blocks = blocks;
+    history.undo = [];
+    history.redo = [];
+  }
   const [activeId, setActiveId] = useState<string | null>(null);
   const pages = useMemo(() => {
     if (!productionPages?.length) return paginateBlocks(blocks);
@@ -59,11 +73,17 @@ export default function Editor({
   const locationHeadings = useMemo(() => deriveLocations(blocks).flatMap((location) => [`INT. ${location.name} - DAY`, `EXT. ${location.name} - NIGHT`]), [blocks]);
 
   const commit = (next: ScreenplayBlock[]) => {
-    undo.current.push(blocks.map((block) => ({ ...block })));
-    if (undo.current.length > 100) undo.current.shift();
-    redo.current = [];
+    history.undo.push(blocks.map((block) => ({ ...block })));
+    if (history.undo.length > 100) history.undo.shift();
+    history.redo = [];
+    history.blocks = next;
     onBlocksChange(next);
   };
+
+  useLayoutEffect(() => {
+    setActiveId(null);
+    pendingFocus.current = null;
+  }, [documentId]);
 
   // Apply structural focus moves (splits, merges, navigator jumps) after render,
   // and keep textarea heights in sync with their content.
@@ -134,18 +154,20 @@ export default function Editor({
 
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
-      const previous = undo.current.pop();
+      const previous = history.undo.pop();
       if (previous) {
-        redo.current.push(blocks.map((item) => ({ ...item })));
+        history.redo.push(blocks.map((item) => ({ ...item })));
+        history.blocks = previous;
         onBlocksChange(previous);
       }
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
       e.preventDefault();
-      const next = redo.current.pop();
+      const next = history.redo.pop();
       if (next) {
-        undo.current.push(blocks.map((item) => ({ ...item })));
+        history.undo.push(blocks.map((item) => ({ ...item })));
+        history.blocks = next;
         onBlocksChange(next);
       }
       return;
@@ -214,7 +236,9 @@ export default function Editor({
       e.preventDefault();
       const prev = blocks[index - 1];
       pendingFocus.current = { id: prev.id, pos: prev.text.length };
-      onBlocksChange(blocks.slice());
+      const next = blocks.slice();
+      history.blocks = next;
+      onBlocksChange(next);
       return;
     }
 
@@ -225,7 +249,9 @@ export default function Editor({
     ) {
       e.preventDefault();
       pendingFocus.current = { id: blocks[index + 1].id, pos: 0 };
-      onBlocksChange(blocks.slice());
+      const next = blocks.slice();
+      history.blocks = next;
+      onBlocksChange(next);
     }
   };
 

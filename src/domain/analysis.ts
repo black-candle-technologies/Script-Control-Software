@@ -114,6 +114,7 @@ export interface AnalysisEntities {
 }
 
 export type EntityOverride =
+  | { action: "add"; kind: "object"; entityId: string; name: string; category: string }
   | { action: "confirm" | "reject"; kind: AnalysisEntityKind; entityId: string }
   | { action: "rename"; kind: AnalysisEntityKind; entityId: string; name: string }
   | { action: "merge"; kind: AnalysisEntityKind; entityId: string; targetId: string }
@@ -290,6 +291,28 @@ const rounded = (value: number, places = 3) => Number(value.toFixed(places));
 const unique = (values: Iterable<string>) => [...new Set(values)].filter(Boolean);
 const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const canonicalId = (kind: AnalysisEntityKind, name: string) => `${kind}-${name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unnamed"}`;
+
+export function createManualObjectOverride(name: string, category = "prop"): Extract<EntityOverride, { action: "add" }> {
+  const normalizedName = name.trim().toUpperCase();
+  if (!normalizedName) throw new Error("Object name is required.");
+  const punctuationSuffix = /[^A-Z0-9\s'-]/.test(normalizedName) ? `-${stableNameHash(normalizedName)}` : "";
+  return {
+    action: "add",
+    kind: "object",
+    entityId: `${canonicalId("object", normalizedName)}${punctuationSuffix}`,
+    name: normalizedName,
+    category: category.trim().toLowerCase() || "prop",
+  };
+}
+
+function stableNameHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (const character of value) {
+    hash ^= character.codePointAt(0)!;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
 
 function sceneNumbersByBlock(blocks: ScreenplayBlock[]): number[] {
   const result: number[] = [];
@@ -719,6 +742,35 @@ function mergeObjects(target: ObjectProfile, source: ObjectProfile) {
 export function applyEntityOverrides(entities: AnalysisEntities, overrides: readonly EntityOverride[]): AnalysisEntities {
   const result = cloneEntities(entities);
   for (const override of overrides) {
+    if (override.action === "add") {
+      const name = override.name.trim().toUpperCase();
+      if (!name) continue;
+      const category = override.category.trim().toLowerCase() || "prop";
+      const existing = result.objects.find((object) => object.id === override.entityId);
+      if (existing) {
+        existing.status = "confirmed";
+        existing.category = category;
+        existing.productionCategory = productionCategory(category);
+      } else {
+        result.objects.push({
+          id: override.entityId || canonicalId("object", name),
+          kind: "object",
+          name,
+          aliases: [],
+          status: "confirmed",
+          category,
+          productionCategory: productionCategory(category),
+          confidence: 1,
+          mentions: 0,
+          firstScene: 0,
+          lastScene: 0,
+          sceneNumbers: [],
+          associations: [],
+          continuity: [],
+        });
+      }
+      continue;
+    }
     const entity = entityById(result, override.kind, override.entityId);
     if (!entity) continue;
     if (override.action === "confirm" || override.action === "reject") {
@@ -1065,37 +1117,175 @@ export function compileAnalysis(document: ScreenplayDocument, options: CompileAn
 }
 
 const csvCell = (value: string | number | undefined) => {
-  const text = String(value ?? "");
+  const raw = String(value ?? "");
+  // Spreadsheet applications can execute formula-leading imported script
+  // text. An apostrophe is the broadly compatible explicit-text marker.
+  const text = /^\s*[=+\-@]/.test(raw) ? `'${raw}` : raw;
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
-export type AnalysisCsvSection = "scenes" | "characters" | "objects" | "production";
+export type AnalysisCsvSection =
+  | "all"
+  | "summary"
+  | "scenes"
+  | "characters"
+  | "locations"
+  | "objects"
+  | "structure"
+  | "arcs"
+  | "coverage"
+  | "warnings"
+  | "revision"
+  | "production";
+
+function analysisRecords(analysis: ScriptAnalysis): [string, number | undefined, unknown][] {
+  const result: [string, number | undefined, unknown][] = [];
+  const add = (section: string, values: readonly unknown[]) => {
+    if (values.length) values.forEach((value, index) => result.push([section, index + 1, value]));
+    else result.push([section, undefined, []]);
+  };
+  add("summary", [{
+    title: analysis.title,
+    pageEstimate: analysis.pageEstimate,
+    wordCount: analysis.wordCount,
+    dialogueWords: analysis.dialogueWords,
+    dialogueDensity: analysis.dialogueDensity,
+  }]);
+  add("episode", [analysis.episode]);
+  add("scenes", analysis.scenes);
+  add("characters", analysis.entities.characters);
+  add("locations", analysis.entities.locations);
+  add("objects", analysis.entities.objects);
+  add("acts", analysis.structure.acts);
+  add("sequences", analysis.structure.sequences);
+  add("beats", analysis.structure.beats);
+  add("characterArcs", analysis.characterArcs);
+  add("plotThreads", analysis.plotThreads);
+  add("treatmentCoverage", analysis.treatmentCoverage);
+  add("unresolvedBeats", analysis.unresolvedBeats);
+  add("pacingWarnings", analysis.pacingWarnings);
+  add("revision", analysis.revision ? [analysis.revision] : []);
+  for (const [category, rows] of Object.entries(analysis.production)) add(`production.${category}`, rows);
+  return result;
+}
 
 export function analysisToCsv(analysis: ScriptAnalysis, section: AnalysisCsvSection = "scenes"): string {
   let rows: (string | number | undefined)[][];
-  if (section === "characters") rows = [
-    ["character", "first_scene", "last_scene", "scenes", "cues", "dialogue_blocks", "dialogue_words"],
-    ...analysis.entities.characters.map((character) => [character.name, character.firstScene, character.lastScene, character.sceneCount, character.cueCount, character.dialogueCount, character.dialogueWords]),
+  if (section === "all") rows = [
+    ["section", "record", "data"],
+    ...analysisRecords(analysis).map(([name, record, value]) => [name, record, JSON.stringify(value)]),
+  ];
+  else if (section === "summary") rows = [
+    ["metric", "value"],
+    ["title", analysis.title],
+    ["page_estimate", analysis.pageEstimate],
+    ["word_count", analysis.wordCount],
+    ["dialogue_words", analysis.dialogueWords],
+    ["dialogue_density", analysis.dialogueDensity],
+    ...Object.entries(analysis.episode).map(([name, value]) => [`episode.${name}`, String(value ?? "")]),
+  ];
+  else if (section === "characters") rows = [
+    ["character", "first_scene", "last_scene", "scenes", "cues", "dialogue_blocks", "dialogue_words", "id", "status", "aliases", "cue_variants", "first_description", "appearances", "co_appearances", "absence_gaps", "dialogue_lines", "merged_into"],
+    ...analysis.entities.characters.map((character) => [character.name, character.firstScene, character.lastScene, character.sceneCount, character.cueCount, character.dialogueCount, character.dialogueWords, character.id, character.status, character.aliases.join(" | "), character.cueVariants.join(" | "), character.firstDescription, JSON.stringify(character.appearances), JSON.stringify(character.coAppearances), JSON.stringify(character.absenceGaps), JSON.stringify(character.dialogueLines), character.mergedInto]),
+  ];
+  else if (section === "locations") rows = [
+    ["location", "first_scene", "last_scene", "scene_count", "scenes", "interior_exterior", "times_of_day", "id", "status", "aliases", "appearances", "merged_into"],
+    ...analysis.entities.locations.map((location) => [location.name, location.firstScene, location.lastScene, location.sceneCount, location.sceneNumbers.join(" "), location.interiorExterior.join(" | "), location.timesOfDay.join(" | "), location.id, location.status, location.aliases.join(" | "), JSON.stringify(location.appearances), location.mergedInto]),
   ];
   else if (section === "objects") rows = [
-    ["object", "category", "first_scene", "last_scene", "scenes", "mentions", "likely_owner"],
-    ...analysis.entities.objects.map((object) => [object.name, object.category, object.firstScene, object.lastScene, object.sceneNumbers.join(" "), object.mentions, object.likelyOwner]),
+    ["object", "category", "first_scene", "last_scene", "scenes", "mentions", "likely_owner", "id", "production_category", "status", "confidence", "aliases", "associations", "continuity", "merged_into"],
+    ...analysis.entities.objects.map((object) => [object.name, object.category, object.firstScene, object.lastScene, object.sceneNumbers.join(" "), object.mentions, object.likelyOwner, object.id, object.productionCategory, object.status, object.confidence, object.aliases.join(" | "), JSON.stringify(object.associations), JSON.stringify(object.continuity), object.mergedInto]),
+  ];
+  else if (section === "structure") rows = [
+    ["type", "id", "parent_id", "title_or_text", "status", "scene", "scene_id", "scene_ids", "scene_count", "estimated_pages", "summary"],
+    ...analysis.structure.acts.map((act) => ["act", act.id, undefined, act.title, undefined, undefined, undefined, act.sceneIds.join(" | "), act.sceneCount, act.estimatedPages, act.summary]),
+    ...analysis.structure.sequences.map((sequence) => ["sequence", sequence.id, sequence.actId, sequence.title, undefined, undefined, undefined, sequence.sceneIds.join(" | "), sequence.sceneCount, sequence.estimatedPages, sequence.summary]),
+    ...analysis.structure.beats.map((beat) => ["beat", beat.id, undefined, beat.text, beat.status, beat.sceneNumber, beat.sceneId, undefined, undefined, undefined, undefined]),
+  ];
+  else if (section === "arcs") rows = [
+    ["character", "first_scene", "last_scene", "act_presence", "dialogue_trend", "first_description", "summary"],
+    ...analysis.characterArcs.map((arc) => [arc.character, arc.firstScene, arc.lastScene, arc.actPresence.join(" | "), arc.dialogueTrend, arc.firstDescription, arc.summary]),
+  ];
+  else if (section === "coverage") rows = [
+    ["source", "id", "label", "status", "resolved", "matched_scene_ids", "matched_beat_ids", "missing_scene_ids", "missing_beat_ids"],
+    ...analysis.plotThreads.map((item) => ["plot_thread", item.id, item.label, item.status, item.resolved === undefined ? undefined : String(item.resolved), item.matchedSceneIds.join(" | "), item.matchedBeatIds.join(" | "), item.missingSceneIds.join(" | "), item.missingBeatIds.join(" | ")]),
+    ...analysis.treatmentCoverage.map((item) => ["treatment", item.id, item.label, item.status, item.resolved === undefined ? undefined : String(item.resolved), item.matchedSceneIds.join(" | "), item.matchedBeatIds.join(" | "), item.missingSceneIds.join(" | "), item.missingBeatIds.join(" | ")]),
+  ];
+  else if (section === "warnings") rows = [
+    ["source", "code_or_id", "severity_or_status", "scene", "scene_id", "message"],
+    ...analysis.unresolvedBeats.map((beat) => ["unresolved_beat", beat.id, beat.status, beat.sceneNumber, beat.sceneId, beat.text]),
+    ...analysis.pacingWarnings.map((warning) => ["pacing", warning.code, warning.severity, warning.sceneNumber, undefined, warning.message]),
+  ];
+  else if (section === "revision") rows = [
+    ["from", "to", "total", "added", "removed", "moved", "edited", "changes"],
+    ...(analysis.revision ? [[analysis.revision.fromLabel, analysis.revision.toLabel, analysis.revision.total, analysis.revision.counts.added, analysis.revision.counts.removed, analysis.revision.counts.moved, analysis.revision.counts.edited, JSON.stringify(analysis.revision.changes)]] : []),
   ];
   else if (section === "production") rows = [
-    ["category", "scene", "heading", "item", "evidence"],
-    ...Object.values(analysis.production).flat().map((row) => [row.category, row.sceneNumber, row.heading, row.item, row.evidence]),
+    ["category", "scene", "heading", "item", "evidence", "scene_id", "block_id"],
+    ...Object.values(analysis.production).flat().map((row) => [row.category, row.sceneNumber, row.heading, row.item, row.evidence, row.sceneId, row.blockId]),
   ];
   else rows = [
-    ["scene", "heading", "location", "time", "words", "dialogue_density", "estimated_pages", "complexity"],
-    ...analysis.scenes.map((scene) => [scene.number, scene.heading, scene.location, scene.timeOfDay, scene.wordCount, scene.dialogueDensity, scene.estimatedPages, scene.complexityScore]),
+    ["scene", "heading", "location", "time", "words", "dialogue_density", "estimated_pages", "complexity", "id", "production_number", "interior_exterior", "block_start", "block_end", "block_count", "dialogue_words", "estimated_eighths", "characters", "objects"],
+    ...analysis.scenes.map((scene) => [scene.number, scene.heading, scene.location, scene.timeOfDay, scene.wordCount, scene.dialogueDensity, scene.estimatedPages, scene.complexityScore, scene.id, scene.sceneNumber, scene.interiorExterior, scene.blockStart, scene.blockEnd, scene.blockCount, scene.dialogueWords, scene.estimatedEighths, scene.characters.join(" | "), scene.objects.join(" | ")]),
   ];
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
+const markdownCell = (value: unknown) => String(value ?? "—").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+const markdownList = (values: readonly unknown[]) => values.length ? values.map(markdownCell).join(", ") : "—";
+
+function markdownTable(headers: string[], rows: unknown[][], empty = "No entries."): string {
+  if (!rows.length) return empty;
+  return `| ${headers.join(" | ")} |\n|${headers.map(() => "---").join("|")}|\n${rows.map((row) => `| ${row.map(markdownCell).join(" | ")} |`).join("\n")}`;
+}
+
 export function analysisToMarkdown(analysis: ScriptAnalysis): string {
-  const sceneRows = analysis.scenes.map((scene) => `| ${scene.number} | ${scene.heading.replace(/\|/g, "\\|")} | ${scene.estimatedPages} | ${scene.dialogueDensity} | ${scene.complexityScore} |`).join("\n");
-  const production = (Object.entries(analysis.production) as [ProductionCategory, ProductionRow[]][]).map(([category, rows]) => `- ${category}: ${rows.length}`).join("\n");
-  return `# ${analysis.title} — Analysis\n\n- Scenes: ${analysis.scenes.length}\n- Estimated pages: ${analysis.pageEstimate}\n- Words: ${analysis.wordCount}\n- Dialogue density: ${analysis.dialogueDensity}\n- Unresolved beats: ${analysis.unresolvedBeats.length}\n\n## Scenes\n\n| # | Heading | Pages | Dialogue | Complexity |\n|---:|---|---:|---:|---:|\n${sceneRows || "| - | No scenes | - | - | - |"}\n\n## Production\n\n${production}\n`;
+  const sections = [
+    `# ${analysis.title} — Analysis`,
+    `## Overview\n\n${analysis.episode.summary}\n\n- Estimated pages / runtime: ${analysis.pageEstimate}\n- Words: ${analysis.wordCount} (${analysis.dialogueWords} dialogue)\n- Dialogue density: ${analysis.dialogueDensity}\n- Acts / sequences / beats: ${analysis.episode.actCount} / ${analysis.episode.sequenceCount} / ${analysis.episode.beatCount}\n- Characters / locations: ${analysis.episode.characterCount} / ${analysis.episode.locationCount}\n- First / last scene: ${analysis.episode.firstScene ?? "—"} / ${analysis.episode.lastScene ?? "—"}`,
+    `## Scenes\n\n${markdownTable(
+      ["#", "Production #", "ID", "Heading", "INT/EXT", "Location", "Time", "Blocks", "Words", "Dialogue words", "Density", "Eighths", "Pages", "Complexity", "Characters", "Objects"],
+      analysis.scenes.map((scene) => [scene.number, scene.sceneNumber, scene.id, scene.heading, scene.interiorExterior, scene.location, scene.timeOfDay, `${scene.blockStart}-${scene.blockEnd} (${scene.blockCount})`, scene.wordCount, scene.dialogueWords, scene.dialogueDensity, scene.estimatedEighths, scene.estimatedPages, scene.complexityScore, markdownList(scene.characters), markdownList(scene.objects)]),
+      "No scenes.",
+    )}`,
+    `## Characters\n\n${markdownTable(
+      ["Character", "ID / status", "Aliases / cues", "Scenes", "Cues / dialogue / words", "First description", "Appearances", "Co-appearances", "Absence gaps", "Dialogue lines"],
+      analysis.entities.characters.map((character) => [
+        character.name,
+        `${character.id} / ${character.status}${character.mergedInto ? ` → ${character.mergedInto}` : ""}`,
+        `${markdownList(character.aliases)} / ${markdownList(character.cueVariants)}`,
+        `${character.firstScene}-${character.lastScene} (${markdownList(character.sceneNumbers)})`,
+        `${character.cueCount} / ${character.dialogueCount} / ${character.dialogueWords}`,
+        character.firstDescription,
+        markdownList(character.appearances.map((item) => `S${item.sceneNumber}: ${item.cueCount} cues, ${item.dialogueCount} lines, ${item.dialogueWords} words`)),
+        markdownList(character.coAppearances.map((item) => `${item.character}: ${item.count} (${item.sceneNumbers.join(", ")})`)),
+        markdownList(character.absenceGaps.map((item) => `${item.afterScene}→${item.beforeScene}: ${item.scenesAbsent}`)),
+        markdownList(character.dialogueLines.map((line) => `S${line.sceneNumber} [${line.blockId}]: ${line.text}`)),
+      ]),
+    )}`,
+    `## Character Arcs\n\n${markdownTable(
+      ["Character", "Scenes", "Acts", "Dialogue trend", "First description", "Summary"],
+      analysis.characterArcs.map((arc) => [arc.character, `${arc.firstScene}-${arc.lastScene}`, markdownList(arc.actPresence), arc.dialogueTrend, arc.firstDescription, arc.summary]),
+    )}`,
+    `## Locations\n\n${markdownTable(
+      ["Location", "ID / status", "Aliases", "Scenes", "INT/EXT", "Times", "Appearances"],
+      analysis.entities.locations.map((location) => [location.name, `${location.id} / ${location.status}${location.mergedInto ? ` → ${location.mergedInto}` : ""}`, markdownList(location.aliases), `${location.firstScene}-${location.lastScene} (${markdownList(location.sceneNumbers)})`, markdownList(location.interiorExterior), markdownList(location.timesOfDay), markdownList(location.appearances.map((item) => `S${item.sceneNumber} [${item.sceneId}]: ${item.heading}`))]),
+    )}`,
+    `## Objects and Props\n\n${markdownTable(
+      ["Object", "ID / status", "Category", "Confidence", "Scenes / mentions", "Owner", "Aliases", "Associations", "Continuity"],
+      analysis.entities.objects.map((object) => [object.name, `${object.id} / ${object.status}${object.mergedInto ? ` → ${object.mergedInto}` : ""}`, `${object.category} / ${object.productionCategory}`, object.confidence, `${markdownList(object.sceneNumbers)} / ${object.mentions}`, object.likelyOwner, markdownList(object.aliases), markdownList(object.associations.map((item) => `${item.character}: ${item.mentions} (${item.reason}; scenes ${item.scenes.join(", ")})`)), markdownList(object.continuity.map((item) => `S${item.sceneNumber} [${item.blockId}]: ${item.excerpt}`))]),
+    )}`,
+    `## Acts\n\n${markdownTable(["Act", "ID", "Scenes", "Pages", "Summary"], analysis.structure.acts.map((act) => [act.title, act.id, `${act.sceneCount}: ${markdownList(act.sceneIds)}`, act.estimatedPages, act.summary]))}`,
+    `## Sequences\n\n${markdownTable(["Sequence", "ID / act", "Scenes", "Pages", "Summary"], analysis.structure.sequences.map((sequence) => [sequence.title, `${sequence.id} / ${sequence.actId}`, `${sequence.sceneCount}: ${markdownList(sequence.sceneIds)}`, sequence.estimatedPages, sequence.summary]))}`,
+    `## Beats\n\n${markdownTable(["Beat", "ID", "Status", "Scene", "Scene ID"], analysis.structure.beats.map((beat) => [beat.text, beat.id, beat.status, beat.sceneNumber, beat.sceneId]))}`,
+    `## Plot Threads\n\n${markdownTable(["Thread", "ID", "Status", "Resolved", "Matched scenes", "Matched beats", "Missing scenes", "Missing beats"], analysis.plotThreads.map((item) => [item.label, item.id, item.status, item.resolved, markdownList(item.matchedSceneIds), markdownList(item.matchedBeatIds), markdownList(item.missingSceneIds), markdownList(item.missingBeatIds)]))}`,
+    `## Treatment Coverage\n\n${markdownTable(["Section", "ID", "Status", "Resolved", "Matched scenes", "Matched beats", "Missing scenes", "Missing beats"], analysis.treatmentCoverage.map((item) => [item.label, item.id, item.status, item.resolved, markdownList(item.matchedSceneIds), markdownList(item.matchedBeatIds), markdownList(item.missingSceneIds), markdownList(item.missingBeatIds)]))}`,
+    `## Unresolved Beats\n\n${markdownTable(["Beat", "ID", "Scene", "Scene ID"], analysis.unresolvedBeats.map((beat) => [beat.text, beat.id, beat.sceneNumber, beat.sceneId]), "None.")}`,
+    `## Pacing Warnings\n\n${markdownTable(["Code", "Severity", "Scene", "Message"], analysis.pacingWarnings.map((warning) => [warning.code, warning.severity, warning.sceneNumber, warning.message]), "None.")}`,
+    `## Revision\n\n${analysis.revision ? `${analysis.revision.fromLabel ?? "Earlier draft"} → ${analysis.revision.toLabel ?? "Current draft"}: ${analysis.revision.total} changes (added ${analysis.revision.counts.added}, removed ${analysis.revision.counts.removed}, moved ${analysis.revision.counts.moved}, edited ${analysis.revision.counts.edited}).\n\n${markdownTable(["Kind", "Scene", "Summary"], analysis.revision.changes.map((change) => [change.kind, change.scene, change.summary]))}` : "No revision comparison supplied."}`,
+    `## Production\n\n${markdownTable(["Category", "Items"], (Object.entries(analysis.production) as [ProductionCategory, ProductionRow[]][]).map(([category, rows]) => [category, rows.length]))}\n\n${markdownTable(["Category", "Scene", "Scene ID", "Heading", "Item", "Evidence", "Block ID"], Object.values(analysis.production).flat().map((row) => [row.category, row.sceneNumber, row.sceneId, row.heading, row.item, row.evidence, row.blockId]), "No production items.")}`,
+  ];
+  return `${sections.join("\n\n")}\n`;
 }
 
 export const analysisToJson = (analysis: ScriptAnalysis, space = 2) => JSON.stringify(analysis, null, space);

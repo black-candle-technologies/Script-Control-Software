@@ -23,4 +23,5 @@ export * from "./analysis.ts";
 export * from "./seriesWorkspace.ts";
 export * from "./revisionProduction.ts";
 export * from "./workspaceLayouts.ts";
+export * from "./collaboration.ts";
 export * from "./appInfo.ts";

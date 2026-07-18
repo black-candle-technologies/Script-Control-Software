@@ -2,7 +2,7 @@
 
 # Script Control Software (SCS) Roadmap
 
-> Implementation status (July 2026): every phase has a working local-first baseline in the application. Provider-dependent scale features use the smallest safe implementation: collaboration is portable-project/Git/shared-drive based, PDF uses native printing, and optional assistance produces a private companion prompt without sending data. Hosted sync, real-time rooms, and direct AI-provider calls remain deployment choices rather than core dependencies. See [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
+> Implementation status (July 2026): Phases 0–11 have working, tested local-first workflows in the application. Collaboration uses advisory nine-role controls, provider-synced portable projects with crash-recoverable manifests and per-conflict three-way recovery, and hardened optional HTTPS Git sync. PDF uses native printing, and optional assistance produces a private companion prompt without sending data. Hosted identity/sync, real-time co-editing, and direct AI-provider calls remain deployment choices rather than core dependencies. See [docs/COLLABORATION.md](docs/COLLABORATION.md) and [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
 Script Control Software, also known as **SCS**, is intended to become a local-first professional screenwriting and story development application. The long-term goal is to combine the familiar writing power of Final Draft-style screenplay software with a deeper development workspace for beat boards, treatments, character/object tracking, television continuity, Git-style version control, and generated script breakdowns.
 

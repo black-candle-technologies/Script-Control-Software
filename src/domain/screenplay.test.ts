@@ -15,6 +15,8 @@ import {
   isSceneHeadingText,
   isTransitionText,
   reconcileSceneMetadata,
+  screenplayTextFingerprint,
+  treatmentSections,
 } from "./screenplay.ts";
 import { parseFountain, toFountain } from "./fountain.ts";
 
@@ -187,6 +189,67 @@ test("scene-linked metadata follows matching scenes after a parser regenerates i
   assert.deepEqual(reconciled.workspace?.omittedSceneIds, [newHome.id]);
 });
 
+test("a removed scene cannot steal a later scene's metadata", () => {
+  const previous = parseFountain("INT. A - DAY\n\nFirst.\n\nINT. B - NIGHT\n\nSecond.\n");
+  const [a, b] = deriveScenes(previous.blocks);
+  previous.sceneNotes = { [a.id]: "A note", [b.id]: "B note" };
+  const reconciled = reconcileSceneMetadata(previous, parseFountain("INT. B - NIGHT\n\nSecond.\n"));
+  const [remaining] = deriveScenes(reconciled.blocks);
+  assert.equal(reconciled.sceneNotes[remaining.id], "B note");
+  assert.equal(Object.values(reconciled.sceneNotes).includes("A note"), false);
+});
+
+test("re-imported insertions never steal a stable id from a later matching block", () => {
+  const previous = parseFountain("INT. HOME - DAY\n\nOriginal action.\n");
+  const [heading, action] = previous.blocks;
+  const parsed = parseFountain("A new opening.\n\nINT. HOME - DAY\n\nOriginal action.\n");
+  const reconciled = reconcileSceneMetadata(previous, parsed);
+  assert.equal(new Set(reconciled.blocks.map((block) => block.id)).size, reconciled.blocks.length);
+  assert.equal(reconciled.blocks[1].id, heading.id);
+  assert.equal(reconciled.blocks[2].id, action.id);
+  assert.notEqual(reconciled.blocks[0].id, heading.id);
+});
+
+test("an explicit Final Draft paragraph id survives a text edit", () => {
+  const previous = parseFountain("Old action.\n");
+  previous.blocks[0] = { ...previous.blocks[0], id: "fdx-paragraph", metadata: { Id: "fdx-paragraph" } };
+  const parsed = parseFountain("Rewritten action.\n");
+  parsed.blocks[0] = { ...parsed.blocks[0], id: "fdx-paragraph", metadata: { Id: "fdx-paragraph" } };
+  const reconciled = reconcileSceneMetadata(previous, parsed);
+  assert.equal(reconciled.blocks[0].id, "fdx-paragraph");
+  assert.equal(reconciled.blocks[0].text, "Rewritten action.");
+});
+
+test("re-import remaps every document-local scene and block link", () => {
+  const previous = parseFountain("INT. HOME - DAY\n\nKeep this action.\n");
+  const oldSceneId = deriveScenes(previous.blocks)[0].id;
+  const oldActionId = previous.blocks[1].id;
+  previous.workspace = {
+    ...emptyWorkspace(),
+    storyStructure: {
+      acts: [{ id: "act", title: "Act" }],
+      sequences: [{ id: "sequence", actId: "act", title: "Sequence", sceneIds: [oldSceneId] }],
+      beats: [{ id: "beat", text: "Beat", sceneId: oldSceneId, sequenceId: "sequence", status: "drafted", moments: [] }],
+      sceneOrder: [oldSceneId],
+    },
+    treatments: [{ id: "treatment", title: "Treatment", markdown: "Text", links: [{ id: "link", targetType: "scene", targetId: oldSceneId, label: "Home" }] }],
+    plotThreads: [{ id: "thread", label: "Thread", sceneIds: [oldSceneId] }],
+    revisionSets: [{ id: "revision", label: "Blue", color: "Blue", createdAt: "now", blockIds: [oldActionId] }],
+    pageLock: { pages: [{ number: 1, blockIds: [oldActionId] }] },
+  };
+  const parsed = parseFountain("An inserted opener.\n\nEXT. ROAD - NIGHT\n\nKeep this action.\n");
+  const reconciled = reconcileSceneMetadata(previous, parsed);
+  const nextSceneId = deriveScenes(reconciled.blocks)[0].id;
+  assert.notEqual(nextSceneId, oldSceneId);
+  assert.deepEqual(reconciled.workspace?.storyStructure?.sceneOrder, [nextSceneId]);
+  assert.deepEqual(reconciled.workspace?.storyStructure?.sequences[0].sceneIds, [nextSceneId]);
+  assert.equal(reconciled.workspace?.storyStructure?.beats[0].sceneId, nextSceneId);
+  assert.equal(reconciled.workspace?.treatments?.[0].links[0].targetId, nextSceneId);
+  assert.deepEqual(reconciled.workspace?.plotThreads?.[0].sceneIds, [nextSceneId]);
+  assert.deepEqual(reconciled.workspace?.revisionSets?.[0].blockIds, [oldActionId]);
+  assert.deepEqual(reconciled.workspace?.pageLock?.pages[0].blockIds, [oldActionId]);
+});
+
 test("external re-import preserves the document identity and every SCS workspace field", () => {
   const previous = parseFountain("INT. HOME - DAY\n\nOld.\n");
   previous.id = "stable-document";
@@ -217,4 +280,19 @@ test("external re-import preserves the document identity and every SCS workspace
   assert.deepEqual(reconciled.workspace?.entityNotes, previous.workspace.entityNotes);
   assert.deepEqual(reconciled.workspace?.resolvedBeatIds, previous.workspace.resolvedBeatIds);
   assert.deepEqual(reconciled.workspace?.plotThreads, previous.workspace.plotThreads);
+});
+
+test("linked screenplay fingerprints survive metadata edits and detect script edits", () => {
+  const document = sample();
+  const baseline = screenplayTextFingerprint(document);
+  assert.equal(screenplayTextFingerprint({ ...document, workspace: { ...emptyWorkspace(), treatment: "New notes" } }), baseline);
+  assert.notEqual(screenplayTextFingerprint({ ...document, blocks: document.blocks.map((block, index) => index ? block : { ...block, text: `${block.text} changed` }) }), baseline);
+});
+
+test("markdown treatment headings provide stable section link targets", () => {
+  assert.deepEqual(treatmentSections("# Act One\nText\n## Turn\n## Turn"), [
+    { id: "act-one-1", label: "Act One", level: 1 },
+    { id: "turn-1", label: "Turn", level: 2 },
+    { id: "turn-2", label: "Turn", level: 2 },
+  ]);
 });

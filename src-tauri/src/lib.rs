@@ -1,6 +1,7 @@
 mod domain;
 mod external_files;
 mod fdx;
+mod git_sync;
 mod project_file;
 
 use domain::{AppInfo, PhaseStatus, SampleProject};
@@ -113,7 +114,12 @@ pub fn run() {
             file_modified_at,
             list_fdx_files,
             open_fdx_in_external_editor,
-            reveal_in_file_manager
+            reveal_in_file_manager,
+            git_sync::git_sync_status,
+            git_sync::git_sync_init,
+            git_sync::git_sync_commit,
+            git_sync::git_sync_pull,
+            git_sync::git_sync_push
         ])
         .run(tauri::generate_context!())
         .expect("error while running Script Control Software");
