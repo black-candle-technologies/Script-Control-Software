@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Editor from "./Editor.tsx";
 import Inspector from "./Inspector.tsx";
+import LayoutManager from "./LayoutManager.tsx";
 import {
   ELEMENT_TYPES,
   analysisToCsv,
@@ -28,10 +29,13 @@ import {
   emptyDocument,
   emptyWorkspace,
   estimatePages,
+  getWorkspaceLayout,
+  keyboardShortcutMatches,
   moveScene,
   lockPages,
   markChangedBlocks,
   mergeSnapshots,
+  normalizeWorkspaceLayout,
   parseFountain,
   reconcileSceneMetadata,
   resolveStoryStructure,
@@ -59,6 +63,7 @@ import {
   type ProductionRevisionSummary,
   type SnapshotComparison,
   type SnapshotDiffMode,
+  type WorkspaceLayout,
   syncSeriesDocuments,
 } from "../domain/index.ts";
 import { saveSession } from "../storage.ts";
@@ -90,8 +95,11 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [layoutManagerOpen, setLayoutManagerOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const layout = session.workspace.activeLayoutId;
+  const activeLayout: WorkspaceLayout = getWorkspaceLayout(session.workspace, session.workspace.activeLayoutId)
+    ?? normalizeWorkspaceLayout(session.workspace.layouts[0]);
+  const layout = activeLayout.id;
   const [externalChanged, setExternalChanged] = useState(false);
   const [externalConflict, setExternalConflict] = useState(false);
   const [draggedScene, setDraggedScene] = useState<number | null>(null);
@@ -109,18 +117,6 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   }, [session]);
 
   useEffect(() => () => { saveSession(sessionRef.current); }, []);
-
-  useEffect(() => {
-    const keydown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setPaletteOpen((open) => !open);
-      }
-      if (event.key === "Escape") setPaletteOpen(false);
-    };
-    window.addEventListener("keydown", keydown);
-    return () => window.removeEventListener("keydown", keydown);
-  }, []);
 
   useEffect(() => {
     const path = doc.source?.type === "fdx" ? doc.source.path : null;
@@ -198,6 +194,13 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const activeIndex = doc.blocks.findIndex((block) => block.id === activeBlockId);
   const activeBlock = activeIndex >= 0 ? doc.blocks[activeIndex] : null;
   const activeScene = activeIndex >= 0 ? [...scenes].reverse().find((scene) => scene.blockIndex <= activeIndex) ?? null : scenes[0] ?? null;
+  const referenceDocument = useMemo(() => {
+    if (activeLayout.reference === "previous-episode") return episodeDocs[activeEpisode - 1];
+    if (activeLayout.reference !== "previous-draft") return undefined;
+    return versionHistory.snapshots.slice().reverse()
+      .map((snapshot) => snapshot.session.documents.find((document) => document.id === doc.id))
+      .find((document) => document && documentFingerprint(document) !== documentFingerprint(doc));
+  }, [activeEpisode, activeLayout.reference, doc, episodeDocs, versionHistory.snapshots]);
 
   const setActiveType = (type: ScreenplayElementType) => {
     if (!activeBlock || doc.readOnly) return;
@@ -524,14 +527,46 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
 
   const selectLayout = (next: string) => {
     setSession((current) => ({ ...current, workspace: { ...current.workspace, activeLayoutId: next } }));
-    setInspectorOpen(session.workspace.layouts.find((item) => item.id === next)?.inspector !== "hidden");
+    setInspectorOpen(getWorkspaceLayout(session.workspace, next)?.inspector !== "hidden");
   };
 
-  const searchResults = query.trim() ? [
-    ...scenes.filter((scene) => scene.heading.toLowerCase().includes(query.toLowerCase())).map((scene) => ({ label: `Scene ${scene.number}: ${scene.heading}`, action: () => jumpToScene(scene.id) })),
-    ...characters.filter((character) => character.name.toLowerCase().includes(query.toLowerCase())).map((character) => ({ label: `Character: ${character.name}`, action: () => setInspectorOpen(true) })),
-    ...objects.filter((object) => object.name.toLowerCase().includes(query.toLowerCase())).map((object) => ({ label: `Object: ${object.name}`, action: () => setInspectorOpen(true) })),
-  ].slice(0, 12) : [];
+  const normalizedQuery = query.trim().toLowerCase();
+  const searchResults = normalizedQuery ? [
+    ...episodeDocs.flatMap((document, documentIndex) => {
+      const title = session.workspace.series.episodes[document.id!]?.title || document.titlePage.title || `Document ${documentIndex + 1}`;
+      const documentScenes = deriveScenes(document.blocks);
+      const documentCharacters = deriveCharacters(document.blocks);
+      const documentObjects = detectObjects(document.blocks);
+      const selectDocument = () => {
+        selectEpisode(document.id!);
+        setInspectorOpen(true);
+      };
+      return [
+        ...documentScenes.filter((scene) => scene.heading.toLowerCase().includes(normalizedQuery)).map((scene) => ({
+          key: `${document.id}-scene-${scene.id}`,
+          label: `${title} · Scene ${scene.number}: ${scene.heading}`,
+          action: () => {
+            selectEpisode(document.id!);
+            setFocusRequest({ id: scene.id, nonce: ++focusNonce.current });
+          },
+        })),
+        ...document.blocks.filter((block) => block.type !== "scene_heading" && block.text.toLowerCase().includes(normalizedQuery)).map((block) => ({
+          key: `${document.id}-block-${block.id}`,
+          label: `${title} · ${elementLabels[block.type]}: ${block.text.slice(0, 90)}`,
+          action: () => {
+            selectEpisode(document.id!);
+            setFocusRequest({ id: block.id, nonce: ++focusNonce.current });
+          },
+        })),
+        ...documentCharacters.filter((character) => character.name.toLowerCase().includes(normalizedQuery)).map((character) => ({ key: `${document.id}-character-${character.name}`, label: `${title} · Character: ${character.name}`, action: selectDocument })),
+        ...documentObjects.filter((object) => object.name.toLowerCase().includes(normalizedQuery)).map((object) => ({ key: `${document.id}-object-${object.name}`, label: `${title} · Object: ${object.name}`, action: selectDocument })),
+        ...(document.workspace?.treatments ?? []).filter((treatment) => `${treatment.title} ${treatment.markdown}`.toLowerCase().includes(normalizedQuery)).map((treatment) => ({ key: `${document.id}-treatment-${treatment.id}`, label: `${title} · Treatment: ${treatment.title}`, action: selectDocument })),
+      ];
+    }),
+    ...(`${session.workspace.series.showBible} ${session.workspace.series.seasons.map((season) => season.arc).join(" ")}`.toLowerCase().includes(normalizedQuery) ? [{ key: "series-reference", label: "Series bible or season arc", action: () => setInspectorOpen(true) }] : []),
+    ...versionHistory.snapshots.filter((snapshot) => `${snapshot.name} ${snapshot.description}`.toLowerCase().includes(normalizedQuery)).map((snapshot) => ({ key: `version-${snapshot.id}`, label: `Draft version: ${snapshot.name}`, action: () => restoreVersion(snapshot) })),
+    ...session.workspace.layouts.filter((item) => item.name.toLowerCase().includes(normalizedQuery)).map((item) => ({ key: `layout-${item.id}`, label: `Workspace: ${item.name}`, action: () => selectLayout(item.id) })),
+  ].slice(0, 30) : [];
 
   const dropScene = (to: number) => {
     if (draggedScene === null) return;
@@ -539,8 +574,51 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     setDraggedScene(null);
   };
 
-  return <div className={`workspace layout-${layout}`}>
-    {paletteOpen && <div className="command-backdrop" onMouseDown={() => setPaletteOpen(false)}><div className="command-palette" onMouseDown={(event) => event.stopPropagation()}><input autoFocus value={query} placeholder="Search project or run a command…" onChange={(event) => setQuery(event.target.value)} />{query ? searchResults.map((result) => <button key={result.label} onClick={() => { result.action(); setPaletteOpen(false); }}>{result.label}</button>) : <><button onClick={() => { saveNow(); setPaletteOpen(false); }}>Save Project</button><button onClick={() => { saveDraftVersion(); setPaletteOpen(false); }}>Save Draft Version</button><button onClick={() => { exportFdx(); setPaletteOpen(false); }}>Export FDX</button><button onClick={() => { setInspectorOpen((open) => !open); setPaletteOpen(false); }}>Toggle Inspector</button></>}</div></div>}
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPaletteOpen(false);
+        setLayoutManagerOpen(false);
+        return;
+      }
+      const action = Object.entries(session.workspace.shortcuts).find(([, shortcut]) => keyboardShortcutMatches(shortcut, event))?.[0];
+      if (!action) return;
+      event.preventDefault();
+      if (action === "commandPalette") setPaletteOpen((open) => !open);
+      else if (action === "save") saveNow();
+      else if (action === "saveVersion") saveDraftVersion();
+      else if (action === "toggleInspector") setInspectorOpen((open) => !open);
+      else if (action === "layoutManager") setLayoutManagerOpen(true);
+      else if (action === "previousEpisode" && activeEpisode > 0) selectEpisode(episodeDocs[activeEpisode - 1].id!);
+      else if (action === "nextEpisode" && activeEpisode < episodeDocs.length - 1) selectEpisode(episodeDocs[activeEpisode + 1].id!);
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  });
+
+  const navigatorPanel = <aside className="scene-nav" aria-label="Scene navigator">
+    <div className="nav-doc-title">{doc.titlePage.title || "Untitled Screenplay"}</div>
+    <div className="nav-group"><span className="nav-act">{structure.acts[0]?.title ?? "Act I"}</span><span className="nav-structure-hint">{structure.acts.length} act{structure.acts.length === 1 ? "" : "s"}</span></div>
+    <div className="nav-sequence">{structure.acts.reduce((count, act) => count + act.sequences.length, 0)} sequences · {structure.beats.length} beats</div>
+    <ol className="nav-scenes">
+      {scenes.map((scene) => <li key={scene.id} draggable onDragStart={() => setDraggedScene(scene.number - 1)} onDragOver={(event) => event.preventDefault()} onDrop={() => dropScene(scene.number - 1)}><button className={`nav-scene ${activeScene?.id === scene.id ? "active" : ""}`} onClick={() => jumpToScene(scene.id)} title="Drag to reorder"><span className="nav-scene-num">{scene.sceneNumber ?? scene.number}</span><span className="nav-scene-heading">{scene.heading}</span></button>{activeScene?.id === scene.id && <div className="nav-beats">{structure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => beat.text).join(" · ") || "No beats"}</div>}</li>)}
+      {!scenes.length && <li className="nav-empty">No scenes yet — start with INT. or EXT.</li>}
+    </ol>
+    <div className="nav-foot">{scenes.length} scene{scenes.length === 1 ? "" : "s"} · ~{pages} page{pages === 1 ? "" : "s"}</div>
+  </aside>;
+
+  const inspectorPanel = inspectorOpen && activeLayout.inspector !== "hidden" && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versionHistory={versionHistory} versionComparison={versionComparison} mergeConflicts={mergeConflicts} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onCompareVersions={compareProjectVersions} onCreateAlternateDraft={createAlternate} onSwitchAlternateDraft={switchAlternate} onCombineDrafts={combineDrafts} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} projectWorkspace={session.workspace} seriesReport={seriesReport} activeDocumentId={doc.id!} onProjectWorkspace={(patch) => setSession((current) => ({ ...current, workspace: { ...current.workspace, ...patch } }))} onSelectEpisode={selectEpisode} productionPages={productionPageRows} productionReports={productionReport} revisionSets={revisionSets} revisionSummaries={productionRevisionSummaries} onStartRevision={startRevision} onUpdateRevisionMarks={updateRevisionMarks} onLockPages={lockProductionPages} onUnlockPages={unlockProductionPages} onToggleOmittedScene={toggleOmittedScene} onSetSceneNumber={setSceneNumber} onExportProduction={exportProduction} />;
+
+  const scriptPanel = <div className={`script-split ${activeLayout.reference === "none" ? "single" : "with-reference"}`}>
+    <div className="script-panel-current">
+      {mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} productionPages={productionPageRows} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
+    </div>
+    {activeLayout.reference !== "none" && <ReferencePanel document={referenceDocument} label={activeLayout.reference === "previous-episode" ? "Previous episode" : "Previous draft"} activeSceneNumber={activeScene?.number ?? 1} onSynchronizedScene={(number) => scenes[number - 1] && jumpToScene(scenes[number - 1].id)} />}
+  </div>;
+
+  return <div className={`workspace layout-${layout}`} style={{ "--navigator-width": `${activeLayout.navigatorWidth}px`, "--inspector-width": `${activeLayout.inspectorWidth}px` } as CSSProperties}>
+    {layoutManagerOpen && <LayoutManager workspace={session.workspace} layout={activeLayout} onWorkspace={(next) => setSession((current) => ({ ...current, workspace: next }))} onClose={() => setLayoutManagerOpen(false)} />}
+    {paletteOpen && <div className="command-backdrop" onMouseDown={() => setPaletteOpen(false)}><div className="command-palette" onMouseDown={(event) => event.stopPropagation()}><input autoFocus value={query} placeholder="Search every script, draft, and workspace…" onChange={(event) => setQuery(event.target.value)} />{query ? searchResults.map((result) => <button key={result.key} onClick={() => { result.action(); setPaletteOpen(false); }}>{result.label}</button>) : <><button onClick={() => { saveNow(); setPaletteOpen(false); }}>Save Project</button><button onClick={() => { saveDraftVersion(); setPaletteOpen(false); }}>Save Draft Version</button><button onClick={() => { exportFdx(); setPaletteOpen(false); }}>Export FDX</button><button onClick={() => { setInspectorOpen((open) => !open); setPaletteOpen(false); }}>Toggle Inspector</button><button onClick={() => { setLayoutManagerOpen(true); setPaletteOpen(false); }}>Manage Workspace Layouts</button></>}</div></div>}
     {episodeDocs.length > 1 && <div className="workspace-episodes" aria-label="Television episodes">
       {episodeDocs.map((episode, index) => <button key={episode.id ?? episode.source?.path ?? index} className={`episode-tab ${index === activeEpisode ? "active" : ""}`} onClick={() => selectEpisode(episode.id!)}>
         {session.workspace.series.episodes[episode.id!]?.title || episode.titlePage.title || `Episode ${index + 1}`}
@@ -556,8 +634,9 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
         <button disabled={doc.readOnly} className={mode === "source" ? "active" : ""} onClick={() => mode === "formatted" && toggleMode()}>Fountain Source</button>
       </div>
       <div className="toolbar-spacer" />
-      <button className="btn btn-ghost" onClick={() => setPaletteOpen(true)}>Search · Ctrl+K</button>
-      <select className="element-select" aria-label="Workspace layout" value={layout} onChange={(event) => selectLayout(event.target.value)}><option value="writer">Writer</option><option value="development">Development</option><option value="revision">Revision</option><option value="television">Television</option><option value="production">Production</option></select>
+      <button className="btn btn-ghost" onClick={() => setPaletteOpen(true)}>Search · {session.workspace.shortcuts.commandPalette || "unassigned"}</button>
+      <select className="element-select" aria-label="Workspace layout" value={layout} onChange={(event) => selectLayout(event.target.value)}>{session.workspace.layouts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+      <button className="btn btn-ghost" onClick={() => setLayoutManagerOpen(true)}>Layouts</button>
       <button className="btn" onClick={saveNow} disabled={busy}>Save Project</button>
       <button className="btn btn-ghost" onClick={createProject} disabled={busy}>Save Portable Project</button>
       <button className="btn" onClick={exportFountain}>Export Fountain</button>
@@ -572,21 +651,37 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     {operationMessage && <div className="operation-message" role="status">{operationMessage}</div>}
     {!!doc.warnings?.length && <details className="import-summary"><summary>{doc.warnings.length} import warning{doc.warnings.length === 1 ? "" : "s"} — source data was preserved where possible</summary><ul>{doc.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><strong>{warning.code}</strong>: {warning.message}</li>)}</ul></details>}
     <div className="workspace-main">
-      <aside className="scene-nav">
-        <div className="nav-doc-title">{doc.titlePage.title || "Untitled Screenplay"}</div>
-        <div className="nav-group"><span className="nav-act">{structure.acts[0]?.title ?? "Act I"}</span><span className="nav-structure-hint">{structure.acts.length} act{structure.acts.length === 1 ? "" : "s"}</span></div>
-        <div className="nav-sequence">{structure.acts.reduce((count, act) => count + act.sequences.length, 0)} sequences · {structure.beats.length} beats</div>
-        <ol className="nav-scenes">
-          {scenes.map((scene) => <li key={scene.id} draggable onDragStart={() => setDraggedScene(scene.number - 1)} onDragOver={(event) => event.preventDefault()} onDrop={() => dropScene(scene.number - 1)}><button className={`nav-scene ${activeScene?.id === scene.id ? "active" : ""}`} onClick={() => jumpToScene(scene.id)} title="Drag to reorder"><span className="nav-scene-num">{scene.sceneNumber ?? scene.number}</span><span className="nav-scene-heading">{scene.heading}</span></button>{activeScene?.id === scene.id && <div className="nav-beats">{structure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => beat.text).join(" · ") || "No beats"}</div>}</li>)}
-          {!scenes.length && <li className="nav-empty">No scenes yet — start with INT. or EXT.</li>}
-        </ol>
-        <div className="nav-foot">{scenes.length} scene{scenes.length === 1 ? "" : "s"} · ~{pages} page{pages === 1 ? "" : "s"}</div>
-      </aside>
-      {mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} productionPages={productionPageRows} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
-      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versionHistory={versionHistory} versionComparison={versionComparison} mergeConflicts={mergeConflicts} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onCompareVersions={compareProjectVersions} onCreateAlternateDraft={createAlternate} onSwitchAlternateDraft={switchAlternate} onCombineDrafts={combineDrafts} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} projectWorkspace={session.workspace} seriesReport={seriesReport} activeDocumentId={doc.id!} onProjectWorkspace={(patch) => setSession((current) => ({ ...current, workspace: { ...current.workspace, ...patch } }))} onSelectEpisode={selectEpisode} productionPages={productionPageRows} productionReports={productionReport} revisionSets={revisionSets} revisionSummaries={productionRevisionSummaries} onStartRevision={startRevision} onUpdateRevisionMarks={updateRevisionMarks} onLockPages={lockProductionPages} onUnlockPages={unlockProductionPages} onToggleOmittedScene={toggleOmittedScene} onSetSceneNumber={setSceneNumber} onExportProduction={exportProduction} />}
+      {activeLayout.navigator === "left" && navigatorPanel}
+      {activeLayout.inspector === "left" && inspectorPanel}
+      {scriptPanel}
+      {activeLayout.inspector === "right" && inspectorPanel}
+      {activeLayout.navigator === "right" && navigatorPanel}
+      {activeLayout.inspector === "floating" && inspectorPanel && <div className="floating-inspector">{inspectorPanel}</div>}
     </div>
     <div className="statusbar"><span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span><span>{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span><span>~{pages} pages</span><span>{words} words</span><div className="toolbar-spacer" /><span>{doc.readOnly ? `Linked source · ${doc.source?.fileName ?? "FDX"}` : savedAt ? `Saved locally · ${savedAt}` : "Not saved yet"}</span><span className="status-draft">Draft: current · drafts panel →</span></div>
   </div>;
+}
+
+function ReferencePanel({ document, label, activeSceneNumber, onSynchronizedScene }: {
+  document?: ScreenplayDocument;
+  label: string;
+  activeSceneNumber: number;
+  onSynchronizedScene: (sceneNumber: number) => void;
+}) {
+  const referenceScenes = useMemo(() => document ? deriveScenes(document.blocks) : [], [document]);
+  return <aside className="reference-panel" aria-label={`${label} reference`}>
+    <header><div><span className="insp-kicker">Synchronized reference</span><strong>{label}</strong></div><span>{document?.titlePage.title || "Not available"}</span></header>
+    {!document ? <div className="reference-empty">No matching script is available yet. Add an earlier episode or save a different draft version.</div> : <div className="reference-scroll">
+      {referenceScenes.map((scene, index) => {
+        const end = referenceScenes[index + 1]?.blockIndex ?? document.blocks.length;
+        return <section key={scene.id} className={`reference-scene ${scene.number === activeSceneNumber ? "active" : ""}`} onClick={() => onSynchronizedScene(scene.number)}>
+          <div className="reference-scene-heading"><span>{scene.sceneNumber ?? scene.number}</span>{scene.heading}</div>
+          {document.blocks.slice(scene.blockIndex + 1, end).map((block) => <p key={block.id} className={`reference-block reference-${block.type}`}>{block.text}</p>)}
+        </section>;
+      })}
+      {!referenceScenes.length && <div className="reference-empty">This reference contains no scene headings.</div>}
+    </div>}
+  </aside>;
 }
 
 function documentFingerprint(document: ScreenplayDocument): string {
