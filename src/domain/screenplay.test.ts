@@ -176,8 +176,10 @@ test("scene-linked metadata follows matching scenes after a parser regenerates i
     omittedSceneIds: [home.id],
   };
   const parsed = parseFountain("EXT. ROAD - NIGHT\n\nDrive faster.\n\nINT. HOME - DAY\n\nNew.\n");
-  const [newRoad, newHome] = deriveScenes(parsed.blocks);
   const reconciled = reconcileSceneMetadata(previous, parsed);
+  const [newRoad, newHome] = deriveScenes(reconciled.blocks);
+  assert.equal(newRoad.id, road.id);
+  assert.equal(newHome.id, home.id);
   assert.equal(reconciled.sceneNotes[newHome.id], "home note");
   assert.equal(reconciled.sceneNotes[newRoad.id], "road note");
   assert.equal(reconciled.workspace?.sceneMeta?.[newRoad.id].summary, "Chase");

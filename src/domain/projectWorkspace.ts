@@ -333,6 +333,10 @@ function normalizeDocumentWorkspace(value: unknown) {
     entityNotes: stringRecord(value.entityNotes),
     resolvedBeatIds: Array.isArray(value.resolvedBeatIds) ? value.resolvedBeatIds.filter((item): item is string => typeof item === "string") : [],
     plotThreads: Array.isArray(value.plotThreads) ? value.plotThreads : [],
+    revisionSets: Array.isArray(value.revisionSets) ? value.revisionSets : [],
+    activeRevisionId: string(value.activeRevisionId),
+    pageLock: isRecord(value.pageLock) && Array.isArray(value.pageLock.pages) ? value.pageLock : undefined,
+    shootingEighthsPerDay: typeof value.shootingEighthsPerDay === "number" && value.shootingEighthsPerDay > 0 ? value.shootingEighthsPerDay : 40,
     sceneMeta: isRecord(value.sceneMeta) ? value.sceneMeta : {},
   };
 }

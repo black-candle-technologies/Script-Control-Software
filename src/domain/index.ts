@@ -21,4 +21,5 @@ export * from "./studio.ts";
 export * from "./story.ts";
 export * from "./analysis.ts";
 export * from "./seriesWorkspace.ts";
+export * from "./revisionProduction.ts";
 export * from "./appInfo.ts";

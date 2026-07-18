@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import {
   moveStoryScene,
+  nextRevisionColor,
   parseHeading,
+  REVISION_COLORS,
   type Breakdown,
   type AnalysisCsvSection,
   type AnalysisEntityKind,
@@ -17,6 +19,12 @@ import {
   type MergeConflict,
   type ProjectSnapshot,
   type ProjectWorkspace,
+  type ProductionExportKind,
+  type ProductionPage,
+  type ProductionReports,
+  type RevisionColor,
+  type RevisionSet,
+  type ProductionRevisionSummary,
   type SeriesWorkspaceReport,
   type ScriptAnalysis,
   type SnapshotComparison,
@@ -59,6 +67,17 @@ interface InspectorProps {
   activeDocumentId: string;
   onProjectWorkspace: (patch: Partial<ProjectWorkspace>) => void;
   onSelectEpisode: (documentId: string) => void;
+  productionPages: ProductionPage[];
+  productionReports: ProductionReports;
+  revisionSets: RevisionSet[];
+  revisionSummaries: ProductionRevisionSummary[];
+  onStartRevision: (label: string, color: RevisionColor) => void;
+  onUpdateRevisionMarks: (revisionId: string) => void;
+  onLockPages: () => void;
+  onUnlockPages: () => void;
+  onToggleOmittedScene: (sceneId: string) => void;
+  onSetSceneNumber: (sceneId: string, number: string) => void;
+  onExportProduction: (kind: ProductionExportKind, targetId?: string) => void;
 }
 
 const TABS = ["Scene", "Story", "Treatment", "Cast", "Props", "Places", "Drafts", "Breakdown", "Series", "Production", "Team", "Assist"] as const;
@@ -510,10 +529,38 @@ function SeriesTab({ projectWorkspace, seriesReport, activeDocumentId, scenes, o
   </div>;
 }
 
-function ProductionTab({ breakdown, workspace, onWorkspace, activeScene }: InspectorProps) {
+function ProductionTab({ workspace, onWorkspace, activeScene, productionPages, productionReports, revisionSets, revisionSummaries, characters, scenes, onStartRevision, onUpdateRevisionMarks, onLockPages, onUnlockPages, onToggleOmittedScene, onSetSceneNumber, onExportProduction }: InspectorProps) {
   const omitted = workspace.omittedSceneIds ?? [];
-  const toggleOmitted = () => activeScene && onWorkspace({ omittedSceneIds: omitted.includes(activeScene.id) ? omitted.filter((id) => id !== activeScene.id) : [...omitted, activeScene.id] });
-  return <div className="insp-stack"><Hint>Scene numbers, locked-page records, colored revisions, omitted scenes, and deterministic shooting complexity.</Hint><label className="insp-card-meta">Draft label<input className="insp-notes-input" value={workspace.productionDraftLabel ?? ""} onChange={(event) => onWorkspace({ productionDraftLabel: event.target.value })} /></label><label className="insp-card-meta">Revision color<select className="element-select" value={workspace.revisionColor ?? "White"} onChange={(event) => onWorkspace({ revisionColor: event.target.value })}>{["White", "Blue", "Pink", "Yellow", "Green", "Goldenrod", "Buff", "Salmon", "Cherry"].map((color) => <option key={color}>{color}</option>)}</select></label><label className="insp-card-meta">Locked pages<input className="insp-notes-input" value={workspace.lockedPages ?? ""} placeholder="1-12, 14" onChange={(event) => onWorkspace({ lockedPages: event.target.value })} /></label>{activeScene && <button className="btn" onClick={toggleOmitted}>{omitted.includes(activeScene.id) ? "Restore Scene" : "Mark Scene Omitted"}</button>}{breakdown.complexity.map((scene) => <div className="insp-card" key={scene.scene}><div className="insp-card-title">Scene {scene.scene} · complexity {scene.score}/5</div><div className="insp-card-meta">{scene.reasons.join(", ") || "standard dialogue/action"}</div></div>)}<h4>Department and revision notes</h4><textarea className="insp-notes-input" value={workspace.productionNotes} onChange={(event) => onWorkspace({ productionNotes: event.target.value })} placeholder="Wardrobe, makeup, props, revision history…" /></div>;
+  const activeRevision = revisionSets.find((revision) => revision.id === workspace.activeRevisionId) ?? revisionSets[revisionSets.length - 1];
+  const suggestedColor = nextRevisionColor((activeRevision?.color ?? "White") as RevisionColor);
+  const [revisionLabel, setRevisionLabel] = useState(`${suggestedColor} Revision`);
+  const [revisionColor, setRevisionColor] = useState<RevisionColor>(suggestedColor);
+  const [characterSide, setCharacterSide] = useState("");
+  const [sceneSide, setSceneSide] = useState("");
+  return <div className="insp-stack">
+    <Hint>Production mode keeps numbered scenes, locked/A-pages, colored revision runs, omitted scenes, scheduling strips, sides, and department exports attached to the screenplay.</Hint>
+    <label className="insp-card-meta">Production draft label<input className="insp-notes-input" value={workspace.productionDraftLabel ?? ""} onChange={(event) => onWorkspace({ productionDraftLabel: event.target.value })} /></label>
+    {activeScene && <div className="insp-card"><div className="insp-card-title">Active scene · {activeScene.heading}</div><label className="insp-card-meta">Scene number<input className="insp-notes-input" value={activeScene.sceneNumber ?? String(activeScene.number)} onChange={(event) => onSetSceneNumber(activeScene.id, event.target.value)} /></label><button className="btn" onClick={() => onToggleOmittedScene(activeScene.id)}>{omitted.includes(activeScene.id) ? "Restore Omitted Scene" : "Mark Scene Omitted"}</button></div>}
+    <h4>Page locking</h4>
+    <div className="btn-row"><button className="btn" onClick={onLockPages}>{workspace.pageLock ? "Re-lock Current Pages" : "Lock Pages"}</button>{workspace.pageLock && <button className="btn btn-ghost" onClick={onUnlockPages}>Release Lock</button>}<button className="btn btn-ghost" onClick={() => window.print()}>Print Revision Pages</button></div>
+    <div className="chip-row">{productionPages.map((page) => <span className="chip" key={page.label}>{page.label}{page.locked ? " 🔒" : ""}{page.color ? ` · ${page.color}` : ""}</span>)}</div>
+    <h4>Colored revisions</h4>
+    <div className="insp-card"><input aria-label="Revision label" className="insp-notes-input" value={revisionLabel} onChange={(event) => setRevisionLabel(event.target.value)} /><select aria-label="Revision color" className="element-select" value={revisionColor} onChange={(event) => setRevisionColor(event.target.value as RevisionColor)}>{REVISION_COLORS.map((color) => <option key={color}>{color}</option>)}</select><button className="btn" disabled={!revisionLabel.trim()} onClick={() => { onStartRevision(revisionLabel.trim(), revisionColor); const next = nextRevisionColor(revisionColor); setRevisionColor(next); setRevisionLabel(`${next} Revision`); }}>Start Revision Set</button></div>
+    {!!revisionSets.length && <label className="insp-card-meta">Active revision<select className="element-select" value={activeRevision?.id ?? ""} onChange={(event) => onWorkspace({ activeRevisionId: event.target.value })}>{revisionSets.map((revision) => <option key={revision.id} value={revision.id}>{revision.label} · {revision.color}</option>)}</select></label>}
+    {activeRevision && <button className="btn btn-primary" onClick={() => onUpdateRevisionMarks(activeRevision.id)}>Update Revision Marks</button>}
+    {revisionSummaries.map((summary) => <div className="insp-card" key={summary.revisionId}><div className="insp-card-title">{summary.label} · {summary.color}</div><div className="insp-card-meta">{summary.totalChanges} changes · pages {summary.revisedPages.join(", ") || "none"} · {summary.changedSceneIds.length} scenes</div><p className="insp-card-desc">{summary.addedBlockIds.length} added · {summary.editedBlockIds.length} edited · {summary.removedBlockIds.length} removed</p></div>)}
+    <h4>Shooting schedule</h4>
+    <label className="insp-card-meta">Eighths per day<input className="insp-notes-input" type="number" min="1" value={workspace.shootingEighthsPerDay ?? 40} onChange={(event) => onWorkspace({ shootingEighthsPerDay: Math.max(1, Number(event.target.value) || 40) })} /></label>
+    {productionReports.oneLineSchedule.map((row) => <div className="insp-card" key={row.sceneId}><div className="insp-card-title">Day {row.day} · Scene {row.sceneNumber}</div><div className="insp-card-meta">{row.line}</div></div>)}
+    {!!productionReports.sceneStrips.filter((strip) => strip.omitted).length && <p className="insp-card-desc">Omitted: {productionReports.sceneStrips.filter((strip) => strip.omitted).map((strip) => strip.sceneNumber).join(", ")}</p>}
+    <h4>Day out of days</h4>
+    {productionReports.castDays.map((cast) => <div className="insp-card" key={cast.character}><div className="insp-card-title">{cast.character} · {cast.totalDays} day(s)</div><div className="insp-card-meta">{cast.days.map((day) => `Day ${day.day} ${day.status} (${day.sceneNumbers.join(", ")})`).join(" · ")}</div></div>)}
+    <h4>Production exports</h4>
+    <div className="btn-row"><button className="btn btn-ghost" onClick={() => onExportProduction("revision")}>Revision report</button><button className="btn btn-ghost" onClick={() => onExportProduction("scene-strips")}>Scene strips CSV</button><button className="btn btn-ghost" onClick={() => onExportProduction("schedule")}>One-line schedule</button><button className="btn btn-ghost" onClick={() => onExportProduction("cast-days")}>Cast DOOD</button><button className="btn btn-ghost" onClick={() => onExportProduction("dialogue")}>Dialogue only</button><button className="btn btn-ghost" onClick={() => onExportProduction("departments")}>Departments</button><button className="btn btn-ghost" onClick={() => onExportProduction("metadata")}>Revision JSON</button></div>
+    <div className="btn-row"><select aria-label="Character side" className="element-select" value={characterSide} onChange={(event) => setCharacterSide(event.target.value)}><option value="">All character sides</option>{characters.map((character) => <option key={character.name}>{character.name}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportProduction("character-sides", characterSide || undefined)}>Export Sides</button></div>
+    <div className="btn-row"><select aria-label="Scene side" className="element-select" value={sceneSide} onChange={(event) => setSceneSide(event.target.value)}><option value="">All scene sides</option>{scenes.map((scene) => <option key={scene.id} value={scene.id}>Scene {scene.sceneNumber ?? scene.number} · {scene.heading}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportProduction("scene-sides", sceneSide || undefined)}>Export Scene Sides</button></div>
+    <h4>Department and revision notes</h4><textarea className="insp-notes-input" value={workspace.productionNotes} onChange={(event) => onWorkspace({ productionNotes: event.target.value })} placeholder="Wardrobe, makeup, props, department notes…" />
+  </div>;
 }
 
 function TeamTab({ workspace, onWorkspace }: InspectorProps) {

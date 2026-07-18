@@ -790,6 +790,15 @@ button.wordmark {
   line-height: 1.25;
 }
 
+.page[data-revision-color="Blue"] { --revision-mark: #3778c2; border-top: 6px solid var(--revision-mark); }
+.page[data-revision-color="Pink"] { --revision-mark: #d96891; border-top: 6px solid var(--revision-mark); }
+.page[data-revision-color="Yellow"] { --revision-mark: #d4aa00; border-top: 6px solid var(--revision-mark); }
+.page[data-revision-color="Green"] { --revision-mark: #39895a; border-top: 6px solid var(--revision-mark); }
+.page[data-revision-color="Goldenrod"] { --revision-mark: #b98516; border-top: 6px solid var(--revision-mark); }
+.page[data-revision-color="Buff"] { --revision-mark: #bd8d57; border-top: 6px solid var(--revision-mark); }
+.page[data-revision-color="Salmon"] { --revision-mark: #db6e5e; border-top: 6px solid var(--revision-mark); }
+.page[data-revision-color="Cherry"] { --revision-mark: #a92f4b; border-top: 6px solid var(--revision-mark); }
+
 .page::after {
   content: attr(data-page);
   position: absolute;
@@ -884,6 +893,10 @@ button.wordmark {
 
 .blk:focus {
   background: rgba(216, 166, 87, 0.09);
+}
+
+.blk.revised {
+  box-shadow: inset -3px 0 var(--revision-mark, #666);
 }
 
 .blk::placeholder {

@@ -1,4 +1,5 @@
 import type { CoverageHook, EntityOverride } from "./analysis.ts";
+import type { PageLock, RevisionSet } from "./revisionProduction.ts";
 
 /**
  * The screenplay document model — the heart of the writing workspace.
@@ -98,6 +99,10 @@ export interface WorkspaceData {
   productionDraftLabel?: string;
   revisionColor?: string;
   lockedPages?: string;
+  revisionSets?: RevisionSet[];
+  activeRevisionId?: string;
+  pageLock?: PageLock;
+  shootingEighthsPerDay?: number;
   omittedSceneIds?: string[];
   sceneMeta?: Record<string, { summary: string; tags: string; status: "outline" | "draft" | "revised" | "locked" }>;
   comments: { id: string; author: string; text: string; resolved: boolean; createdAt: string }[];
@@ -119,6 +124,10 @@ export const emptyWorkspace = (): WorkspaceData => ({
   productionDraftLabel: "First Draft",
   revisionColor: "White",
   lockedPages: "",
+  revisionSets: [],
+  activeRevisionId: "",
+  pageLock: undefined,
+  shootingEighthsPerDay: 40,
   omittedSceneIds: [],
   sceneMeta: {},
   comments: [],
@@ -325,7 +334,8 @@ export function deriveScenes(blocks: ScreenplayBlock[]): Scene[] {
 /** Preserve scene-linked development data when a parser regenerates block ids. */
 export function reconcileSceneMetadata(previous: ScreenplayDocument, parsed: ScreenplayDocument): ScreenplayDocument {
   const before = deriveScenes(previous.blocks);
-  const after = deriveScenes(parsed.blocks);
+  const blocks = reconcileBlockIds(previous.blocks, parsed.blocks);
+  const after = deriveScenes(blocks);
   const remap = new Map<string, string>();
   const available = new Set(after.map((scene) => scene.id));
   const byIdentity = sceneIdentityMap(after);
@@ -344,7 +354,20 @@ export function reconcileSceneMetadata(previous: ScreenplayDocument, parsed: Scr
   const workspace = { ...emptyWorkspace(), ...previous.workspace, ...parsed.workspace };
   workspace.sceneMeta = remapRecord(previous.workspace?.sceneMeta);
   workspace.omittedSceneIds = (previous.workspace?.omittedSceneIds ?? []).flatMap((id) => remap.get(id) ?? []);
-  return { ...previous, ...parsed, sceneNotes: remapRecord(previous.sceneNotes), workspace };
+  return { ...previous, ...parsed, blocks, sceneNotes: remapRecord(previous.sceneNotes), workspace };
+}
+
+function reconcileBlockIds(previous: ScreenplayBlock[], parsed: ScreenplayBlock[]): ScreenplayBlock[] {
+  const available = new Set(previous.map((block) => block.id));
+  return parsed.map((block, index) => {
+    const samePosition = previous[index];
+    const match = samePosition && available.has(samePosition.id) && samePosition.type === block.type && samePosition.text === block.text
+      ? samePosition
+      : previous.find((candidate) => available.has(candidate.id) && candidate.type === block.type && candidate.text === block.text);
+    if (!match) return block;
+    available.delete(match.id);
+    return { ...block, id: match.id };
+  });
 }
 
 function sceneIdentity(scenes: Scene[], index: number): string {

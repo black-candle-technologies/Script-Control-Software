@@ -7,6 +7,8 @@ import {
   analysisToJson,
   analysisToMarkdown,
   addMilestone,
+  buildCharacterSides,
+  buildSceneSides,
   buildStructure,
   compareSnapshots,
   compareDrafts,
@@ -16,6 +18,7 @@ import {
   createAlternateDraft,
   createProjectSnapshot,
   createVersionHistory,
+  dialogueOnly,
   countWords,
   detectObjects,
   deriveCharacters,
@@ -26,12 +29,21 @@ import {
   emptyWorkspace,
   estimatePages,
   moveScene,
+  lockPages,
+  markChangedBlocks,
   mergeSnapshots,
   parseFountain,
   reconcileSceneMetadata,
   resolveStoryStructure,
   restoreProjectSnapshot,
+  productionPages,
+  productionReports as compileProductionReports,
+  productionReportsCsv,
+  revisionExportMetadata,
+  revisionReportMarkdown,
   saveSnapshot,
+  setSceneOmitted,
+  summarizeRevision,
   toFdxWithWarnings,
   toFountain,
   type ScreenplayDocument,
@@ -41,6 +53,10 @@ import {
   type MergeConflict,
   type ProjectSession,
   type ProjectSnapshot,
+  type ProductionExportKind,
+  type RevisionColor,
+  type RevisionSet,
+  type ProductionRevisionSummary,
   type SnapshotComparison,
   type SnapshotDiffMode,
   syncSeriesDocuments,
@@ -170,6 +186,13 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     revision: recentSnapshots.length > 1 ? { fromLabel: recentSnapshots[0].name, toLabel: recentSnapshots[1].name, changes: draftChanges } : undefined,
   }), [customStructure, doc, draftChanges, recentSnapshots, workspace.entityOverrides, workspace.plotThreads, workspace.resolvedBeatIds, workspace.treatments]);
   const seriesReport = useMemo(() => compileSeriesWorkspace(session), [session]);
+  const revisionSets = workspace.revisionSets ?? [];
+  const productionPageRows = useMemo(() => productionPages(doc, workspace.pageLock, revisionSets), [doc, revisionSets, workspace.pageLock]);
+  const productionReport = useMemo(() => compileProductionReports(doc, workspace.shootingEighthsPerDay ?? 40), [doc, workspace.shootingEighthsPerDay]);
+  const productionRevisionSummaries = useMemo(() => revisionSets.flatMap((revision): ProductionRevisionSummary[] => {
+    const baseline = versionHistory.snapshots.find((snapshot) => snapshot.id === revision.baselineSnapshotId)?.session.documents.find((document) => document.id === doc.id);
+    return baseline ? [summarizeRevision(baseline, doc, revision, workspace.pageLock)] : [];
+  }), [doc, revisionSets, versionHistory.snapshots, workspace.pageLock]);
   const words = useMemo(() => countWords(doc.blocks), [doc.blocks]);
   const pages = useMemo(() => estimatePages(doc.blocks), [doc.blocks]);
   const activeIndex = doc.blocks.findIndex((block) => block.id === activeBlockId);
@@ -187,6 +210,18 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const jumpToScene = (sceneId: string) => {
     const imported = doc.scenes?.find((scene) => scene.id === sceneId);
     setFocusRequest({ id: imported ? doc.blocks[imported.blockStart].id : sceneId, nonce: ++focusNonce.current });
+  };
+
+  const setSceneNumber = (sceneId: string, number: string) => {
+    const scene = scenes.find((item) => item.id === sceneId);
+    if (!scene) return;
+    const blocks = doc.blocks.slice();
+    const heading = blocks[scene.blockIndex];
+    const metadata = { ...heading.metadata };
+    if (number.trim()) metadata.Number = number.trim();
+    else delete metadata.Number;
+    blocks[scene.blockIndex] = { ...heading, metadata };
+    setDoc({ ...doc, blocks, scenes: undefined });
   };
 
   const selectEpisode = (documentId: string) => {
@@ -392,6 +427,75 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     setOperationMessage(result.clean ? `Combined ${source.name} without conflicts.` : `Combined ${source.name}; ${result.conflicts.length} conflict${result.conflicts.length === 1 ? "" : "s"} kept ${resolution}.`);
   };
 
+  const startRevision = (label: string, color: RevisionColor) => {
+    setSession((current) => {
+      const baseline = projectSnapshot(current, `${label} baseline`, `Automatic baseline for ${label}.`);
+      const history = current.versionHistory.snapshots.length ? saveSnapshot(current.versionHistory, baseline) : createVersionHistory(baseline);
+      const index = current.documents.findIndex((document) => document.id === doc.id);
+      if (index < 0) return current;
+      const currentDocument = current.documents[index];
+      const revision: RevisionSet = { id: `revision-${crypto.randomUUID()}`, label, color, createdAt: new Date().toISOString(), blockIds: [], baselineSnapshotId: baseline.id };
+      const currentWorkspace = currentDocument.workspace ?? emptyWorkspace();
+      const documents = current.documents.slice();
+      documents[index] = { ...currentDocument, workspace: { ...currentWorkspace, revisionSets: [...(currentWorkspace.revisionSets ?? []), revision], activeRevisionId: revision.id, revisionColor: color } };
+      return { ...current, documents, versionHistory: history };
+    });
+    setOperationMessage(`Started ${label} with a protected project baseline.`);
+  };
+
+  const updateRevisionMarks = (revisionId: string) => {
+    setSession((current) => {
+      const index = current.documents.findIndex((document) => document.id === doc.id);
+      if (index < 0) return current;
+      const currentDocument = current.documents[index];
+      const currentWorkspace = currentDocument.workspace ?? emptyWorkspace();
+      const revision = currentWorkspace.revisionSets?.find((item) => item.id === revisionId);
+      const baseline = current.versionHistory.snapshots.find((snapshot) => snapshot.id === revision?.baselineSnapshotId)?.session.documents.find((document) => document.id === currentDocument.id);
+      if (!revision || !baseline) return current;
+      const marked = markChangedBlocks(baseline, currentDocument, revision);
+      const nextWorkspace = marked.document.workspace ?? emptyWorkspace();
+      const documents = current.documents.slice();
+      documents[index] = { ...marked.document, workspace: { ...nextWorkspace, revisionSets: currentWorkspace.revisionSets!.map((item) => item.id === revisionId ? marked.revision : item), activeRevisionId: revisionId, revisionColor: revision.color } };
+      return { ...current, documents };
+    });
+    setOperationMessage("Updated colored revision marks from the protected baseline.");
+  };
+
+  const lockProductionPages = () => {
+    const pageLock = lockPages(doc);
+    setDoc({ ...doc, workspace: { ...workspace, pageLock, lockedPages: pageLock.pages.map((page) => page.number).join(", ") } });
+    setOperationMessage(`Locked ${pageLock.pages.length} production page${pageLock.pages.length === 1 ? "" : "s"}.`);
+  };
+
+  const unlockProductionPages = () => {
+    setDoc({ ...doc, workspace: { ...workspace, pageLock: undefined, lockedPages: "" } });
+    setOperationMessage("Released the page lock.");
+  };
+
+  const toggleOmittedScene = (sceneId: string) => setDoc(setSceneOmitted(doc, sceneId, !(workspace.omittedSceneIds ?? []).includes(sceneId)));
+
+  const exportProduction = (kind: ProductionExportKind, targetId?: string) => {
+    if (kind === "revision") return download(revisionReportMarkdown(productionRevisionSummaries), "revision-report.md", "text/markdown");
+    if (kind === "scene-strips" || kind === "schedule" || kind === "cast-days") return download(productionReportsCsv(productionReport, kind === "scene-strips" ? "strips" : kind), `${kind}.csv`, "text/csv");
+    if (kind === "dialogue") return download(dialogueOnly(doc), "dialogue.txt", "text/plain");
+    if (kind === "character-sides") {
+      const sides = buildCharacterSides(doc);
+      const content = targetId ? sides[targetId] ?? "" : Object.entries(sides).map(([name, text]) => `# ${name}\n\n${text}`).join("\n");
+      return download(content, "character-sides.txt", "text/plain");
+    }
+    if (kind === "scene-sides") {
+      const sides = buildSceneSides(doc);
+      const content = targetId ? sides[targetId] ?? "" : Object.values(sides).join("\n");
+      return download(content, "scene-sides.txt", "text/plain");
+    }
+    if (kind === "metadata") return download(JSON.stringify({ revisions: revisionExportMetadata(doc, revisionSets, workspace.pageLock), reports: productionReport }, null, 2), "production-metadata.json", "application/json");
+    const lines = ["# Department Breakdown", "", workspace.productionNotes, ""];
+    for (const [category, rows] of Object.entries(analysis.production)) {
+      lines.push(`## ${category}`, "", ...rows.map((row) => `- Scene ${row.sceneNumber} · ${row.item}: ${row.evidence}`), "");
+    }
+    return download(`${lines.join("\n").trim()}\n`, "department-breakdown.md", "text/markdown");
+  };
+
   const reloadLinkedFdx = async () => {
     if (!doc.source?.path) return;
     setBusy(true);
@@ -478,8 +582,8 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
         </ol>
         <div className="nav-foot">{scenes.length} scene{scenes.length === 1 ? "" : "s"} · ~{pages} page{pages === 1 ? "" : "s"}</div>
       </aside>
-      {mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
-      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versionHistory={versionHistory} versionComparison={versionComparison} mergeConflicts={mergeConflicts} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onCompareVersions={compareProjectVersions} onCreateAlternateDraft={createAlternate} onSwitchAlternateDraft={switchAlternate} onCombineDrafts={combineDrafts} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} projectWorkspace={session.workspace} seriesReport={seriesReport} activeDocumentId={doc.id!} onProjectWorkspace={(patch) => setSession((current) => ({ ...current, workspace: { ...current.workspace, ...patch } }))} onSelectEpisode={selectEpisode} />}
+      {mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} productionPages={productionPageRows} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
+      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versionHistory={versionHistory} versionComparison={versionComparison} mergeConflicts={mergeConflicts} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onCompareVersions={compareProjectVersions} onCreateAlternateDraft={createAlternate} onSwitchAlternateDraft={switchAlternate} onCombineDrafts={combineDrafts} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} projectWorkspace={session.workspace} seriesReport={seriesReport} activeDocumentId={doc.id!} onProjectWorkspace={(patch) => setSession((current) => ({ ...current, workspace: { ...current.workspace, ...patch } }))} onSelectEpisode={selectEpisode} productionPages={productionPageRows} productionReports={productionReport} revisionSets={revisionSets} revisionSummaries={productionRevisionSummaries} onStartRevision={startRevision} onUpdateRevisionMarks={updateRevisionMarks} onLockPages={lockProductionPages} onUnlockPages={unlockProductionPages} onToggleOmittedScene={toggleOmittedScene} onSetSceneNumber={setSceneNumber} onExportProduction={exportProduction} />}
     </div>
     <div className="statusbar"><span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span><span>{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span><span>~{pages} pages</span><span>{words} words</span><div className="toolbar-spacer" /><span>{doc.readOnly ? `Linked source · ${doc.source?.fileName ?? "FDX"}` : savedAt ? `Saved locally · ${savedAt}` : "Not saved yet"}</span><span className="status-draft">Draft: current · drafts panel →</span></div>
   </div>;

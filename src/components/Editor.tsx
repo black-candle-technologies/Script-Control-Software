@@ -11,6 +11,7 @@ import {
   paginateBlocks,
   type ScreenplayBlock,
   type ScreenplayElementType,
+  type ProductionPage,
   type TitlePage,
 } from "../domain/index.ts";
 
@@ -23,6 +24,7 @@ interface EditorProps {
   /** Bump `nonce` to scroll to and focus a block (used by the scene navigator). */
   focusRequest: { id: string; nonce: number } | null;
   readOnly?: boolean;
+  productionPages?: ProductionPage[];
 }
 
 function resize(el: HTMLTextAreaElement) {
@@ -38,6 +40,7 @@ export default function Editor({
   onActiveBlock,
   focusRequest,
   readOnly = false,
+  productionPages,
 }: EditorProps) {
   const refs = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; pos: number } | null>(null);
@@ -45,7 +48,11 @@ export default function Editor({
   const undo = useRef<ScreenplayBlock[][]>([]);
   const redo = useRef<ScreenplayBlock[][]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const pages = useMemo(() => paginateBlocks(blocks), [blocks]);
+  const pages = useMemo(() => {
+    if (!productionPages?.length) return paginateBlocks(blocks);
+    const byId = new Map(blocks.map((block) => [block.id, block]));
+    return productionPages.map((page) => page.blockIds.map((id) => byId.get(id)).filter((block): block is ScreenplayBlock => Boolean(block)));
+  }, [blocks, productionPages]);
   const indexes = useMemo(() => new Map(blocks.map((block, index) => [block.id, index])), [blocks]);
   const characterNames = useMemo(() => deriveCharacters(blocks).map((character) => character.name), [blocks]);
   const sceneHeadings = useMemo(() => deriveScenes(blocks).map((scene) => scene.heading), [blocks]);
@@ -246,7 +253,7 @@ export default function Editor({
         <span className="title-card-hint">Title page</span>
       </div>
 
-      {pages.map((page, pageIndex) => <div className="page page-surface" key={`page-${pageIndex}`} data-page={pageIndex + 1}>
+      {pages.map((page, pageIndex) => <div className="page page-surface" key={`page-${pageIndex}`} data-page={productionPages?.[pageIndex]?.label ?? pageIndex + 1} data-revision-color={productionPages?.[pageIndex]?.color ?? ""}>
         {page.map((block) => {
           const index = indexes.get(block.id)!;
           const completionNames = block.type === "character" ? characterNames : block.type === "scene_heading" ? [...new Set([...sceneHeadings, ...locationHeadings])] : [];
@@ -255,7 +262,7 @@ export default function Editor({
           <textarea
             rows={1}
             spellCheck={false}
-            className={`blk blk-${block.type}`}
+            className={`blk blk-${block.type}${block.textRuns?.some((run) => run.revisionId) ? " revised" : ""}`}
             value={block.text}
             readOnly={readOnly}
             placeholder={placeholderFor(block.type, index)}
