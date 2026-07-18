@@ -1,3 +1,5 @@
+import type { CoverageHook, EntityOverride } from "./analysis.ts";
+
 /**
  * The screenplay document model — the heart of the writing workspace.
  *
@@ -100,6 +102,10 @@ export interface WorkspaceData {
   sceneMeta?: Record<string, { summary: string; tags: string; status: "outline" | "draft" | "revised" | "locked" }>;
   comments: { id: string; author: string; text: string; resolved: boolean; createdAt: string }[];
   entityStatuses: Record<string, "detected" | "confirmed" | "rejected">;
+  entityOverrides?: EntityOverride[];
+  entityNotes?: Record<string, string>;
+  resolvedBeatIds?: string[];
+  plotThreads?: CoverageHook[];
 }
 
 export const emptyWorkspace = (): WorkspaceData => ({
@@ -117,6 +123,10 @@ export const emptyWorkspace = (): WorkspaceData => ({
   sceneMeta: {},
   comments: [],
   entityStatuses: {},
+  entityOverrides: [],
+  entityNotes: {},
+  resolvedBeatIds: [],
+  plotThreads: [],
 });
 
 export interface ScriptSource {

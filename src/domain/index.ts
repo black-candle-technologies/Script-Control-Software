@@ -19,4 +19,5 @@ export * from "./recognition.ts";
 export * from "./versioning.ts";
 export * from "./studio.ts";
 export * from "./story.ts";
+export * from "./analysis.ts";
 export * from "./appInfo.ts";

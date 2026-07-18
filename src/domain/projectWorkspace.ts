@@ -276,6 +276,10 @@ function normalizeDocumentWorkspace(value: unknown) {
     productionNotes: string(value.productionNotes),
     comments: Array.isArray(value.comments) ? value.comments : [],
     entityStatuses: isRecord(value.entityStatuses) ? value.entityStatuses : {},
+    entityOverrides: Array.isArray(value.entityOverrides) ? value.entityOverrides : [],
+    entityNotes: stringRecord(value.entityNotes),
+    resolvedBeatIds: Array.isArray(value.resolvedBeatIds) ? value.resolvedBeatIds.filter((item): item is string => typeof item === "string") : [],
+    plotThreads: Array.isArray(value.plotThreads) ? value.plotThreads : [],
     sceneMeta: isRecord(value.sceneMeta) ? value.sceneMeta : {},
   };
 }

@@ -1,19 +1,22 @@
 import { useMemo, useState } from "react";
 import {
   aggregateEpisodes,
-  characterDialogue,
   moveStoryScene,
   parseHeading,
   type Breakdown,
+  type AnalysisCsvSection,
+  type AnalysisEntityKind,
   type CharacterRef,
   type CustomStoryStructure,
   type DetectedObject,
   type DraftChange,
   type DraftSnapshot,
+  type EntityOverride,
   type LocationRef,
   type Scene,
   type ScreenplayBlock,
   type ScreenplayDocument,
+  type ScriptAnalysis,
   type StoryBoardView,
   type TreatmentDocument,
   type WorkspaceData,
@@ -27,6 +30,7 @@ interface InspectorProps {
   objects: DetectedObject[];
   customStructure: CustomStoryStructure;
   breakdown: Breakdown;
+  analysis: ScriptAnalysis;
   activeScene: Scene | null;
   sceneNotes: Record<string, string>;
   onSceneNote: (sceneId: string, text: string) => void;
@@ -37,7 +41,7 @@ interface InspectorProps {
   draftChanges: DraftChange[];
   onSaveVersion: () => void;
   onRestoreVersion: (version: DraftSnapshot) => void;
-  onExportBreakdown: (format: "md" | "csv" | "json" | "pdf") => void;
+  onExportBreakdown: (format: "md" | "csv" | "json" | "pdf", section?: AnalysisCsvSection) => void;
   onExportTreatment: (format: "md" | "pdf") => void;
   episodeDocuments: ScreenplayDocument[];
 }
@@ -247,23 +251,82 @@ function TreatmentWorkspaceTab({ workspace, onWorkspace, onExportTreatment, scen
   </div>;
 }
 
-function CastTab({ characters, blocks }: InspectorProps) {
+type ManagedEntity = { id: string; name: string; status: string; sceneNumbers: number[] };
+
+function EntityControls({ kind, entity, peers, workspace, onWorkspace }: {
+  kind: AnalysisEntityKind;
+  entity: ManagedEntity;
+  peers: ManagedEntity[];
+  workspace: WorkspaceData;
+  onWorkspace: (patch: Partial<WorkspaceData>) => void;
+}) {
+  const [rename, setRename] = useState(entity.name);
+  const [mergeTarget, setMergeTarget] = useState("");
+  const [splitName, setSplitName] = useState("");
+  const [splitScenes, setSplitScenes] = useState("");
+  const apply = (override: EntityOverride) => onWorkspace({ entityOverrides: [...(workspace.entityOverrides ?? []), override] });
+  const parsedScenes = [...new Set(splitScenes.split(",").map(Number).filter((number) => Number.isInteger(number) && entity.sceneNumbers.includes(number)))];
+  return <details>
+    <summary className="link-btn">Manage entity</summary>
+    <div className="insp-stack">
+      <div className="btn-row"><button className="btn" onClick={() => apply({ action: "confirm", kind, entityId: entity.id })}>{entity.status === "confirmed" ? "Confirmed" : "Confirm"}</button><button className="btn btn-ghost" onClick={() => apply({ action: "reject", kind, entityId: entity.id })}>Reject</button></div>
+      <label className="insp-card-meta">Canonical name<input className="insp-notes-input" value={rename} onChange={(event) => setRename(event.target.value)} /></label>
+      <button className="btn btn-ghost" disabled={!rename.trim() || rename.trim().toUpperCase() === entity.name} onClick={() => apply({ action: "rename", kind, entityId: entity.id, name: rename })}>Rename</button>
+      <label className="insp-card-meta">Merge into<select className="element-select" value={mergeTarget} onChange={(event) => setMergeTarget(event.target.value)}><option value="">Choose entity…</option>{peers.filter((peer) => peer.id !== entity.id && peer.status !== "merged").map((peer) => <option key={peer.id} value={peer.id}>{peer.name}</option>)}</select></label>
+      <button className="btn btn-ghost" disabled={!mergeTarget} onClick={() => apply({ action: "merge", kind, entityId: entity.id, targetId: mergeTarget })}>Merge</button>
+      <label className="insp-card-meta">Split name<input className="insp-notes-input" value={splitName} onChange={(event) => setSplitName(event.target.value)} placeholder="New entity name" /></label>
+      <label className="insp-card-meta">Move scenes<input className="insp-notes-input" value={splitScenes} onChange={(event) => setSplitScenes(event.target.value)} placeholder={`Comma-separated: ${entity.sceneNumbers.join(", ")}`} /></label>
+      <button className="btn btn-ghost" disabled={!splitName.trim() || !parsedScenes.length || parsedScenes.length === entity.sceneNumbers.length} onClick={() => apply({ action: "split", kind, entityId: entity.id, newId: `${kind}-${crypto.randomUUID()}`, name: splitName, sceneNumbers: parsedScenes })}>Split</button>
+    </div>
+  </details>;
+}
+
+function EntityNote({ entityId, workspace, onWorkspace }: Pick<InspectorProps, "workspace" | "onWorkspace"> & { entityId: string }) {
+  const notes = workspace.entityNotes ?? {};
+  return <textarea className="insp-notes-input" value={notes[entityId] ?? ""} placeholder="Profile and continuity notes…" onChange={(event) => onWorkspace({ entityNotes: { ...notes, [entityId]: event.target.value } })} />;
+}
+
+function CastTab({ analysis, workspace, onWorkspace }: InspectorProps) {
+  const characters = analysis.entities.characters;
   if (!characters.length) return <Hint>No character cues detected.</Hint>;
-  return <div className="insp-stack"><Hint>Deterministic cue recognition with dialogue and scene statistics.</Hint>{characters.map((character) => {
-    const dialogue = characterDialogue(blocks, character.name);
-    return <details className="insp-card" key={character.name}><summary className="insp-card-title">{character.name}</summary><div className="insp-card-meta">{character.cueCount} cues · first scene {character.firstScene} · {dialogue.join(" ").match(/\S+/g)?.length ?? 0} dialogue words</div>{dialogue.map((line, index) => <p key={index} className="insp-card-desc">{line}</p>)}</details>;
-  })}</div>;
+  return <div className="insp-stack"><Hint>Character sheets are derived from cues and dialogue; corrections remain editable project metadata.</Hint>{characters.map((character) => <details className="insp-card" key={character.id} open={characters.length <= 3 && character.status !== "rejected"}>
+    <summary className="insp-card-title">{character.name} <small>· {character.status}</small></summary>
+    <div className="insp-card-meta">{character.sceneCount} scenes · {character.cueCount} cues · {character.dialogueWords} dialogue words · first/last {character.firstScene}/{character.lastScene}</div>
+    {character.firstDescription && <p className="insp-card-desc">{character.firstDescription}</p>}
+    {!!character.aliases.length && <p className="insp-card-desc">Aliases: {character.aliases.join(", ")}</p>}
+    {!!character.coAppearances.length && <p className="insp-card-desc">Co-appears: {character.coAppearances.map((item) => `${item.character} (${item.count})`).join(", ")}</p>}
+    {!!character.absenceGaps.length && <p className="insp-card-desc">Continuity gaps: {character.absenceGaps.map((gap) => `${gap.scenesAbsent} scenes after ${gap.afterScene}`).join(", ")}</p>}
+    <EntityNote entityId={character.id} workspace={workspace} onWorkspace={onWorkspace} />
+    <EntityControls kind="character" entity={character} peers={characters} workspace={workspace} onWorkspace={onWorkspace} />
+    <details><summary className="link-btn">Dialogue ({character.dialogueLines.length})</summary>{character.dialogueLines.map((line) => <p key={line.blockId} className="insp-card-desc"><strong>Scene {line.sceneNumber}:</strong> {line.text}</p>)}</details>
+  </details>)}</div>;
 }
 
-function PropsTab({ objects, workspace, onWorkspace }: InspectorProps) {
-  const setStatus = (object: DetectedObject, status: "confirmed" | "rejected") => onWorkspace({ entityStatuses: { ...workspace.entityStatuses, [object.id]: status } });
-  const visible = objects.filter((object) => workspace.entityStatuses[object.id] !== "rejected");
-  if (!visible.length) return <Hint>No known production objects detected in action lines.</Hint>;
-  return <div className="insp-stack"><Hint>Objects are matched deterministically; confirm or ignore each candidate.</Hint>{visible.map((object) => <div className="insp-card" key={object.id}><div className="insp-card-title">{object.name}</div><div className="insp-card-meta">{object.category} · {object.mentions} mentions · scenes {object.sceneNumbers.join(", ") || "—"} · {Math.round(object.confidence * 100)}%</div><div className="btn-row"><button className="btn" onClick={() => setStatus(object, "confirmed")}>{workspace.entityStatuses[object.id] === "confirmed" ? "Confirmed" : "Confirm"}</button><button className="btn btn-ghost" onClick={() => setStatus(object, "rejected")}>Ignore</button></div></div>)}</div>;
+function PropsTab({ analysis, workspace, onWorkspace }: InspectorProps) {
+  const objects = analysis.entities.objects;
+  if (!objects.length) return <Hint>No production objects detected in action lines.</Hint>;
+  return <div className="insp-stack"><Hint>Object sheets include associations, likely ownership, and every continuity appearance.</Hint>{objects.map((object) => <details className="insp-card" key={object.id} open={objects.length <= 3 && object.status !== "rejected"}>
+    <summary className="insp-card-title">{object.name} <small>· {object.status}</small></summary>
+    <div className="insp-card-meta">{object.productionCategory} · {object.mentions} mentions · scenes {object.sceneNumbers.join(", ") || "—"} · {Math.round(object.confidence * 100)}%</div>
+    {object.likelyOwner && <p className="insp-card-desc">Likely owner: {object.likelyOwner}</p>}
+    {!!object.associations.length && <p className="insp-card-desc">Associations: {object.associations.map((item) => `${item.character} (${item.reason})`).join(", ")}</p>}
+    <EntityNote entityId={object.id} workspace={workspace} onWorkspace={onWorkspace} />
+    <EntityControls kind="object" entity={object} peers={objects} workspace={workspace} onWorkspace={onWorkspace} />
+    <details><summary className="link-btn">Continuity ({object.continuity.length})</summary>{object.continuity.map((entry) => <p key={entry.blockId} className="insp-card-desc"><strong>Scene {entry.sceneNumber}:</strong> {entry.excerpt}{entry.ownershipCharacters.length ? ` · owner signal: ${entry.ownershipCharacters.join(", ")}` : ""}</p>)}</details>
+  </details>)}</div>;
 }
 
-function PlacesTab({ locations }: InspectorProps) {
-  return <div className="insp-stack">{locations.length ? locations.map((location) => <div className="insp-card" key={location.name}><div className="insp-card-title">{location.name}</div><div className="insp-card-meta">{location.intExt.join(" / ") || "—"} · scenes {location.sceneNumbers.join(", ")}</div></div>) : <Hint>No locations detected.</Hint>}</div>;
+function PlacesTab({ analysis, workspace, onWorkspace }: InspectorProps) {
+  const locations = analysis.entities.locations;
+  if (!locations.length) return <Hint>No locations detected.</Hint>;
+  return <div className="insp-stack"><Hint>Location sheets normalize repeated headings while preserving aliases and usage details.</Hint>{locations.map((location) => <details className="insp-card" key={location.id} open={locations.length <= 3 && location.status !== "rejected"}>
+    <summary className="insp-card-title">{location.name} <small>· {location.status}</small></summary>
+    <div className="insp-card-meta">{location.interiorExterior.join(" / ") || "—"} · {location.timesOfDay.join(" / ") || "time unspecified"} · scenes {location.sceneNumbers.join(", ")}</div>
+    {!!location.aliases.length && <p className="insp-card-desc">Aliases: {location.aliases.join(", ")}</p>}
+    <EntityNote entityId={location.id} workspace={workspace} onWorkspace={onWorkspace} />
+    <EntityControls kind="location" entity={location} peers={locations} workspace={workspace} onWorkspace={onWorkspace} />
+    <details><summary className="link-btn">Appearances ({location.appearances.length})</summary>{location.appearances.map((entry) => <p key={entry.sceneId} className="insp-card-desc">Scene {entry.sceneNumber}: {entry.heading}</p>)}</details>
+  </details>)}</div>;
 }
 
 function DraftsTab({ versions, draftChanges, onSaveVersion, onRestoreVersion }: InspectorProps) {
@@ -273,9 +336,49 @@ function DraftsTab({ versions, draftChanges, onSaveVersion, onRestoreVersion }: 
   </div>;
 }
 
-function BreakdownTab({ breakdown, onExportBreakdown }: InspectorProps) {
-  const facts: [string, string | number][] = [["Scenes", breakdown.scenes], ["Pages", `~${breakdown.pages}`], ["Words", breakdown.words], ["Dialogue words", breakdown.dialogueWords], ["Characters", breakdown.characters], ["Locations", breakdown.locations], ["Night scenes", breakdown.nightScenes], ["INT / EXT", `${breakdown.interiorScenes} / ${breakdown.exteriorScenes}`]];
-  return <div className="insp-stack"><dl className="insp-facts">{facts.map(([label, value]) => <div className="fact-row" key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><h4>Production categories</h4><dl className="insp-facts">{Object.entries(breakdown.categories).map(([name, count]) => <div className="fact-row" key={name}><dt>{name}</dt><dd>{count}</dd></div>)}</dl><div className="btn-row">{(["md", "csv", "json", "pdf"] as const).map((format) => <button className="btn btn-ghost" key={format} onClick={() => onExportBreakdown(format)}>{format.toUpperCase()}</button>)}</div></div>;
+function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown }: InspectorProps) {
+  const [csvSection, setCsvSection] = useState<AnalysisCsvSection>("scenes");
+  const threads = workspace.plotThreads ?? [];
+  const updateThread = (id: string, patch: Partial<(typeof threads)[number]>) => onWorkspace({ plotThreads: threads.map((thread) => thread.id === id ? { ...thread, ...patch } : thread) });
+  const toggleThreadTarget = (id: string, field: "sceneIds" | "beatIds", targetId: string) => {
+    const thread = threads.find((item) => item.id === id);
+    if (!thread) return;
+    const values = [...(thread[field] ?? [])];
+    updateThread(id, { [field]: values.includes(targetId) ? values.filter((value) => value !== targetId) : [...values, targetId] });
+  };
+  const resolvedBeatIds = workspace.resolvedBeatIds ?? [];
+  const productionEntries = Object.entries(analysis.production) as [string, (typeof analysis.production)[keyof typeof analysis.production]][];
+  const facts: [string, string | number][] = [
+    ["Scenes", analysis.scenes.length], ["Pages", `~${analysis.pageEstimate}`], ["Runtime", `~${analysis.episode.runtimeMinutes} min`], ["Words", analysis.wordCount],
+    ["Dialogue", `${analysis.dialogueWords} words (${Math.round(analysis.dialogueDensity * 100)}%)`], ["Characters", analysis.entities.characters.filter((item) => item.status !== "rejected" && item.status !== "merged").length],
+    ["Locations", analysis.entities.locations.filter((item) => item.status !== "rejected" && item.status !== "merged").length], ["Acts / sequences / beats", `${analysis.structure.acts.length} / ${analysis.structure.sequences.length} / ${analysis.structure.beats.length}`],
+  ];
+  return <div className="insp-stack">
+    <dl className="insp-facts">{facts.map(([label, value]) => <div className="fact-row" key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    <p className="insp-card-desc">{analysis.episode.summary}</p>
+    <h4>Plot threads</h4>
+    <button className="btn" onClick={() => onWorkspace({ plotThreads: [...threads, { id: `thread-${crypto.randomUUID()}`, label: "New thread", keywords: [], sceneIds: [], beatIds: [], resolved: false }] })}>Add Plot Thread</button>
+    {threads.map((thread) => <div className="insp-card" key={thread.id}>
+      <input aria-label="Plot thread name" className="insp-notes-input" value={thread.label} onChange={(event) => updateThread(thread.id, { label: event.target.value })} />
+      <input aria-label="Plot thread keywords" className="insp-notes-input" value={(thread.keywords ?? []).join(", ")} placeholder="Keywords, comma separated" onChange={(event) => updateThread(thread.id, { keywords: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} />
+      <label className="check-row"><input type="checkbox" checked={thread.resolved ?? false} onChange={(event) => updateThread(thread.id, { resolved: event.target.checked })} /> Resolved</label>
+      <details><summary className="link-btn">Link scenes and beats</summary>{analysis.scenes.map((scene) => <label className="check-row" key={scene.id}><input type="checkbox" checked={thread.sceneIds?.includes(scene.id) ?? false} onChange={() => toggleThreadTarget(thread.id, "sceneIds", scene.id)} /> Scene {scene.number}: {scene.heading}</label>)}{analysis.structure.beats.map((beat) => <label className="check-row" key={beat.id}><input type="checkbox" checked={thread.beatIds?.includes(beat.id) ?? false} onChange={() => toggleThreadTarget(thread.id, "beatIds", beat.id)} /> Beat: {beat.text}</label>)}</details>
+      <button className="link-btn" onClick={() => onWorkspace({ plotThreads: threads.filter((item) => item.id !== thread.id) })}>Remove</button>
+    </div>)}
+    {!!analysis.plotThreads.length && <ul className="insp-list">{analysis.plotThreads.map((thread) => <li key={thread.id}>{thread.label}: {thread.status}{thread.resolved ? " · resolved" : ""}</li>)}</ul>}
+    <h4>Structure and coverage</h4>
+    {analysis.structure.acts.map((act) => <div className="insp-card" key={act.id}><div className="insp-card-title">{act.title}</div><div className="insp-card-meta">{act.sceneCount} scenes · ~{act.estimatedPages} pages</div><p className="insp-card-desc">{act.summary}</p></div>)}
+    {!!analysis.treatmentCoverage.length && <><h4>Treatment coverage</h4><ul className="insp-list">{analysis.treatmentCoverage.map((item) => <li key={item.id}>{item.label}: {item.status}</li>)}</ul></>}
+    {!!analysis.unresolvedBeats.length && <><h4>Unresolved beats</h4>{analysis.unresolvedBeats.map((beat) => <div className="insp-card" key={beat.id}><div className="insp-card-desc">{beat.text}</div><button className="btn btn-ghost" onClick={() => onWorkspace({ resolvedBeatIds: [...resolvedBeatIds, beat.id] })}>Mark resolved</button></div>)}</>}
+    {!!analysis.characterArcs.length && <details><summary className="insp-card-title">Character arcs</summary>{analysis.characterArcs.map((arc) => <p className="insp-card-desc" key={arc.character}><strong>{arc.character}:</strong> {arc.summary}</p>)}</details>}
+    {!!analysis.pacingWarnings.length && <><h4>Pacing checks</h4><ul className="insp-list">{analysis.pacingWarnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{warning.message}</li>)}</ul></>}
+    <h4>Production reports</h4>
+    {productionEntries.map(([category, rows]) => <details className="insp-card" key={category}><summary className="insp-card-title">{category} ({rows.length})</summary>{rows.map((row, index) => <p className="insp-card-desc" key={`${row.sceneId}-${row.item}-${index}`}><strong>Scene {row.sceneNumber} · {row.item}:</strong> {row.evidence}</p>)}</details>)}
+    <h4>Detailed scenes</h4>
+    {analysis.scenes.map((scene) => <details className="insp-card" key={scene.id}><summary className="insp-card-title">Scene {scene.sceneNumber ?? scene.number} · {scene.heading}</summary><div className="insp-card-meta">~{scene.estimatedPages} pages · {scene.dialogueWords} dialogue words · complexity {scene.complexityScore}/5</div><p className="insp-card-desc">Cast: {scene.characters.join(", ") || "—"}<br />Objects: {scene.objects.join(", ") || "—"}</p></details>)}
+    <h4>Export</h4>
+    <div className="btn-row"><button className="btn btn-ghost" onClick={() => onExportBreakdown("md")}>Markdown</button><select aria-label="CSV report" className="element-select" value={csvSection} onChange={(event) => setCsvSection(event.target.value as AnalysisCsvSection)}>{(["scenes", "characters", "objects", "production"] as const).map((section) => <option key={section} value={section}>{section}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportBreakdown("csv", csvSection)}>CSV</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("json")}>JSON</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("pdf")}>Print PDF</button></div>
+  </div>;
 }
 
 function SeriesTab({ episodeDocuments, workspace, onWorkspace }: InspectorProps) {

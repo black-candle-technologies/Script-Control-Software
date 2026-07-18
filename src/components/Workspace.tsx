@@ -3,11 +3,13 @@ import Editor from "./Editor.tsx";
 import Inspector from "./Inspector.tsx";
 import {
   ELEMENT_TYPES,
-  breakdownCsv,
-  breakdownMarkdown,
+  analysisToCsv,
+  analysisToJson,
+  analysisToMarkdown,
   buildStructure,
   compareDrafts,
   compileBreakdown,
+  compileAnalysis,
   countWords,
   detectObjects,
   deriveCharacters,
@@ -26,6 +28,8 @@ import {
   type ScreenplayDocument,
   type ScreenplayElementType,
   type DraftSnapshot,
+  type AnalysisCsvSection,
+  type CoverageHook,
   type ProjectSession,
   syncSeriesDocuments,
 } from "../domain/index.ts";
@@ -136,6 +140,14 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const customStructure = useMemo(() => resolveStoryStructure(doc.blocks, workspace.storyStructure), [doc.blocks, workspace.storyStructure]);
   const breakdown = useMemo(() => compileBreakdown(doc.blocks), [doc.blocks]);
   const draftChanges = useMemo(() => versions.length > 1 ? compareDrafts(versions[1].document, versions[0].document) : [], [versions]);
+  const analysis = useMemo(() => compileAnalysis(doc, {
+    entityOverrides: workspace.entityOverrides,
+    plotThreads: workspace.plotThreads,
+    treatmentSections: treatmentCoverage(workspace),
+    resolvedBeatIds: workspace.resolvedBeatIds,
+    storyStructure: customStructure,
+    revision: versions.length > 1 ? { fromLabel: versions[1].label, toLabel: versions[0].label, changes: draftChanges } : undefined,
+  }), [customStructure, doc, draftChanges, versions, workspace.entityOverrides, workspace.plotThreads, workspace.resolvedBeatIds, workspace.treatments]);
   const words = useMemo(() => countWords(doc.blocks), [doc.blocks]);
   const pages = useMemo(() => estimatePages(doc.blocks), [doc.blocks]);
   const activeIndex = doc.blocks.findIndex((block) => block.id === activeBlockId);
@@ -187,10 +199,10 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     download(xml, "fdx", "application/xml");
     setOperationMessage(warnings.length ? `FDX exported with ${warnings.length} preservation warning${warnings.length === 1 ? "" : "s"}: ${warnings.join(" ")}` : "FDX exported without preservation warnings.");
   };
-  const exportBreakdown = (format: "md" | "csv" | "json" | "pdf") => {
-    const markdown = breakdownMarkdown(doc.titlePage.title || "Screenplay", breakdown);
+  const exportBreakdown = (format: "md" | "csv" | "json" | "pdf", section: AnalysisCsvSection = "scenes") => {
+    const markdown = analysisToMarkdown(analysis);
     if (format === "pdf") return printContent("Breakdown", markdown);
-    const content = format === "md" ? markdown : format === "csv" ? breakdownCsv(breakdown) : JSON.stringify(breakdown, null, 2);
+    const content = format === "md" ? markdown : format === "csv" ? analysisToCsv(analysis, section) : analysisToJson(analysis);
     download(content, format, format === "json" ? "application/json" : "text/plain");
   };
   const exportTreatment = (format: "md" | "pdf") => {
@@ -345,7 +357,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
         <div className="nav-foot">{scenes.length} scene{scenes.length === 1 ? "" : "s"} · ~{pages} page{pages === 1 ? "" : "s"}</div>
       </aside>
       {mode === "formatted" ? <Editor blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
-      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versions={versions} draftChanges={draftChanges} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} episodeDocuments={episodeDocs} />}
+      {inspectorOpen && <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versions={versions} draftChanges={draftChanges} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} episodeDocuments={episodeDocs} />}
     </div>
     <div className="statusbar"><span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span><span>{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span><span>~{pages} pages</span><span>{words} words</span><div className="toolbar-spacer" /><span>{doc.readOnly ? `Linked source · ${doc.source?.fileName ?? "FDX"}` : savedAt ? `Saved locally · ${savedAt}` : "Not saved yet"}</span><span className="status-draft">Draft: current · drafts panel →</span></div>
   </div>;
@@ -368,4 +380,13 @@ function printContent(title: string, content: string): void {
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+}
+
+function treatmentCoverage(workspace: ReturnType<typeof emptyWorkspace>): CoverageHook[] {
+  return (workspace.treatments ?? []).map((treatment) => ({
+    id: treatment.id,
+    label: treatment.title,
+    sceneIds: treatment.links.filter((link) => link.targetType === "scene").map((link) => link.targetId),
+    beatIds: treatment.links.filter((link) => link.targetType === "beat").map((link) => link.targetId),
+  }));
 }
