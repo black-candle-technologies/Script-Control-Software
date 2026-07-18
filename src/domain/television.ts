@@ -1,3 +1,5 @@
+import { deriveCharacters, deriveLocations } from "./screenplay.ts";
+
 /**
  * Television model placeholders.
  *
@@ -85,8 +87,8 @@ export function aggregateEpisodes(documents: import("./screenplay.ts").Screenpla
   const characters = new Set<string>();
   const locations = new Set<string>();
   for (const document of documents) {
-    document.characters?.forEach((character) => characters.add(character.canonicalName));
-    document.locations?.forEach((location) => locations.add(location.canonicalName));
+    for (const character of deriveCharacters(document.blocks)) characters.add(character.name);
+    for (const location of deriveLocations(document.blocks)) locations.add(location.name);
   }
   return { characters: [...characters].sort(), locations: [...locations].sort() };
 }

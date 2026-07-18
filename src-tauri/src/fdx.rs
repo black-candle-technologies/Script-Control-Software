@@ -720,6 +720,107 @@ mod tests {
     }
 
     #[test]
+    fn character_extensions_share_one_character_and_keep_dialogue_links() {
+        let doc = parse(
+            &fixture("character-extensions.fdx"),
+            Path::new("character-extensions.fdx"),
+        )
+        .unwrap();
+        assert_eq!(doc.characters.len(), 1);
+        assert_eq!(doc.characters[0].canonical_name, "JUNE");
+        assert_eq!(doc.characters[0].aliases, vec!["JUNE (O.S.) (CONT'D)"]);
+        assert_eq!(doc.characters[0].dialogue_block_ids.len(), 2);
+        assert_eq!(
+            doc.scenes[0].character_ids,
+            vec![doc.characters[0].id.clone()]
+        );
+    }
+
+    #[test]
+    fn empty_paragraphs_are_preserved_with_a_warning() {
+        let doc = parse(&fixture("empty.fdx"), Path::new("empty.fdx")).unwrap();
+        assert_eq!(doc.blocks.len(), 1);
+        assert_eq!(doc.blocks[0].text, "");
+        assert_eq!(doc.blocks[0].text_runs.len(), 1);
+        assert!(doc
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "EmptyParagraph" && warning.data_preserved));
+    }
+
+    #[test]
+    fn scene_numbers_and_duplicates_are_preserved() {
+        let doc = parse(
+            &fixture("scene-numbers.fdx"),
+            Path::new("scene-numbers.fdx"),
+        )
+        .unwrap();
+        assert_eq!(doc.scenes.len(), 2);
+        assert!(doc
+            .scenes
+            .iter()
+            .all(|scene| scene.scene_number.as_deref() == Some("12A")));
+        assert_eq!(
+            doc.blocks[0].metadata.get("Number").map(String::as_str),
+            Some("12A")
+        );
+        assert!(doc.warnings.iter().any(|warning| {
+            warning.code == "DuplicateSceneNumber" && warning.block_index == Some(2)
+        }));
+    }
+
+    #[test]
+    fn styled_text_runs_and_revision_ids_are_preserved() {
+        let doc = parse(&fixture("styled-text.fdx"), Path::new("styled-text.fdx")).unwrap();
+        let block = &doc.blocks[0];
+        assert_eq!(block.text, "Bold italic then revised.");
+        assert_eq!(block.text_runs.len(), 2);
+        assert!(block.text_runs[0].bold && block.text_runs[0].italic);
+        assert_eq!(block.text_runs[0].revision_id.as_deref(), Some("2"));
+        assert!(block.text_runs[1].underline && block.text_runs[1].strikeout);
+        assert_eq!(
+            block.text_runs[1].metadata.get("Style").map(String::as_str),
+            Some("Underline+Strikeout")
+        );
+    }
+
+    #[test]
+    fn second_television_episode_derives_title_cast_and_location() {
+        let doc = parse(
+            &fixture("television-episode-2.fdx"),
+            Path::new("television-episode-2.fdx"),
+        )
+        .unwrap();
+        assert_eq!(doc.title_page.title, "Episode 2");
+        assert_eq!(doc.scenes.len(), 1);
+        assert_eq!(doc.characters.len(), 2);
+        assert_eq!(doc.characters[0].canonical_name, "ELI");
+        assert_eq!(doc.characters[0].aliases, vec!["ELI (V.O.)"]);
+        assert_eq!(doc.characters[0].dialogue_block_ids.len(), 1);
+        assert_eq!(doc.locations[0].canonical_name, "NEWSROOM ROOF");
+    }
+
+    #[test]
+    fn unusual_scene_heading_prefixes_remain_conservative() {
+        let doc = parse(
+            &fixture("unusual-headings.fdx"),
+            Path::new("unusual-headings.fdx"),
+        )
+        .unwrap();
+        assert_eq!(doc.scenes.len(), 3);
+        assert_eq!(doc.scenes[0].interior_exterior.as_deref(), Some("I/E"));
+        assert_eq!(doc.scenes[0].location.as_deref(), Some("SUBMARINE"));
+        assert_eq!(doc.scenes[0].time_of_day.as_deref(), Some("DAWN"));
+        assert_eq!(doc.scenes[1].interior_exterior.as_deref(), Some("EXT./INT"));
+        assert_eq!(doc.scenes[1].location.as_deref(), Some("MOVING CAR"));
+        assert_eq!(doc.scenes[2].interior_exterior, None);
+        assert_eq!(
+            doc.scenes[2].location.as_deref(),
+            Some("SOMEWHERE BEYOND TIME")
+        );
+    }
+
+    #[test]
     fn unknown_types_are_preserved_with_a_warning() {
         let doc = parse(&fixture("unknown-paragraph.fdx"), Path::new("unknown.fdx")).unwrap();
         assert_eq!(doc.blocks[1].block_type, BlockType::Unknown);

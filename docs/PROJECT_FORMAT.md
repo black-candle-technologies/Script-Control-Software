@@ -19,7 +19,7 @@ MyProject.scs/
 
 ## `scs.project.json`
 
-Schema version 2 stores project identity/type, timestamps, complete screenplay documents, development workspace metadata, episode documents, and draft snapshots. It is UTF-8, pretty-printed JSON and may be copied, diffed, or versioned with ordinary tools.
+Schema version 3 stores project identity/type, timestamps, complete screenplay documents, shared project workspace data, episode documents, and draft snapshots. It is UTF-8, pretty-printed JSON and may be copied, diffed, or versioned with ordinary tools. Older manifests are migrated on open; malformed documents and duplicate block IDs are rejected before the editor renders them.
 
 ## `scripts/`
 
@@ -31,6 +31,6 @@ Every document also writes a Fountain screenplay (`main.fountain` for a feature 
 
 ## Compatibility
 
-Readers reject an empty manifest or a schema newer than they understand. Project saves validate the exact `scs.project.json` filename, create only the documented child folders, and preserve the original creation timestamp on later saves.
+Readers reject an empty manifest or a schema newer than they understand. Project saves validate the exact `scs.project.json` filename, create only the documented child folders, preserve the original creation timestamp, and reject stale concurrent saves instead of silently overwriting another collaborator.
 
 SQLite is deliberately absent until project size demonstrates that in-memory search is insufficient.

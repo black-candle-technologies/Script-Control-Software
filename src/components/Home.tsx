@@ -1,6 +1,6 @@
 import type { AppInfo } from "../domain/index.ts";
 
-export type DocChoice = "saved" | "sample" | "new";
+export type DocChoice = "saved" | "sample" | "new" | "new-show";
 
 interface HomeProps {
   appInfo: AppInfo;
@@ -31,6 +31,10 @@ export default function Home({ appInfo, savedTitle, onOpen, onOpenFdx, onOpenPro
           <span className="home-action-title">New Screenplay</span>
           <span className="home-action-desc">A blank page, starting from a scene heading.</span>
         </button>
+        <button className="home-action primary" onClick={() => onOpen("new-show")}>
+          <span className="home-action-title">New Television Show</span>
+          <span className="home-action-desc">A shared series workspace with seasons and episode tabs.</span>
+        </button>
         <button className="home-action" onClick={() => onOpen("sample")}>
           <span className="home-action-title">Sample Project</span>
           <span className="home-action-desc">“The Long Way Home” — a short sample script.</span>
@@ -39,7 +43,7 @@ export default function Home({ appInfo, savedTitle, onOpen, onOpenFdx, onOpenPro
           <span className="home-action-title">
             Open Project
           </span>
-          <span className="home-action-desc">Open a portable .scs project folder.</span>
+          <span className="home-action-desc">Open scs.project.json from a portable project folder.</span>
         </button>
       </div>
 

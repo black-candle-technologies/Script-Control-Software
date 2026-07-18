@@ -4,6 +4,10 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
+fn empty_object() -> Value {
+    serde_json::json!({})
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectType {
@@ -46,8 +50,11 @@ pub struct ProjectBundle {
     pub updated_at: String,
     pub documents: Vec<Value>,
     pub versions: Vec<Value>,
+    #[serde(default = "empty_object")]
+    pub workspace: Value,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn save_bundle(
     path: &Path,
     name: String,
@@ -55,6 +62,8 @@ pub fn save_bundle(
     documents: Vec<Value>,
     fountain_scripts: Vec<String>,
     versions: Vec<Value>,
+    workspace: Value,
+    expected_updated_at: Option<String>,
 ) -> Result<ProjectBundle, String> {
     validate_path(path)?;
     if documents.is_empty() || documents.len() != fountain_scripts.len() {
@@ -83,10 +92,20 @@ pub fn save_bundle(
         fs::write(root.join("scripts").join(name), script)
             .map_err(|error| format!("A screenplay could not be saved: {error}"))?;
     }
-    let existing = read_bundle(path).ok();
+    validate_bundle_values(&documents, &versions, &workspace)?;
+    let existing = if path.exists() {
+        Some(read_bundle(path)?)
+    } else {
+        None
+    };
+    if let (Some(existing), Some(expected)) = (&existing, expected_updated_at.as_deref()) {
+        if existing.updated_at != expected {
+            return Err("PROJECT_CONFLICT: This project changed on disk. Reopen it or save a copy before overwriting.".into());
+        }
+    }
     let timestamp = crate::fdx::now();
     let bundle = ProjectBundle {
-        schema_version: 2,
+        schema_version: 3,
         id: existing
             .as_ref()
             .map(|bundle| bundle.id.clone())
@@ -99,6 +118,7 @@ pub fn save_bundle(
         updated_at: timestamp,
         documents,
         versions,
+        workspace,
     };
     let json = serde_json::to_string_pretty(&bundle)
         .map_err(|error| format!("Project could not be serialized: {error}"))?;
@@ -133,13 +153,81 @@ pub fn read_bundle(path: &Path) -> Result<ProjectBundle, String> {
                 updated_at: manifest.updated_at,
                 documents,
                 versions: Vec::new(),
+                workspace: empty_object(),
             }
         }
     };
-    if bundle.schema_version > 2 || bundle.documents.is_empty() {
+    if bundle.schema_version > 3 || bundle.documents.is_empty() {
         return Err("This project is empty or uses a newer SCS format.".into());
     }
+    validate_bundle_values(&bundle.documents, &bundle.versions, &bundle.workspace)?;
     Ok(bundle)
+}
+
+fn validate_bundle_values(
+    documents: &[Value],
+    versions: &[Value],
+    workspace: &Value,
+) -> Result<(), String> {
+    if documents.is_empty() || !workspace.is_object() {
+        return Err("Project metadata is malformed.".into());
+    }
+    for (document_index, document) in documents.iter().enumerate() {
+        validate_document(document)
+            .map_err(|error| format!("Document {}: {error}", document_index + 1))?;
+    }
+    for (version_index, version) in versions.iter().enumerate() {
+        let version = version
+            .as_object()
+            .ok_or_else(|| format!("Draft version {} is malformed.", version_index + 1))?;
+        if !matches!(version.get("id"), Some(Value::String(_)))
+            || !matches!(version.get("createdAt"), Some(Value::String(_)))
+        {
+            return Err(format!("Draft version {} is malformed.", version_index + 1));
+        }
+        if let Some(document) = version.get("document") {
+            validate_document(document)
+                .map_err(|error| format!("Draft version {}: {error}", version_index + 1))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_document(document: &Value) -> Result<(), String> {
+    let document = document
+        .as_object()
+        .ok_or("screenplay data is not an object.")?;
+    let title_page = document
+        .get("titlePage")
+        .and_then(Value::as_object)
+        .ok_or("title page is missing.")?;
+    if !matches!(title_page.get("title"), Some(Value::String(_)))
+        || !matches!(title_page.get("author"), Some(Value::String(_)))
+    {
+        return Err("title page text is malformed.".into());
+    }
+    let blocks = document
+        .get("blocks")
+        .and_then(Value::as_array)
+        .ok_or("screenplay blocks are missing.")?;
+    let mut ids = std::collections::HashSet::new();
+    for (index, block) in blocks.iter().enumerate() {
+        let block = block
+            .as_object()
+            .ok_or_else(|| format!("block {} is malformed.", index + 1))?;
+        let id = block.get("id").and_then(Value::as_str).unwrap_or_default();
+        if id.is_empty()
+            || !ids.insert(id)
+            || !matches!(block.get("type"), Some(Value::String(_)))
+            || !matches!(block.get("text"), Some(Value::String(_)))
+        {
+            return Err(format!(
+                "block {} is malformed or has a duplicate id.",
+                index + 1
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_path(path: &Path) -> Result<(), String> {
@@ -155,6 +243,10 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::write(&temporary, bytes)
         .map_err(|error| format!("Project could not be prepared: {error}"))?;
     if path.exists() {
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|error| format!("Stale project backup could not be replaced: {error}"))?;
+        }
         fs::rename(path, &backup)
             .map_err(|error| format!("Existing project could not be protected: {error}"))?;
     }
@@ -256,6 +348,8 @@ mod tests {
             vec![document.clone()],
             vec!["Title: Test\n".into()],
             Vec::new(),
+            empty_object(),
+            None,
         )
         .unwrap();
         assert_eq!(saved.documents[0], document);
@@ -297,6 +391,48 @@ mod tests {
         let bundle = read_bundle(&path).unwrap();
         assert_eq!(bundle.schema_version, 1);
         assert_eq!(bundle.documents.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bundle_rejects_malformed_documents_and_duplicate_block_ids() {
+        let malformed = serde_json::json!({"titlePage":{"title":"Bad","author":""},"blocks":[
+            {"id":"same","type":"action","text":"One"},
+            {"id":"same","type":"dialogue","text":"Two"}
+        ]});
+        let error = validate_bundle_values(&[malformed], &[], &empty_object()).unwrap_err();
+        assert!(error.contains("duplicate id"));
+    }
+
+    #[test]
+    fn stale_save_is_rejected_instead_of_overwriting_collaborator_changes() {
+        let root = std::env::temp_dir().join(format!("scs-conflict-{}", std::process::id()));
+        let path = root.join("scs.project.json");
+        let document = serde_json::json!({"titlePage":{"title":"Test","author":""},"blocks":[],"sceneNotes":{}});
+        let first = save_bundle(
+            &path,
+            "Test".into(),
+            ProjectType::FeatureFilm,
+            vec![document.clone()],
+            vec!["Title: Test\n".into()],
+            vec![],
+            empty_object(),
+            None,
+        )
+        .unwrap();
+        let error = save_bundle(
+            &path,
+            "Test".into(),
+            ProjectType::FeatureFilm,
+            vec![document],
+            vec!["Title: Test\n".into()],
+            vec![],
+            empty_object(),
+            Some("stale timestamp".into()),
+        )
+        .unwrap_err();
+        assert!(error.starts_with("PROJECT_CONFLICT:"));
+        assert_eq!(read_bundle(&path).unwrap().updated_at, first.updated_at);
         let _ = fs::remove_dir_all(root);
     }
 }

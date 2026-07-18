@@ -8,6 +8,7 @@ import {
   type Scene,
   type ScreenplayBlock,
   type ScreenplayDocument,
+  type TextRun,
 } from "./screenplay.ts";
 
 export interface DetectedObject {
@@ -98,6 +99,9 @@ const PRODUCTION_TERMS: Record<string, string[]> = {
 const esc = (value: string) => value.replace(/[&<>"']/g, (character) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;",
 })[character]!);
+
+const XML_NAME = /^[:_\p{L}][:_\p{L}\p{N}.\-\u00B7\u0300-\u036F\u203F-\u2040]*$/u;
+const INVALID_XML_CHARACTER = /[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/gu;
 
 export function detectObjects(blocks: ScreenplayBlock[]): DetectedObject[] {
   const found = new Map<string, DetectedObject>();
@@ -202,17 +206,118 @@ export function compareDrafts(from: ScreenplayDocument, to: ScreenplayDocument):
   return changes;
 }
 
+export interface FdxExportResult {
+  xml: string;
+  warnings: string[];
+}
+
+const FDX_TYPES: Partial<Record<ScreenplayBlock["type"], string>> = {
+  scene_heading: "Scene Heading", action: "Action", character: "Character", dialogue: "Dialogue",
+  parenthetical: "Parenthetical", transition: "Transition", shot: "Shot", general: "General",
+  lyrics: "Lyrics", cast_list: "Cast List", new_act: "New Act", end_of_act: "End of Act", note: "General",
+};
+
+export function toFdxWithWarnings(doc: ScreenplayDocument): FdxExportResult {
+  const warnings: string[] = [];
+  const warn = (message: string) => warnings.push(message);
+  const rootMetadata = new Map(Object.entries(doc.metadata ?? {}));
+  if (!rootMetadata.has("DocumentType")) rootMetadata.set("DocumentType", "Script");
+  if (!rootMetadata.has("Template")) rootMetadata.set("Template", "No");
+  if (!rootMetadata.has("Version")) rootMetadata.set("Version", doc.source?.fdxVersion ?? "1");
+  const paragraphs = doc.blocks.map((block, index) => paragraphXml(block, index, warn)).join("\n");
+  const titlePage = titlePageXml(doc, warn);
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<FinalDraft${attributes(rootMetadata, warn, "FinalDraft")}>\n${titlePage}  <Content>\n${paragraphs}\n  </Content>\n</FinalDraft>\n`;
+  return { xml, warnings };
+}
+
 export function toFdx(doc: ScreenplayDocument): string {
-  const types: Record<string, string> = {
-    scene_heading: "Scene Heading", action: "Action", character: "Character", dialogue: "Dialogue",
-    parenthetical: "Parenthetical", transition: "Transition", shot: "Shot", general: "General",
-    lyrics: "Lyrics", cast_list: "Cast List", new_act: "New Act", end_of_act: "End of Act", note: "General",
-  };
-  const paragraphs = doc.blocks.filter((block) => block.text.trim()).map((block) =>
-    `      <Paragraph Type="${types[block.type] ?? esc(block.originalType ?? "General")}"${block.metadata?.Number ? ` Number="${esc(block.metadata.Number)}"` : ""}><Text>${esc(block.text)}</Text></Paragraph>`,
-  ).join("\n");
-  const titlePage = doc.titlePage.title.trim() || doc.titlePage.author.trim() ? `  <TitlePage><Content>${doc.titlePage.title.trim() ? `<Paragraph Type="Title"><Text>${esc(doc.titlePage.title.trim())}</Text></Paragraph>` : ""}${doc.titlePage.author.trim() ? `<Paragraph Type="Author"><Text>${esc(doc.titlePage.author.trim())}</Text></Paragraph>` : ""}</Content></TitlePage>\n` : "";
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<FinalDraft DocumentType="Script" Template="No" Version="1">\n${titlePage}  <Content>\n${paragraphs}\n  </Content>\n</FinalDraft>\n`;
+  return toFdxWithWarnings(doc).xml;
+}
+
+function paragraphXml(block: ScreenplayBlock, index: number, warn: (message: string) => void): string {
+  const context = `Block ${index + 1}`;
+  const type = paragraphType(block, context, warn);
+  const metadata = new Map([["Type", type], ...Object.entries(block.metadata ?? {}).filter(([name]) => name !== "Type")]);
+  const runs = block.textRuns;
+  let text = `<Text>${xmlText(block.text, warn, context)}</Text>`;
+  if (runs?.length && runs.map((run) => run.text).join("") === block.text) {
+    text = runs.map((run, runIndex) => textRunXml(run, warn, `${context}, text run ${runIndex + 1}`)).join("");
+  } else if (runs?.some(hasRunFormatting)) {
+    warn(`${context}: styled text no longer matches the edited paragraph and was exported as plain text.`);
+  }
+  return `      <Paragraph${attributes(metadata, warn, context)}>${text}</Paragraph>`;
+}
+
+function paragraphType(block: ScreenplayBlock, context: string, warn: (message: string) => void): string {
+  const original = block.originalType?.trim() || block.metadata?.Type?.trim();
+  if (block.type === "unknown") {
+    if (original) return original;
+    warn(`${context}: an unsupported paragraph had no original FDX type and was exported as General.`);
+    return "General";
+  }
+  const canonical = FDX_TYPES[block.type] ?? "General";
+  return original?.toLowerCase() === canonical.toLowerCase() ? original : canonical;
+}
+
+function textRunXml(run: TextRun, warn: (message: string) => void, context: string): string {
+  const metadata = new Map(Object.entries(run.metadata ?? {}));
+  if (!metadata.has("Style")) {
+    const styles = [run.bold && "Bold", run.italic && "Italic", run.underline && "Underline", run.strikeout && "Strikeout"].filter(Boolean).join("+");
+    if (styles) metadata.set("Style", styles);
+  }
+  if (run.revisionId !== undefined) metadata.set("RevisionID", run.revisionId);
+  return `<Text${attributes(metadata, warn, context)}>${xmlText(run.text, warn, context)}</Text>`;
+}
+
+function hasRunFormatting(run: TextRun): boolean {
+  return run.bold || run.italic || run.underline || run.strikeout || run.revisionId !== undefined || Object.keys(run.metadata ?? {}).length > 0;
+}
+
+function titlePageXml(doc: ScreenplayDocument, warn: (message: string) => void): string {
+  const imported = doc.titlePage.blocks;
+  if (imported) {
+    let usedTitle = false;
+    let usedAuthor = false;
+    const paragraphs = imported.map((block, index) => {
+      const type = block.type || block.metadata.Type || "General";
+      let text = block.text;
+      if (!usedTitle && type.toLowerCase() === "title") {
+        usedTitle = true;
+        if (doc.titlePage.title.trim() !== block.text.trim()) text = doc.titlePage.title;
+      } else if (!usedAuthor && ["author", "written by"].includes(type.toLowerCase())) {
+        usedAuthor = true;
+        if (doc.titlePage.author.trim() !== block.text.trim()) text = doc.titlePage.author;
+      }
+      const metadata = new Map([["Type", type], ...Object.entries(block.metadata ?? {}).filter(([name]) => name !== "Type")]);
+      return `<Paragraph${attributes(metadata, warn, `Title-page block ${index + 1}`)}><Text>${xmlText(text, warn, `Title-page block ${index + 1}`)}</Text></Paragraph>`;
+    }).join("");
+    return paragraphs ? `  <TitlePage><Content>${paragraphs}</Content></TitlePage>\n` : "";
+  }
+  const title = doc.titlePage.title.trim();
+  const author = doc.titlePage.author.trim();
+  if (!title && !author) return "";
+  const paragraphs = `${title ? `<Paragraph Type="Title"><Text>${xmlText(title, warn, "Title")}</Text></Paragraph>` : ""}${author ? `<Paragraph Type="Author"><Text>${xmlText(author, warn, "Author")}</Text></Paragraph>` : ""}`;
+  return `  <TitlePage><Content>${paragraphs}</Content></TitlePage>\n`;
+}
+
+function attributes(metadata: Map<string, string>, warn: (message: string) => void, context: string): string {
+  return [...metadata].flatMap(([name, value]) => {
+    if (!XML_NAME.test(name)) {
+      warn(`${context}: metadata attribute '${name}' is not a valid XML name and was omitted.`);
+      return [];
+    }
+    return [` ${name}="${xmlText(value, warn, `${context} attribute ${name}`)}"`];
+  }).join("");
+}
+
+function xmlText(value: string, warn: (message: string) => void, context: string): string {
+  let changed = false;
+  const valid = value.replace(INVALID_XML_CHARACTER, () => {
+    changed = true;
+    return "\uFFFD";
+  });
+  if (changed) warn(`${context}: invalid XML characters were replaced.`);
+  return esc(valid);
 }
 
 export function breakdownMarkdown(title: string, breakdown: Breakdown): string {

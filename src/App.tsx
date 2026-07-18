@@ -3,9 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import Home, { type DocChoice } from "./components/Home.tsx";
 import Workspace from "./components/Workspace.tsx";
 import Dashboard from "./components/Dashboard.tsx";
-import { defaultAppInfo, emptyDocument, type AppInfo, type ScreenplayDocument } from "./domain/index.ts";
+import { createProjectSession, defaultAppInfo, emptyDocument, type AppInfo, type ProjectSession } from "./domain/index.ts";
 import { sampleScreenplay } from "./domain/sample.ts";
-import { loadDocument } from "./storage.ts";
+import { clearSession, loadSession } from "./storage.ts";
 import { chooseAndOpenProject, chooseAndParseFdx, messageFrom } from "./services/fdxService.ts";
 import "./App.css";
 
@@ -14,8 +14,7 @@ type View = "home" | "write" | "foundation";
 function App() {
   const [appInfo, setAppInfo] = useState<AppInfo>(defaultAppInfo);
   const [view, setView] = useState<View>("home");
-  const [doc, setDoc] = useState<ScreenplayDocument | null>(null);
-  const [projectDocuments, setProjectDocuments] = useState<ScreenplayDocument[]>([]);
+  const [session, setSession] = useState<ProjectSession | null>(null);
   const [docNonce, setDocNonce] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
@@ -31,18 +30,21 @@ function App() {
   const open = (choice: DocChoice) => {
     const next =
       choice === "saved"
-        ? loadDocument() ?? sampleScreenplay()
+        ? loadSession() ?? createProjectSession(sampleScreenplay())
         : choice === "sample"
-          ? sampleScreenplay()
-          : emptyDocument();
-    setDoc(next);
-    if (choice !== "saved") localStorage.removeItem("scs.versions.v1");
-    setProjectDocuments([]);
+          ? createProjectSession(sampleScreenplay())
+          : createProjectSession(
+              emptyDocument(choice === "new-show" ? "Untitled Episode" : "Untitled Screenplay"),
+              choice === "new-show" ? "television" : "featureFilm",
+            );
+    if (choice === "new-show") next.name = "Untitled Show";
+    setSession(next);
+    if (choice !== "saved") clearSession();
     setDocNonce((n) => n + 1);
     setView("write");
   };
 
-  const savedTitle = view === "home" ? loadDocument()?.titlePage.title || null : null;
+  const savedTitle = view === "home" ? loadSession()?.name || null : null;
 
   const openFdx = async () => {
     setImporting(true);
@@ -50,9 +52,8 @@ function App() {
     try {
       const imported = await chooseAndParseFdx();
       if (!imported) return;
-      setDoc(imported);
-      localStorage.removeItem("scs.versions.v1");
-      setProjectDocuments([]);
+      setSession(createProjectSession(imported));
+      clearSession();
       setDocNonce((n) => n + 1);
       setView("write");
     } catch (error) {
@@ -69,10 +70,7 @@ function App() {
     try {
       const project = await chooseAndOpenProject();
       if (!project) return;
-      const [first] = project.documents;
-      setDoc(first);
-      setProjectDocuments(project.documents);
-      localStorage.setItem("scs.versions.v1", JSON.stringify(project.versions));
+      setSession(project);
       setDocNonce((nonce) => nonce + 1);
       setView("write");
     } catch (error) {
@@ -90,7 +88,7 @@ function App() {
         </button>
         <span className="topbar-name">{appInfo.name}</span>
         <nav className="topbar-nav">
-          {doc && view !== "write" && (
+          {session && view !== "write" && (
             <button className="link-btn" onClick={() => setView("write")}>
               Back to script
             </button>
@@ -119,7 +117,7 @@ function App() {
         />
       )}
 
-      {view === "write" && doc && <Workspace key={docNonce} initialDoc={doc} initialDocuments={projectDocuments} onOpenFdx={openFdx} />}
+      {view === "write" && session && <Workspace key={docNonce} initialSession={session} onOpenFdx={openFdx} />}
 
       {view === "foundation" && (
         <main className="content">

@@ -2,9 +2,11 @@ import { useMemo, useState } from "react";
 import {
   aggregateEpisodes,
   characterDialogue,
+  moveStoryScene,
   parseHeading,
   type Breakdown,
   type CharacterRef,
+  type CustomStoryStructure,
   type DetectedObject,
   type DraftChange,
   type DraftSnapshot,
@@ -12,7 +14,8 @@ import {
   type Scene,
   type ScreenplayBlock,
   type ScreenplayDocument,
-  type StoryStructure,
+  type StoryBoardView,
+  type TreatmentDocument,
   type WorkspaceData,
 } from "../domain/index.ts";
 
@@ -22,13 +25,14 @@ interface InspectorProps {
   characters: CharacterRef[];
   locations: LocationRef[];
   objects: DetectedObject[];
-  structure: StoryStructure;
+  customStructure: CustomStoryStructure;
   breakdown: Breakdown;
   activeScene: Scene | null;
   sceneNotes: Record<string, string>;
   onSceneNote: (sceneId: string, text: string) => void;
   workspace: WorkspaceData;
   onWorkspace: (patch: Partial<WorkspaceData>) => void;
+  onJumpToScene: (sceneId: string) => void;
   versions: DraftSnapshot[];
   draftChanges: DraftChange[];
   onSaveVersion: () => void;
@@ -48,8 +52,8 @@ export default function Inspector(props: InspectorProps) {
     <nav className="insp-tabs">{TABS.map((name) => <button key={name} className={`insp-tab ${name === tab ? "active" : ""}`} onClick={() => setTab(name)}>{name}</button>)}</nav>
     <div className="insp-body">
       {tab === "Scene" && <SceneTab {...props} />}
-      {tab === "Story" && <StoryTab {...props} />}
-      {tab === "Treatment" && <TreatmentTab {...props} />}
+      {tab === "Story" && <StoryWorkspaceTab {...props} />}
+      {tab === "Treatment" && <TreatmentWorkspaceTab {...props} />}
       {tab === "Cast" && <CastTab {...props} />}
       {tab === "Props" && <PropsTab {...props} />}
       {tab === "Places" && <PlacesTab {...props} />}
@@ -79,15 +83,168 @@ function SceneTab({ blocks, scenes, activeScene, sceneNotes, onSceneNote, worksp
   </div>;
 }
 
-function StoryTab({ structure, scenes }: InspectorProps) {
-  return <div className="insp-stack"><Hint>Act → sequence → scene → beat hierarchy derived from the script. New Act blocks start custom acts; sequences hold up to eight scenes.</Hint>
-    {structure.acts.map((act) => <div className="insp-card" key={act.id}><div className="insp-card-title">{act.title}</div>{act.sequences.map((sequence) => <div key={sequence.id}><div className="insp-card-meta">{sequence.title}</div><ol className="insp-list">{sequence.sceneIds.map((id) => <li key={id}>{scenes.find((scene) => scene.id === id)?.heading ?? id}</li>)}</ol></div>)}</div>)}
-    <h4>Beat map</h4>{structure.beats.length ? <ul className="insp-list">{structure.beats.map((beat) => <li key={beat.id}>{beat.text}</li>)}</ul> : <Hint>No beats yet.</Hint>}
+function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, onJumpToScene }: InspectorProps) {
+  const view = workspace.storyBoardView ?? "scene";
+  const save = (next: CustomStoryStructure) => onWorkspace({ storyStructure: next });
+  const updateAct = (id: string, title: string) => save({
+    ...customStructure,
+    acts: customStructure.acts.map((act) => act.id === id ? { ...act, title } : act),
+  });
+  const addAct = () => save({
+    ...customStructure,
+    acts: [...customStructure.acts, { id: `act-${crypto.randomUUID()}`, title: `Act ${customStructure.acts.length + 1}` }],
+  });
+  const removeAct = (id: string) => {
+    if (customStructure.acts.length === 1) return;
+    const replacement = customStructure.acts.find((act) => act.id !== id)!;
+    save({
+      ...customStructure,
+      acts: customStructure.acts.filter((act) => act.id !== id),
+      sequences: customStructure.sequences.map((sequence) => sequence.actId === id ? { ...sequence, actId: replacement.id } : sequence),
+    });
+  };
+  const addSequence = () => save({
+    ...customStructure,
+    sequences: [...customStructure.sequences, {
+      id: `sequence-${crypto.randomUUID()}`,
+      actId: customStructure.acts[0].id,
+      title: `Sequence ${customStructure.sequences.length + 1}`,
+      sceneIds: [],
+    }],
+  });
+  const updateSequence = (id: string, patch: Partial<CustomStoryStructure["sequences"][number]>) => save({
+    ...customStructure,
+    sequences: customStructure.sequences.map((sequence) => sequence.id === id ? { ...sequence, ...patch } : sequence),
+  });
+  const assignScene = (sequenceId: string, sceneId: string) => save({
+    ...customStructure,
+    sequences: customStructure.sequences.map((sequence) => ({
+      ...sequence,
+      sceneIds: sequence.id === sequenceId
+        ? [...sequence.sceneIds.filter((id) => id !== sceneId), sceneId]
+        : sequence.sceneIds.filter((id) => id !== sceneId),
+    })),
+  });
+  const addBeat = () => save({
+    ...customStructure,
+    beats: [...customStructure.beats, { id: `beat-${crypto.randomUUID()}`, text: "New beat", sceneId: scenes[0]?.id, status: "idea", moments: [] }],
+  });
+  const updateBeat = (id: string, patch: Partial<CustomStoryStructure["beats"][number]>) => save({
+    ...customStructure,
+    beats: customStructure.beats.map((beat) => beat.id === id ? { ...beat, ...patch } : beat),
+  });
+  const orderedScenes = customStructure.sceneOrder
+    .map((id) => scenes.find((scene) => scene.id === id))
+    .filter((scene): scene is Scene => Boolean(scene));
+
+  return <div className="insp-stack">
+    <Hint>Custom Act → Sequence → Scene → Beat → Moment structure stays beside the screenplay, so outlining never rewrites script text.</Hint>
+    <div className="board-view-switch">
+      {(["act", "sequence", "scene", "beat", "timeline"] as StoryBoardView[]).map((name) =>
+        <button key={name} className={`btn btn-ghost ${view === name ? "active" : ""}`} onClick={() => onWorkspace({ storyBoardView: name })}>{name[0].toUpperCase() + name.slice(1)}</button>,
+      )}
+    </div>
+    {view === "act" && <>
+      <button className="btn" onClick={addAct}>Add Act</button>
+      {customStructure.acts.map((act) => <div className="insp-card" key={act.id}>
+        <input aria-label="Act title" className="insp-notes-input" value={act.title} onChange={(event) => updateAct(act.id, event.target.value)} />
+        <div className="insp-card-meta">{customStructure.sequences.filter((sequence) => sequence.actId === act.id).length} sequences · {customStructure.sequences.filter((sequence) => sequence.actId === act.id).flatMap((sequence) => sequence.sceneIds).length} scenes</div>
+        <button className="link-btn" disabled={customStructure.acts.length === 1} onClick={() => removeAct(act.id)}>Remove</button>
+      </div>)}
+    </>}
+    {view === "sequence" && <>
+      <button className="btn" onClick={addSequence}>Add Sequence</button>
+      {customStructure.sequences.map((sequence) => <div className="insp-card" key={sequence.id}>
+        <input aria-label="Sequence title" className="insp-notes-input" value={sequence.title} onChange={(event) => updateSequence(sequence.id, { title: event.target.value })} />
+        <select className="element-select" aria-label="Parent act" value={sequence.actId} onChange={(event) => updateSequence(sequence.id, { actId: event.target.value })}>
+          {customStructure.acts.map((act) => <option key={act.id} value={act.id}>{act.title}</option>)}
+        </select>
+        {scenes.map((scene) => <label className="check-row" key={scene.id}><input type="radio" name={`scene-${scene.id}`} checked={sequence.sceneIds.includes(scene.id)} onChange={() => assignScene(sequence.id, scene.id)} /> {scene.heading}</label>)}
+        <button className="link-btn" disabled={customStructure.sequences.length === 1} onClick={() => save({ ...customStructure, sequences: customStructure.sequences.filter((item) => item.id !== sequence.id) })}>Remove</button>
+      </div>)}
+    </>}
+    {view === "scene" && <div className="story-card-grid">
+      {orderedScenes.map((scene, index) => <div className="insp-card" key={scene.id}>
+        <button className="link-btn insp-card-title" onClick={() => onJumpToScene(scene.id)}>Scene {scene.number} · {scene.heading}</button>
+        <div className="insp-card-meta">{workspace.sceneMeta?.[scene.id]?.summary || "No summary"}</div>
+        <div className="btn-row"><button className="btn btn-ghost" disabled={index === 0} onClick={() => save(moveStoryScene(customStructure, scene.id, index - 1))}>↑</button><button className="btn btn-ghost" disabled={index === orderedScenes.length - 1} onClick={() => save(moveStoryScene(customStructure, scene.id, index + 1))}>↓</button></div>
+      </div>)}
+    </div>}
+    {view === "beat" && <>
+      <button className="btn" onClick={addBeat}>Add Beat</button>
+      {customStructure.beats.map((beat) => <div className="insp-card" key={beat.id}>
+        <textarea className="insp-notes-input" value={beat.text} onChange={(event) => updateBeat(beat.id, { text: event.target.value })} />
+        <select className="element-select" aria-label="Beat placement" value={beat.sceneId ? `scene:${beat.sceneId}` : beat.sequenceId ? `sequence:${beat.sequenceId}` : ""} onChange={(event) => { const [kind, id] = event.target.value.split(":"); updateBeat(beat.id, { sceneId: kind === "scene" ? id : undefined, sequenceId: kind === "sequence" ? id : undefined }); }}>
+          <option value="">Unplaced</option>
+          <optgroup label="Scenes">{scenes.map((scene) => <option value={`scene:${scene.id}`} key={scene.id}>{scene.heading}</option>)}</optgroup>
+          <optgroup label="Sequences">{customStructure.sequences.map((sequence) => <option value={`sequence:${sequence.id}`} key={sequence.id}>{sequence.title}</option>)}</optgroup>
+        </select>
+        <select className="element-select" value={beat.status} onChange={(event) => updateBeat(beat.id, { status: event.target.value as typeof beat.status })}><option value="idea">Idea</option><option value="drafted">Drafted</option><option value="complete">Complete</option></select>
+        <h4>Moments</h4>
+        {beat.moments.map((moment) => <input key={moment.id} className="insp-notes-input" value={moment.text} onChange={(event) => updateBeat(beat.id, { moments: beat.moments.map((item) => item.id === moment.id ? { ...item, text: event.target.value } : item) })} />)}
+        <div className="btn-row"><button className="btn btn-ghost" onClick={() => updateBeat(beat.id, { moments: [...beat.moments, { id: `moment-${crypto.randomUUID()}`, text: "New moment" }] })}>Add Moment</button><button className="link-btn" onClick={() => save({ ...customStructure, beats: customStructure.beats.filter((item) => item.id !== beat.id) })}>Remove Beat</button></div>
+      </div>)}
+    </>}
+    {view === "timeline" && <ol className="timeline-list">
+      {orderedScenes.map((scene) => { const heading = parseHeading(scene.heading); return <li key={scene.id}><button className="link-btn" onClick={() => onJumpToScene(scene.id)}>{scene.heading}</button><span>{heading.timeOfDay || "Unspecified time"}</span>{customStructure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => <small key={beat.id}>{beat.text}</small>)}</li>; })}
+    </ol>}
   </div>;
 }
 
-function TreatmentTab({ workspace, onWorkspace, onExportTreatment }: InspectorProps) {
-  return <div className="insp-stack"><Hint>Markdown treatment stored with the project. Reference scenes, characters, locations, or beats by name.</Hint><textarea className="insp-notes-input treatment-input" value={workspace.treatment} placeholder="# Treatment\n\n## Act I\n…" onChange={(event) => onWorkspace({ treatment: event.target.value })} /><div className="btn-row"><button className="btn" onClick={() => onExportTreatment("md")}>Export Markdown</button><button className="btn btn-ghost" onClick={() => onExportTreatment("pdf")}>Print PDF</button></div></div>;
+function TreatmentWorkspaceTab({ workspace, onWorkspace, onExportTreatment, scenes, characters, objects, locations, customStructure }: InspectorProps) {
+  type LinkType = TreatmentDocument["links"][number]["targetType"];
+  const documents: TreatmentDocument[] = workspace.treatments?.length
+    ? workspace.treatments
+    : [{ id: "treatment-main", title: "Treatment", markdown: workspace.treatment, links: [] }];
+  const active = documents.find((document) => document.id === workspace.activeTreatmentId) ?? documents[0];
+  const [linkType, setLinkType] = useState<LinkType>("scene");
+  const [linkTarget, setLinkTarget] = useState("");
+  const targets: Record<LinkType, { id: string; label: string }[]> = {
+    act: customStructure.acts.map((act) => ({ id: act.id, label: act.title })),
+    sequence: customStructure.sequences.map((sequence) => ({ id: sequence.id, label: sequence.title })),
+    scene: scenes.map((scene) => ({ id: scene.id, label: scene.heading })),
+    beat: customStructure.beats.map((beat) => ({ id: beat.id, label: beat.text })),
+    character: characters.map((character) => ({ id: character.name, label: character.name })),
+    object: objects.map((object) => ({ id: object.id, label: object.name })),
+    location: locations.map((location) => ({ id: location.name, label: location.name })),
+  };
+  const saveDocuments = (next: TreatmentDocument[], activeId = active.id) => onWorkspace({
+    treatments: next,
+    activeTreatmentId: activeId,
+    treatment: next[0]?.markdown ?? "",
+  });
+  const update = (patch: Partial<TreatmentDocument>) => saveDocuments(
+    documents.map((document) => document.id === active.id ? { ...document, ...patch } : document),
+  );
+  const addLink = () => {
+    const target = targets[linkType].find((item) => item.id === linkTarget) ?? targets[linkType][0];
+    if (!target) return;
+    update({ links: [...active.links, { id: `link-${crypto.randomUUID()}`, targetType: linkType, targetId: target.id, label: target.label }] });
+  };
+
+  return <div className="insp-stack">
+    <Hint>Markdown treatment documents can carry explicit links to story structure and recognized entities.</Hint>
+    <div className="btn-row">
+      <select className="element-select" value={active.id} onChange={(event) => onWorkspace({ activeTreatmentId: event.target.value })}>
+        {documents.map((document) => <option key={document.id} value={document.id}>{document.title}</option>)}
+      </select>
+      <button className="btn" onClick={() => { const id = `treatment-${crypto.randomUUID()}`; saveDocuments([...documents, { id, title: `Treatment ${documents.length + 1}`, markdown: "", links: [] }], id); }}>New</button>
+    </div>
+    <input className="insp-notes-input" aria-label="Treatment title" value={active.title} onChange={(event) => update({ title: event.target.value })} />
+    <textarea className="insp-notes-input treatment-input" value={active.markdown} placeholder="# Treatment\n\n## Act I\n…" onChange={(event) => update({ markdown: event.target.value })} />
+    <h4>Linked references</h4>
+    <div className="btn-row">
+      <select className="element-select" value={linkType} onChange={(event) => { setLinkType(event.target.value as LinkType); setLinkTarget(""); }}>{Object.keys(targets).map((type) => <option key={type} value={type}>{type}</option>)}</select>
+      <select className="element-select" value={linkTarget} onChange={(event) => setLinkTarget(event.target.value)}><option value="">Choose…</option>{targets[linkType].map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}</select>
+      <button className="btn btn-ghost" onClick={addLink}>Link</button>
+    </div>
+    {active.links.map((link) => <div className="chip" key={link.id}>{link.targetType}: {link.label}<button className="link-btn" aria-label={`Remove ${link.label} link`} onClick={() => update({ links: active.links.filter((item) => item.id !== link.id) })}>×</button></div>)}
+    <div className="btn-row">
+      <button className="btn" onClick={() => onExportTreatment("md")}>Export Markdown</button>
+      <button className="btn btn-ghost" onClick={() => onExportTreatment("pdf")}>Print PDF</button>
+      <button className="link-btn" disabled={documents.length === 1} onClick={() => { const next = documents.filter((document) => document.id !== active.id); saveDocuments(next, next[0].id); }}>Delete</button>
+    </div>
+  </div>;
 }
 
 function CastTab({ characters, blocks }: InspectorProps) {

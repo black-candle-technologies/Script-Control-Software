@@ -66,9 +66,29 @@ export interface ScreenplayDocument {
   workspace?: WorkspaceData;
 }
 
+export type StoryBoardView = "act" | "sequence" | "scene" | "beat" | "timeline";
+
+export interface CustomStoryStructure {
+  acts: { id: string; title: string }[];
+  sequences: { id: string; actId: string; title: string; sceneIds: string[] }[];
+  beats: { id: string; text: string; sceneId?: string; sequenceId?: string; status: "idea" | "drafted" | "complete"; moments: { id: string; text: string }[] }[];
+  sceneOrder: string[];
+}
+
+export interface TreatmentDocument {
+  id: string;
+  title: string;
+  markdown: string;
+  links: { id: string; targetType: "act" | "sequence" | "scene" | "beat" | "character" | "object" | "location"; targetId: string; label: string }[];
+}
+
 /** Portable development metadata kept beside the screenplay, never inside FDX. */
 export interface WorkspaceData {
   treatment: string;
+  treatments?: TreatmentDocument[];
+  activeTreatmentId?: string;
+  storyStructure?: CustomStoryStructure;
+  storyBoardView?: StoryBoardView;
   showBible: string;
   continuity: string;
   seasonArc: string;
@@ -84,6 +104,8 @@ export interface WorkspaceData {
 
 export const emptyWorkspace = (): WorkspaceData => ({
   treatment: "",
+  treatments: [],
+  storyBoardView: "scene",
   showBible: "",
   continuity: "",
   seasonArc: "",
@@ -248,7 +270,7 @@ export function normalizeCharacterName(cue: string): string {
     .toUpperCase();
 }
 
-const HEADING_RE = /^(INT|EXT|EST|INT\/EXT|I\/E)[.\s]/i;
+const HEADING_RE = /^(?:INT\.?\/EXT\.?|EXT\.?\/INT\.?|I\/E|INT|EXT|EST)[.\s]/i;
 
 export interface ParsedHeading {
   intExt: string;
@@ -258,11 +280,11 @@ export interface ParsedHeading {
 
 /** Split "INT. HOUSE - NIGHT" into its parts. Best-effort; never throws. */
 export function parseHeading(heading: string): ParsedHeading {
-  const m = heading.match(/^(INT\/EXT|I\/E|INT|EXT|EST)[.\s]+(.*)$/i);
+  const m = heading.match(/^(INT\.?\/EXT\.?|EXT\.?\/INT\.?|I\/E|INT|EXT|EST)[.\s]+(.*)$/i);
   const rest = m ? m[2] : heading;
   const dash = rest.lastIndexOf(" - ");
   return {
-    intExt: m ? m[1].toUpperCase() : "",
+    intExt: m ? m[1].replace(/\./g, "").toUpperCase() : "",
     location: (dash >= 0 ? rest.slice(0, dash) : rest).trim().toUpperCase(),
     timeOfDay: dash >= 0 ? rest.slice(dash + 3).trim().toUpperCase() : "",
   };
@@ -276,6 +298,7 @@ export function deriveScenes(blocks: ScreenplayBlock[]): Scene[] {
       current = {
         id: block.id,
         number: scenes.length + 1,
+        sceneNumber: block.metadata?.Number,
         heading: block.text.trim().toUpperCase() || "(empty scene heading)",
         blockIndex: i,
         characters: [],
@@ -287,6 +310,47 @@ export function deriveScenes(blocks: ScreenplayBlock[]): Scene[] {
     }
   });
   return scenes;
+}
+
+/** Preserve scene-linked development data when a parser regenerates block ids. */
+export function reconcileSceneMetadata(previous: ScreenplayDocument, parsed: ScreenplayDocument): ScreenplayDocument {
+  const before = deriveScenes(previous.blocks);
+  const after = deriveScenes(parsed.blocks);
+  const remap = new Map<string, string>();
+  const available = new Set(after.map((scene) => scene.id));
+  const byIdentity = sceneIdentityMap(after);
+  for (const [index, scene] of before.entries()) {
+    const same = byIdentity.get(sceneIdentity(before, index))?.find((candidate) => available.has(candidate));
+    const fallback = after[index]?.id;
+    const nextId = same ?? (fallback && available.has(fallback) ? fallback : undefined);
+    if (nextId) {
+      remap.set(scene.id, nextId);
+      available.delete(nextId);
+    }
+  }
+  const remapRecord = <T>(record: Record<string, T> | undefined) => Object.fromEntries(
+    Object.entries(record ?? {}).flatMap(([id, value]) => remap.has(id) ? [[remap.get(id)!, value] as const] : []),
+  );
+  const workspace = { ...emptyWorkspace(), ...previous.workspace, ...parsed.workspace };
+  workspace.sceneMeta = remapRecord(previous.workspace?.sceneMeta);
+  workspace.omittedSceneIds = (previous.workspace?.omittedSceneIds ?? []).flatMap((id) => remap.get(id) ?? []);
+  return { ...previous, ...parsed, sceneNotes: remapRecord(previous.sceneNotes), workspace };
+}
+
+function sceneIdentity(scenes: Scene[], index: number): string {
+  const heading = scenes[index].heading.trim().toUpperCase();
+  let occurrence = 0;
+  for (let i = 0; i <= index; i++) if (scenes[i].heading.trim().toUpperCase() === heading) occurrence++;
+  return `${heading}\0${occurrence}`;
+}
+
+function sceneIdentityMap(scenes: Scene[]): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  scenes.forEach((scene, index) => {
+    const identity = sceneIdentity(scenes, index);
+    map.set(identity, [...(map.get(identity) ?? []), scene.id]);
+  });
+  return map;
 }
 
 export function deriveCharacters(blocks: ScreenplayBlock[]): CharacterRef[] {

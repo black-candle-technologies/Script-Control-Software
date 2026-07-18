@@ -13,6 +13,7 @@ import {
   parseHeading,
   isSceneHeadingText,
   isTransitionText,
+  reconcileSceneMetadata,
 } from "./screenplay.ts";
 import { parseFountain, toFountain } from "./fountain.ts";
 
@@ -128,6 +129,12 @@ test("heading parser splits INT/EXT, location and time", () => {
   });
 });
 
+test("unusual compound headings and production scene numbers stay visible", () => {
+  assert.deepEqual(parseHeading("EXT./INT. MOVING CAR - NIGHT"), { intExt: "EXT/INT", location: "MOVING CAR", timeOfDay: "NIGHT" });
+  const scenes = deriveScenes([{ id: "s1", type: "scene_heading", text: "EXT./INT. MOVING CAR - NIGHT", metadata: { Number: "12A" } }]);
+  assert.equal(scenes[0].sceneNumber, "12A");
+});
+
 test("heading and transition detection", () => {
   assert.ok(isSceneHeadingText("INT. HOUSE - DAY"));
   assert.ok(isSceneHeadingText("ext. road - day"));
@@ -151,4 +158,28 @@ test("pagination creates visible pages without losing blocks", () => {
   const pages = paginateBlocks(blocks);
   assert.equal(pages.length, 3);
   assert.deepEqual(pages.flat(), blocks);
+});
+
+test("scene-linked metadata follows matching scenes after a parser regenerates ids", () => {
+  const previous = parseFountain("INT. HOME - DAY\n\nOld.\n\nEXT. ROAD - NIGHT\n\nDrive.\n");
+  const [home, road] = deriveScenes(previous.blocks);
+  previous.sceneNotes = { [home.id]: "home note", [road.id]: "road note" };
+  previous.workspace = {
+    treatment: "",
+    showBible: "",
+    continuity: "",
+    seasonArc: "",
+    productionNotes: "",
+    comments: [],
+    entityStatuses: {},
+    sceneMeta: { [road.id]: { summary: "Chase", tags: "car", status: "draft" } },
+    omittedSceneIds: [home.id],
+  };
+  const parsed = parseFountain("EXT. ROAD - NIGHT\n\nDrive faster.\n\nINT. HOME - DAY\n\nNew.\n");
+  const [newRoad, newHome] = deriveScenes(parsed.blocks);
+  const reconciled = reconcileSceneMetadata(previous, parsed);
+  assert.equal(reconciled.sceneNotes[newHome.id], "home note");
+  assert.equal(reconciled.sceneNotes[newRoad.id], "road note");
+  assert.equal(reconciled.workspace?.sceneMeta?.[newRoad.id].summary, "Chase");
+  assert.deepEqual(reconciled.workspace?.omittedSceneIds, [newHome.id]);
 });

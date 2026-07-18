@@ -490,6 +490,17 @@ button.wordmark {
   flex-wrap: wrap;
 }
 
+.project-name-input {
+  width: 150px;
+  min-width: 90px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-raised);
+  color: var(--text);
+  padding: 6px 8px;
+  font-weight: 650;
+}
+
 .workspace-episodes {
   display: flex;
   gap: 0.25rem;
@@ -1152,6 +1163,51 @@ button.wordmark {
   border-radius: 999px;
   padding: 0.12rem 0.5rem;
   color: var(--text-muted);
+}
+
+.board-view-switch {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.board-view-switch .btn {
+  min-width: 0;
+  padding-inline: 5px;
+  text-transform: capitalize;
+}
+
+.board-view-switch .active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.story-card-grid,
+.timeline-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.check-row {
+  display: block;
+  padding: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timeline-list li {
+  display: grid;
+  gap: 3px;
+  border-left: 2px solid var(--line);
+  padding: 4px 0 10px 10px;
+}
+
+.timeline-list span,
+.timeline-list small {
+  color: var(--muted);
 }
 
 .version-list {

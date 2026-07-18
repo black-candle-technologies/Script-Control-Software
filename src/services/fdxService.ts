@@ -1,13 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { toFountain, type DraftSnapshot, type ScreenplayDocument } from "../domain/index.ts";
+import {
+  normalizeProjectSession,
+  toFountain,
+  type ProjectSession,
+  type ProjectWorkspace,
+  type ScreenplayDocument,
+} from "../domain/index.ts";
 
-export interface ProjectBundle {
+interface StoredProjectBundle {
   schemaVersion: number;
+  id: string;
   name: string;
   projectType: "featureFilm" | "television";
-  documents: ScreenplayDocument[];
-  versions: DraftSnapshot[];
+  createdAt: string;
+  updatedAt: string;
+  documents: unknown[];
+  versions: unknown[];
+  workspace?: ProjectWorkspace;
 }
 
 export async function chooseAndParseFdx(): Promise<ScreenplayDocument | null> {
@@ -17,43 +27,71 @@ export async function chooseAndParseFdx(): Promise<ScreenplayDocument | null> {
     filters: [{ name: "Final Draft", extensions: ["fdx"] }],
   });
   if (!selected) return null;
-  const document = await invoke<ScreenplayDocument>("parse_fdx", { path: selected });
-  return { ...document, readOnly: false, workspace: document.workspace ?? {
-    treatment: "", showBible: "", continuity: "", seasonArc: "", productionNotes: "", comments: [], entityStatuses: {},
-  } };
+  return normalizeImportedDocument(await invoke<ScreenplayDocument>("parse_fdx", { path: selected }));
 }
 
 export async function parseLinkedFdx(path: string): Promise<ScreenplayDocument> {
-  const document = await invoke<ScreenplayDocument>("parse_fdx", { path });
-  return { ...document, readOnly: false };
+  return normalizeImportedDocument(await invoke<ScreenplayDocument>("parse_fdx", { path }));
 }
 
 export const linkedFileModifiedAt = (path: string) => invoke<number>("file_modified_at", { path });
 
-export async function saveProjectBundle(name: string, documents: ScreenplayDocument[], versions: DraftSnapshot[]): Promise<string | null> {
-  const path = await save({
-    title: "Create SCS project wrapper",
-    defaultPath: "scs.project.json",
-    filters: [{ name: "SCS Project", extensions: ["json"] }],
-  });
+export async function saveProjectSession(session: ProjectSession, saveAs = false): Promise<ProjectSession | null> {
+  let path = saveAs ? "" : session.projectPath;
+  if (!path) {
+    path = await save({
+      title: "Save portable SCS project",
+      defaultPath: "scs.project.json",
+      filters: [{ name: "SCS Project", extensions: ["json"] }],
+    }) ?? "";
+  }
   if (!path) return null;
-  await invoke("save_project_bundle", {
+  const stored = await invoke<StoredProjectBundle>("save_project_bundle", {
     path,
-    name,
-    projectType: documents.length > 1 ? "television" : "featureFilm",
-    documents,
-    fountainScripts: documents.map(toFountain),
-    versions,
+    name: session.name,
+    projectType: session.projectType,
+    documents: session.documents,
+    fountainScripts: session.documents.map(toFountain),
+    versions: session.versions,
+    workspace: session.workspace,
+    expectedUpdatedAt: !saveAs && session.projectPath ? session.updatedAt : null,
   });
-  return path;
+  return normalizeProjectSession({
+    ...stored,
+    projectId: stored.id,
+    workspace: stored.workspace ?? session.workspace,
+    projectPath: path,
+    activeDocumentId: session.activeDocumentId,
+  });
 }
 
-export async function chooseAndOpenProject(): Promise<ProjectBundle | null> {
-  const selected = await open({ multiple: false, title: "Open SCS project", filters: [{ name: "SCS Project", extensions: ["json"] }] });
+export async function chooseAndOpenProject(): Promise<ProjectSession | null> {
+  const selected = await open({
+    multiple: false,
+    title: "Open SCS project",
+    filters: [{ name: "SCS Project", extensions: ["json"] }],
+  });
   if (!selected) return null;
-  return invoke<ProjectBundle>("open_project_bundle", { path: selected });
+  const stored = await invoke<StoredProjectBundle>("open_project_bundle", { path: selected });
+  return normalizeProjectSession({
+    ...stored,
+    projectId: stored.id,
+    workspace: stored.workspace,
+    projectPath: selected,
+  });
 }
 
 export function messageFrom(error: unknown): string {
-  return typeof error === "string" ? error : error instanceof Error ? error.message : "The file could not be opened.";
+  return typeof error === "string" ? error.replace(/^PROJECT_CONFLICT:\s*/, "") : error instanceof Error ? error.message : "The file could not be opened.";
+}
+
+export function isProjectConflict(error: unknown): boolean {
+  return typeof error === "string" && error.startsWith("PROJECT_CONFLICT:");
+}
+
+function normalizeImportedDocument(document: ScreenplayDocument): ScreenplayDocument {
+  return normalizeProjectSession({
+    documents: [{ ...document, readOnly: false }],
+    projectType: "featureFilm",
+  }).documents[0];
 }

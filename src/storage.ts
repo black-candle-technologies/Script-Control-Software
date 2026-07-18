@@ -1,40 +1,66 @@
-/**
- * Local persistence — localStorage for now. The service boundary the future
- * Rust/SQLite storage layer will replace; nothing else in the app touches
- * localStorage directly.
- */
-import type { DraftSnapshot, ScreenplayDocument } from "./domain/index.ts";
+/** Emergency local recovery. Portable project folders remain the durable source. */
+import {
+  createProjectSession,
+  normalizeProjectSession,
+  type DraftSnapshot,
+  type ProjectSession,
+  type ScreenplayDocument,
+} from "./domain/index.ts";
 
-const KEY = "scs.document.v1";
-const VERSIONS_KEY = "scs.versions.v1";
+const LEGACY_DOCUMENT_KEY = "scs.document.v1";
+const LEGACY_VERSIONS_KEY = "scs.versions.v1";
+const SESSION_KEY = "scs.project-session.v3";
 
-export function loadDocument(): ScreenplayDocument | null {
+export function loadSession(): ProjectSession | null {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
-    const doc = JSON.parse(raw) as ScreenplayDocument;
-    if (!Array.isArray(doc.blocks) || !doc.titlePage) return null;
-    doc.sceneNotes ??= {};
-    doc.workspace ??= { treatment: "", showBible: "", continuity: "", seasonArc: "", productionNotes: "", comments: [], entityStatuses: {} };
-    return doc;
+    const current = localStorage.getItem(SESSION_KEY);
+    if (current) return normalizeProjectSession(JSON.parse(current));
+    const document = localStorage.getItem(LEGACY_DOCUMENT_KEY);
+    if (!document) return null;
+    return normalizeProjectSession({
+      documents: [JSON.parse(document)],
+      versions: JSON.parse(localStorage.getItem(LEGACY_VERSIONS_KEY) ?? "[]"),
+    });
   } catch {
     return null;
   }
 }
 
-export function saveDocument(doc: ScreenplayDocument): void {
-  localStorage.setItem(KEY, JSON.stringify(doc));
-}
-
-export function loadVersions(): DraftSnapshot[] {
+export function saveSession(session: ProjectSession): boolean {
   try {
-    const versions = JSON.parse(localStorage.getItem(VERSIONS_KEY) ?? "[]") as DraftSnapshot[];
-    return Array.isArray(versions) ? versions : [];
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    localStorage.removeItem(LEGACY_DOCUMENT_KEY);
+    localStorage.removeItem(LEGACY_VERSIONS_KEY);
+    return true;
   } catch {
-    return [];
+    return false;
   }
 }
 
+export function clearSession(): void {
+  localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem(LEGACY_DOCUMENT_KEY);
+  localStorage.removeItem(LEGACY_VERSIONS_KEY);
+}
+
+/** Compatibility helpers retained while callers move to whole-project sessions. */
+export function loadDocument(): ScreenplayDocument | null {
+  return loadSession()?.documents[0] ?? null;
+}
+
+export function saveDocument(doc: ScreenplayDocument): void {
+  const session = loadSession() ?? createProjectSession(doc);
+  session.documents[0] = doc;
+  saveSession(session);
+}
+
+export function loadVersions(): DraftSnapshot[] {
+  return loadSession()?.versions ?? [];
+}
+
 export function saveVersions(versions: DraftSnapshot[]): void {
-  localStorage.setItem(VERSIONS_KEY, JSON.stringify(versions));
+  const session = loadSession();
+  if (!session) return;
+  session.versions = versions;
+  saveSession(session);
 }

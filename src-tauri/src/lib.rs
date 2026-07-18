@@ -51,6 +51,7 @@ fn create_project_manifest(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+#[allow(clippy::too_many_arguments)]
 fn save_project_bundle(
     path: String,
     name: String,
@@ -58,6 +59,8 @@ fn save_project_bundle(
     documents: Vec<Value>,
     fountain_scripts: Vec<String>,
     versions: Vec<Value>,
+    workspace: Value,
+    expected_updated_at: Option<String>,
 ) -> Result<ProjectBundle, String> {
     project_file::save_bundle(
         Path::new(&path),
@@ -66,6 +69,8 @@ fn save_project_bundle(
         documents,
         fountain_scripts,
         versions,
+        workspace,
+        expected_updated_at,
     )
 }
 
