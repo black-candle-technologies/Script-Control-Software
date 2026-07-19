@@ -1,8 +1,11 @@
-import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import Editor from "./Editor.tsx";
-import Inspector, { type InspectorTab } from "./Inspector.tsx";
-import LayoutManager from "./LayoutManager.tsx";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import Editor, { type EditorHistory } from "./Editor.tsx";
+import PanelHost, { type PanelTab } from "./Inspector.tsx";
+import ContextInspector from "./ContextInspector.tsx";
+import SceneNavigator from "./SceneNavigator.tsx";
 import CompanionDashboard from "./CompanionDashboard.tsx";
+import Icon, { type IconName } from "./Icons.tsx";
+import { Menu, Segmented, type MenuEntry } from "./ui.tsx";
 import {
   ELEMENT_TYPES,
   analysisToCsv,
@@ -31,7 +34,6 @@ import {
   emptyDocument,
   emptyWorkspace,
   estimatePages,
-  getWorkspaceLayout,
   hasPermission,
   keyboardShortcutMatches,
   moveScene,
@@ -39,10 +41,8 @@ import {
   markChangedBlocks,
   mergeSnapshots,
   mergeCollaboratorSessions,
-  normalizeWorkspaceLayout,
   parseFountain,
   reconcileImportedDocument,
-  resizeWorkspaceSplit,
   resolveStoryStructure,
   restoreProjectSnapshot,
   restoreLocalDocumentState,
@@ -76,8 +76,6 @@ import {
   type SnapshotComparison,
   type SnapshotDiffMode,
   type SnapshotScope,
-  type WorkspaceLayout,
-  type WorkspacePanelDefinition,
   type WorkspaceReferenceKind,
   syncSeriesDocuments,
   versionHistoryForPortableStorage,
@@ -104,9 +102,79 @@ import { gitSyncCommit, gitSyncInit, gitSyncPull, gitSyncPush, gitSyncStatus, ty
 interface WorkspaceProps {
   initialSession: ProjectSession;
   onOpenFdx: () => void;
+  onExit: () => void;
 }
 
-export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps) {
+/** Working modes of the shell. Each swaps the workspace around the same project. */
+type Mode = "write" | "outline" | "treatment" | "reference" | "series" | "breakdown" | "drafts" | "team" | "companion";
+
+const MODE_META: Record<Mode, { label: string; icon: IconName; blurb: string }> = {
+  write: { label: "Write", icon: "write", blurb: "The screenplay" },
+  outline: { label: "Outline", icon: "outline", blurb: "Acts, sequences, scenes, and beats beside the script" },
+  treatment: { label: "Treatment", icon: "treatment", blurb: "Long-form prose linked to the story structure" },
+  reference: { label: "Reference", icon: "reference", blurb: "Cast, props, and places detected from the script" },
+  series: { label: "Series", icon: "series", blurb: "Show bible, seasons, arcs, and continuity" },
+  breakdown: { label: "Breakdown", icon: "breakdown", blurb: "Reports, production tools, and revisions" },
+  drafts: { label: "Drafts", icon: "drafts", blurb: "Draft versions, alternates, and project history" },
+  team: { label: "Team", icon: "team", blurb: "Roles, comments, and shared-project sync" },
+  companion: { label: "Companion", icon: "companion", blurb: "Watch Final Draft files and keep metadata in SCS" },
+};
+
+const MODE_TO_LAYOUT: Record<Mode, string> = {
+  write: "writer",
+  outline: "development",
+  treatment: "development",
+  reference: "writer",
+  series: "television",
+  breakdown: "production",
+  drafts: "revision",
+  team: "writer",
+  companion: "companion",
+};
+
+const LAYOUT_TO_MODE: Record<string, Mode> = {
+  writer: "write",
+  development: "outline",
+  revision: "drafts",
+  television: "series",
+  production: "breakdown",
+  companion: "companion",
+};
+
+const REFERENCE_LABELS: Record<WorkspaceReferenceKind, string> = {
+  none: "None",
+  "previous-episode": "Previous episode",
+  "next-episode": "Next episode",
+  "previous-draft": "Previous draft",
+  character: "Character",
+  object: "Object",
+  location: "Location",
+  "show-bible": "Show bible",
+  "season-arc": "Season arc",
+  "plot-history": "Plot history",
+  timeline: "Timeline",
+};
+
+interface UiPrefs {
+  navOpen: boolean;
+  inspOpen: boolean;
+  navWidth: number;
+  inspWidth: number;
+  zoom: number;
+}
+
+const PREFS_KEY = "scs.ui.v1";
+const DEFAULT_PREFS: UiPrefs = { navOpen: true, inspOpen: true, navWidth: 264, inspWidth: 320, zoom: 1 };
+
+function loadPrefs(): UiPrefs {
+  try {
+    return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
+  } catch {
+    return DEFAULT_PREFS;
+  }
+}
+
+export default function Workspace({ initialSession, onOpenFdx, onExit }: WorkspaceProps) {
   const [session, setSession] = useState(initialSession);
   const episodeDocs = session.documents;
   const [activeEpisode, setActiveEpisode] = useState(() => Math.max(0, initialSession.documents.findIndex((document) => document.id === initialSession.activeDocumentId)));
@@ -117,8 +185,16 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   }));
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const [focusRequest, setFocusRequest] = useState<{ id: string; nonce: number } | null>(null);
-  const [inspectorOpen, setInspectorOpen] = useState(() => initialSession.workspace.layouts.find((layout) => layout.id === initialSession.workspace.activeLayoutId)?.inspector !== "hidden");
-  const [mode, setMode] = useState<"formatted" | "source">("formatted");
+  const [prefs, setPrefs] = useState<UiPrefs>(loadPrefs);
+  const [modeState, setModeState] = useState<Mode>(() => LAYOUT_TO_MODE[initialSession.workspace.activeLayoutId] ?? "write");
+  const mode = modeState;
+  const [focusMode, setFocusMode] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<"context" | "reference">("context");
+  const [referenceKind, setReferenceKind] = useState<WorkspaceReferenceKind>("previous-draft");
+  const [referenceTarget, setReferenceTarget] = useState("");
+  const [referenceModeTab, setReferenceModeTab] = useState<PanelTab>("Cast");
+  const [breakdownModeTab, setBreakdownModeTab] = useState<PanelTab>("Breakdown");
+  const [editorMode, setEditorMode] = useState<"formatted" | "source">("formatted");
   const [sourceText, setSourceText] = useState("");
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const versionHistory = session.versionHistory;
@@ -129,45 +205,51 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [layoutManagerOpen, setLayoutManagerOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const activeLayout: WorkspaceLayout = getWorkspaceLayout(session.workspace, session.workspace.activeLayoutId)
-    ?? normalizeWorkspaceLayout(session.workspace.layouts[0]);
-  const layout = activeLayout.id;
   const [externalChanged, setExternalChanged] = useState(false);
   const [externalConflict, setExternalConflict] = useState(false);
   const [externalModifiedAt, setExternalModifiedAt] = useState<number | null>(null);
   const [watchFiles, setWatchFiles] = useState<FdxFileInfo[]>([]);
   const [gitStatus, setGitStatus] = useState<GitSyncStatus>();
   const [sharedConflict, setSharedConflict] = useState<{ base?: ProjectSession; theirs: ProjectSession; conflicts: MergeConflict[] } | null>(null);
-  const [draggedScene, setDraggedScene] = useState<number | null>(null);
   const focusNonce = useRef(0);
-  const workspaceMainRef = useRef<HTMLDivElement>(null);
-  const splitDragRef = useRef<{
-    pointerId: number;
-    dividerIndex: number;
-    start: number;
-    extent: number;
-    minimum: number;
-    split: WorkspaceLayout["splits"][number];
-  } | null>(null);
+  const editorHistoryRef = useRef<{ undo: () => void; redo: () => void } | null>(null);
+  const editorHistoryStore = useRef(new Map<string, EditorHistory>());
+  const paneDragRef = useRef<{ pointerId: number; pane: "nav" | "insp"; startX: number; startWidth: number } | null>(null);
   const sessionRef = useRef(session);
-  const sourceRecoveryRef = useRef({ mode, sourceText, document: doc });
-  sourceRecoveryRef.current = { mode, sourceText, document: doc };
+  const sourceRecoveryRef = useRef({ mode: editorMode, sourceText, document: doc });
+  sourceRecoveryRef.current = { mode: editorMode, sourceText, document: doc };
   const linkedBaselines = useRef(linkedBaselineMap(initialSession.documents));
   const sharedBaseline = useRef<ProjectSession | null>(null);
   // A local recovery session may be newer than its portable file. Establish
   // this baseline from disk before permitting pull/push operations.
   const portableBaseline = useRef("");
   const canEdit = hasPermission(session.workspace, session.workspace.currentUserId, "edit");
+  const isTelevision = session.projectType === "television" || episodeDocs.length > 1;
 
-  const materializeSourceSession = (current: ProjectSession): ProjectSession => materializeSourceDraft(current, { mode, sourceText, document: doc });
+  const setPref = <K extends keyof UiPrefs>(key: K, value: UiPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
+  useEffect(() => {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    } catch { /* UI preferences are disposable */ }
+  }, [prefs]);
+
+  const setMode = (next: Mode) => {
+    setModeState(next);
+    const layoutId = MODE_TO_LAYOUT[next];
+    if (session.workspace.activeLayoutId !== layoutId && session.workspace.layouts.some((layout) => layout.id === layoutId)) {
+      setSession((current) => ({ ...current, workspace: { ...current.workspace, activeLayoutId: layoutId } }));
+    }
+    if (next !== "write") setFocusMode(false);
+  };
+
+  const materializeSourceSession = (current: ProjectSession): ProjectSession => materializeSourceDraft(current, { mode: editorMode, sourceText, document: doc });
   const installProjectSession = (next: ProjectSession) => {
     linkedBaselines.current = linkedBaselineMap(next.documents);
     setSession(next);
     setActiveEpisode(Math.max(0, next.documents.findIndex((document) => document.id === next.activeDocumentId)));
     setActiveBlockId(null);
-    setMode("formatted");
+    setEditorMode("formatted");
     setSourceText("");
   };
 
@@ -290,11 +372,9 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     revision: recentSnapshots.length > 1 ? { fromLabel: recentSnapshots[0].name, toLabel: recentSnapshots[1].name, changes: draftChanges } : undefined,
   }), [customStructure, doc, draftChanges, recentSnapshots, workspace.entityOverrides, workspace.plotThreads, workspace.resolvedBeatIds, workspace.treatments]);
   const seriesReport = useMemo(() => compileSeriesWorkspace(session), [session]);
-  const entityReferenceKey = activeLayout.panels
-    .filter((panel) => panel.kind === "reference" && ["character", "object", "location"].includes(panel.referenceKind ?? ""))
-    .map((panel) => `${panel.referenceKind}:${panel.targetId ?? ""}`)
-    .sort()
-    .join("|");
+  const entityReferenceKey = mode === "write" && prefs.inspOpen && inspectorTab === "reference" && ["character", "object", "location"].includes(referenceKind)
+    ? `${referenceKind}:${referenceTarget}`
+    : "";
   const referenceAnalyses = useMemo(() => entityReferenceKey ? session.documents.map((document) => ({
     document,
     analysis: compileAnalysis(document, {
@@ -321,6 +401,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   }), [doc, revisionSets, versionHistory.snapshots, workspace.pageLock]);
   const words = useMemo(() => countWords(doc.blocks), [doc.blocks]);
   const pages = useMemo(() => estimatePages(doc.blocks), [doc.blocks]);
+  const pageEstimates = useMemo(() => new Map(analysis.scenes.map((scene) => [scene.id, scene.estimatedPages])), [analysis.scenes]);
   const activeIndex = doc.blocks.findIndex((block) => block.id === activeBlockId);
   const activeBlock = activeIndex >= 0 ? doc.blocks[activeIndex] : null;
   const activeScene = activeIndex >= 0 ? [...scenes].reverse().find((scene) => scene.blockIndex <= activeIndex) ?? null : scenes[0] ?? null;
@@ -353,15 +434,15 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     setDoc({ ...doc, blocks, scenes: undefined });
   };
 
-  const hasUnsavedSource = mode === "source" && sourceText !== toFountain(doc);
+  const hasUnsavedSource = editorMode === "source" && sourceText !== toFountain(doc);
 
   useEffect(() => {
-    if (mode !== "source") return;
+    if (editorMode !== "source") return;
     const timer = window.setTimeout(() => {
       if (!saveSession(materializeSourceSession(sessionRef.current))) setOperationMessage("Local recovery storage is full. Save the portable project now.");
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [mode, sourceText]);
+  }, [editorMode, sourceText]);
 
   const selectEpisode = (documentId: string) => {
     const index = episodeDocs.findIndex((document) => document.id === documentId);
@@ -369,16 +450,16 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     installProjectSession({ ...materializeSourceSession(session), activeDocumentId: documentId });
   };
 
-  const toggleMode = () => {
+  const toggleEditorMode = () => {
     if (doc.readOnly || !canEdit) return;
-    if (mode === "formatted") {
+    if (editorMode === "formatted") {
       setSourceText(toFountain(doc));
-      setMode("source");
+      setEditorMode("source");
       return;
     }
     const parsed = parseFountain(sourceText);
     setSession((current) => reconcileImportedDocument(current, doc.id!, parsed));
-    setMode("formatted");
+    setEditorMode("formatted");
   };
 
   const saveNow = async () => {
@@ -742,21 +823,20 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
       return;
     }
     const revisedPages = new Set(summary.revisedPages);
-    const pageElements = [...globalThis.document.querySelectorAll<HTMLElement>(".editor-scroll .page[data-page]")];
-    const screenplayBody = pageElements[0]?.closest<HTMLElement>(".workspace-panel-body");
-    const screenplayGroup = screenplayBody?.closest<HTMLElement>(".workspace-tab-group");
-    pageElements.forEach((page) => { page.dataset.printRevised = revisedPages.has(page.dataset.page ?? "") ? "true" : "false"; });
-    if (screenplayBody) screenplayBody.dataset.printScreenplay = "true";
-    if (screenplayGroup) screenplayGroup.dataset.printScreenplay = "true";
-    globalThis.document.body.classList.add("print-revision-pages");
-    try {
-      globalThis.print();
-    } finally {
-      globalThis.document.body.classList.remove("print-revision-pages");
-      if (screenplayBody) delete screenplayBody.dataset.printScreenplay;
-      if (screenplayGroup) delete screenplayGroup.dataset.printScreenplay;
-      pageElements.forEach((page) => { delete page.dataset.printRevised; });
-    }
+    // The paper only exists while the Write canvas is mounted in Formatted view.
+    if (editorMode === "source") toggleEditorMode();
+    setModeState("write");
+    window.setTimeout(() => {
+      const pageElements = [...globalThis.document.querySelectorAll<HTMLElement>(".editor-scroll .page[data-page]")];
+      pageElements.forEach((page) => { page.dataset.printRevised = revisedPages.has(page.dataset.page ?? "") ? "true" : "false"; });
+      globalThis.document.body.classList.add("print-revision-pages");
+      try {
+        globalThis.print();
+      } finally {
+        globalThis.document.body.classList.remove("print-revision-pages");
+        pageElements.forEach((page) => { delete page.dataset.printRevised; });
+      }
+    }, 150);
   };
 
   const toggleOmittedScene = (sceneId: string) => setDoc(setSceneOmitted(doc, sceneId, !(workspace.omittedSceneIds ?? []).includes(sceneId)));
@@ -797,7 +877,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
         linkedBaselines.current.set(documentId, screenplayTextFingerprint(reconciled));
         return next;
       });
-      setMode("formatted");
+      setEditorMode("formatted");
       setSourceText("");
       setExternalChanged(false);
       setExternalConflict(false);
@@ -825,7 +905,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
           : document),
       };
     });
-    setMode("formatted");
+    setEditorMode("formatted");
     setSourceText("");
     setExternalChanged(false);
     setExternalConflict(false);
@@ -911,7 +991,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
         });
         setOperationMessage(`Linked ${file.fileName} to this project.`);
       }
-      setMode("formatted");
+      setEditorMode("formatted");
       setSourceText("");
       setExternalChanged(false);
       setExternalConflict(false);
@@ -1139,9 +1219,9 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     }
   };
 
-  const selectLayout = (next: string) => {
-    setSession((current) => ({ ...current, workspace: { ...current.workspace, activeLayoutId: next } }));
-    setInspectorOpen(getWorkspaceLayout(session.workspace, next)?.inspector !== "hidden");
+  const moveSceneTo = (from: number, to: number) => {
+    if (!canEdit) return;
+    setDoc({ ...doc, blocks: moveScene(doc.blocks, from, to), scenes: undefined, characters: undefined, locations: undefined });
   };
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -1151,9 +1231,10 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
       const documentScenes = deriveScenes(document.blocks);
       const documentCharacters = deriveCharacters(document.blocks);
       const documentObjects = detectObjects(document.blocks);
-      const selectDocument = () => {
+      const selectDocument = (tab: PanelTab) => () => {
         selectEpisode(document.id!);
-        setInspectorOpen(true);
+        setMode("reference");
+        setReferenceModeTab(tab);
       };
       return [
         ...documentScenes.filter((scene) => scene.heading.toLowerCase().includes(normalizedQuery)).map((scene) => ({
@@ -1161,6 +1242,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
           label: `${title} · Scene ${scene.number}: ${scene.heading}`,
           action: () => {
             selectEpisode(document.id!);
+            setMode("write");
             setFocusRequest({ id: scene.id, nonce: ++focusNonce.current });
           },
         })),
@@ -1169,30 +1251,25 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
           label: `${title} · ${elementLabels[block.type]}: ${block.text.slice(0, 90)}`,
           action: () => {
             selectEpisode(document.id!);
+            setMode("write");
             setFocusRequest({ id: block.id, nonce: ++focusNonce.current });
           },
         })),
-        ...documentCharacters.filter((character) => character.name.toLowerCase().includes(normalizedQuery)).map((character) => ({ key: `${document.id}-character-${character.name}`, label: `${title} · Character: ${character.name}`, action: selectDocument })),
-        ...documentObjects.filter((object) => object.name.toLowerCase().includes(normalizedQuery)).map((object) => ({ key: `${document.id}-object-${object.name}`, label: `${title} · Object: ${object.name}`, action: selectDocument })),
-        ...(document.workspace?.treatments ?? []).filter((treatment) => `${treatment.title} ${treatment.markdown}`.toLowerCase().includes(normalizedQuery)).map((treatment) => ({ key: `${document.id}-treatment-${treatment.id}`, label: `${title} · Treatment: ${treatment.title}`, action: selectDocument })),
+        ...documentCharacters.filter((character) => character.name.toLowerCase().includes(normalizedQuery)).map((character) => ({ key: `${document.id}-character-${character.name}`, label: `${title} · Character: ${character.name}`, action: selectDocument("Cast") })),
+        ...documentObjects.filter((object) => object.name.toLowerCase().includes(normalizedQuery)).map((object) => ({ key: `${document.id}-object-${object.name}`, label: `${title} · Object: ${object.name}`, action: selectDocument("Props") })),
+        ...(document.workspace?.treatments ?? []).filter((treatment) => `${treatment.title} ${treatment.markdown}`.toLowerCase().includes(normalizedQuery)).map((treatment) => ({ key: `${document.id}-treatment-${treatment.id}`, label: `${title} · Treatment: ${treatment.title}`, action: () => { selectEpisode(document.id!); setMode("treatment"); } })),
       ];
     }),
-    ...(`${session.workspace.series.showBible} ${session.workspace.series.seasons.map((season) => season.arc).join(" ")}`.toLowerCase().includes(normalizedQuery) ? [{ key: "series-reference", label: "Series bible or season arc", action: () => setInspectorOpen(true) }] : []),
+    ...(`${session.workspace.series.showBible} ${session.workspace.series.seasons.map((season) => season.arc).join(" ")}`.toLowerCase().includes(normalizedQuery) ? [{ key: "series-reference", label: "Series bible or season arc", action: () => setMode("series") }] : []),
     ...versionHistory.snapshots.filter((snapshot) => `${snapshot.name} ${snapshot.description}`.toLowerCase().includes(normalizedQuery)).map((snapshot) => ({ key: `version-${snapshot.id}`, label: `Draft version: ${snapshot.name}`, action: () => canEdit ? restoreVersion(snapshot) : setOperationMessage("This role can find draft versions but cannot restore them.") })),
-    ...session.workspace.layouts.filter((item) => item.name.toLowerCase().includes(normalizedQuery)).map((item) => ({ key: `layout-${item.id}`, label: `Workspace: ${item.name}`, action: () => selectLayout(item.id) })),
+    ...availableModes(isTelevision).filter((entry) => MODE_META[entry].label.toLowerCase().includes(normalizedQuery)).map((entry) => ({ key: `mode-${entry}`, label: `Go to ${MODE_META[entry].label}`, action: () => setMode(entry) })),
   ].slice(0, 30) : [];
-
-  const dropScene = (to: number) => {
-    if (draggedScene === null || !canEdit) return;
-    setDoc({ ...doc, blocks: moveScene(doc.blocks, draggedScene, to), scenes: undefined, characters: undefined, locations: undefined });
-    setDraggedScene(null);
-  };
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setPaletteOpen(false);
-        setLayoutManagerOpen(false);
+        if (paletteOpen) setPaletteOpen(false);
+        else if (focusMode) setFocusMode(false);
         return;
       }
       const action = Object.entries(session.workspace.shortcuts).find(([, shortcut]) => keyboardShortcutMatches(shortcut, event))?.[0];
@@ -1201,8 +1278,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
       if (action === "commandPalette") setPaletteOpen((open) => !open);
       else if (action === "save") void saveNow();
       else if (action === "saveVersion") saveDraftVersion();
-      else if (action === "toggleInspector") setInspectorOpen((open) => !open);
-      else if (action === "layoutManager" && canEdit) setLayoutManagerOpen(true);
+      else if (action === "toggleInspector") setPref("inspOpen", !prefs.inspOpen);
       else if (action === "previousEpisode" && activeEpisode > 0) selectEpisode(episodeDocs[activeEpisode - 1].id!);
       else if (action === "nextEpisode" && activeEpisode < episodeDocs.length - 1) selectEpisode(episodeDocs[activeEpisode + 1].id!);
     };
@@ -1226,41 +1302,77 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
 
   const openCollaborationTarget = (documentId: string, targetId?: string) => {
     selectEpisode(documentId);
+    setMode("write");
     if (targetId) setFocusRequest({ id: targetId, nonce: ++focusNonce.current });
   };
 
-  const navigatorPanel = <aside className="scene-nav" aria-label="Scene navigator">
-    <div className="nav-doc-title">{doc.titlePage.title || "Untitled Screenplay"}</div>
-    <div className="nav-group"><span className="nav-act">{structure.acts[0]?.title ?? "Act I"}</span><span className="nav-structure-hint">{structure.acts.length} act{structure.acts.length === 1 ? "" : "s"}</span></div>
-    <div className="nav-sequence">{structure.acts.reduce((count, act) => count + act.sequences.length, 0)} sequences · {structure.beats.length} beats</div>
-    <ol className="nav-scenes">
-      {scenes.map((scene) => <li key={scene.id} draggable onDragStart={() => setDraggedScene(scene.number - 1)} onDragOver={(event) => event.preventDefault()} onDrop={() => dropScene(scene.number - 1)}><button className={`nav-scene ${activeScene?.id === scene.id ? "active" : ""}`} onClick={() => jumpToScene(scene.id)} title="Drag to reorder"><span className="nav-scene-num">{scene.sceneNumber ?? scene.number}</span><span className="nav-scene-heading">{scene.heading}</span></button>{activeScene?.id === scene.id && <div className="nav-beats">{structure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => beat.text).join(" · ") || "No beats"}</div>}</li>)}
-      {!scenes.length && <li className="nav-empty">No scenes yet — start with INT. or EXT.</li>}
-    </ol>
-    <div className="nav-foot">{scenes.length} scene{scenes.length === 1 ? "" : "s"} · ~{pages} page{pages === 1 ? "" : "s"}</div>
-  </aside>;
-
-  const inspectorPanel = <Inspector blocks={doc.blocks} scenes={scenes} characters={characters} locations={locations} objects={objects} customStructure={customStructure} breakdown={breakdown} analysis={analysis} activeScene={activeScene} sceneNotes={doc.sceneNotes} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} workspace={workspace} onWorkspace={(patch) => setDoc({ ...doc, workspace: { ...workspace, ...patch } })} onJumpToScene={jumpToScene} versionHistory={versionHistory} versionComparison={versionComparison} mergeConflicts={mergeConflicts} mergePreviewReady={mergePreviewReady} mergePreviewSourceId={mergePreviewSourceId} onSaveVersion={saveDraftVersion} onRestoreVersion={restoreVersion} onCompareVersions={compareProjectVersions} onCreateAlternateDraft={createAlternate} onSwitchAlternateDraft={switchAlternate} onSelectCombineDraftSource={selectDraftCombineSource} onPreviewCombineDrafts={previewDraftCombine} onCombineDrafts={combineDrafts} onCancelCombineDrafts={cancelDraftCombine} onExportBreakdown={exportBreakdown} onExportTreatment={exportTreatment} projectWorkspace={session.workspace} seriesReport={seriesReport} activeDocumentId={doc.id!} onProjectWorkspace={(patch) => setSession((current) => ({ ...current, workspace: { ...current.workspace, ...patch } }))} onSelectEpisode={selectEpisode} productionPages={productionPageRows} productionReports={productionReport} revisionSets={revisionSets} revisionSummaries={productionRevisionSummaries} onStartRevision={startRevision} onUpdateRevisionMarks={updateRevisionMarks} onLockPages={lockProductionPages} onUnlockPages={unlockProductionPages} onPrintRevisionPages={printRevisionPages} onToggleOmittedScene={toggleOmittedScene} onSetSceneNumber={setSceneNumber} onExportProduction={exportProduction} editable={canEdit} collaborationSession={materializeSourceSession(session)} onCollaborationSession={installProjectSession} onCollaborationTarget={openCollaborationTarget} onCollaborationMessage={setOperationMessage} collaborationSync={collaborationSync} />;
-
-  const renderInspector = (fixedTab?: InspectorTab) => isValidElement<{ fixedTab?: InspectorTab }>(inspectorPanel)
-    ? cloneElement(inspectorPanel, { fixedTab })
-    : null;
-
-  const companionPanel = <CompanionDashboard documents={session.documents} files={watchFiles} folderPath={session.workspace.sync.watchFolderPath} recursive={session.workspace.sync.watchRecursive} busy={busy} stats={companionStats} onChooseFolder={() => void chooseFdxWatchFolder()} onRefresh={() => void refreshWatchFiles()} onRecursive={setWatchRecursive} onReviewFile={(file) => void reviewWatchFile(file)} onOpenFile={(path) => void openExternalFile(path)} onReveal={(path) => void revealExternalPath(path)} />;
-  const scriptPanel = <div className="script-split single"><fieldset className="script-panel-current" disabled={!canEdit}>
-      {mode === "formatted" ? <Editor documentId={doc.id!} blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly || !canEdit || busy} productionPages={productionPageRows} /> : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} readOnly={!canEdit || busy} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
-    </fieldset></div>;
+  const panelProps = {
+    scenes,
+    characters,
+    locations,
+    objects,
+    customStructure,
+    breakdown,
+    analysis,
+    activeScene,
+    workspace,
+    onWorkspace: (patch: Partial<typeof workspace>) => setDoc({ ...doc, workspace: { ...workspace, ...patch } }),
+    onJumpToScene: (sceneId: string) => {
+      setMode("write");
+      jumpToScene(sceneId);
+    },
+    versionHistory,
+    versionComparison,
+    mergeConflicts,
+    mergePreviewReady,
+    mergePreviewSourceId,
+    onSaveVersion: saveDraftVersion,
+    onRestoreVersion: restoreVersion,
+    onCompareVersions: compareProjectVersions,
+    onCreateAlternateDraft: createAlternate,
+    onSwitchAlternateDraft: switchAlternate,
+    onSelectCombineDraftSource: selectDraftCombineSource,
+    onPreviewCombineDrafts: previewDraftCombine,
+    onCombineDrafts: combineDrafts,
+    onCancelCombineDrafts: cancelDraftCombine,
+    onExportBreakdown: exportBreakdown,
+    onExportTreatment: exportTreatment,
+    projectWorkspace: session.workspace,
+    seriesReport,
+    activeDocumentId: doc.id!,
+    onProjectWorkspace: (patch: Partial<ProjectSession["workspace"]>) => setSession((current) => ({ ...current, workspace: { ...current.workspace, ...patch } })),
+    onSelectEpisode: selectEpisode,
+    productionPages: productionPageRows,
+    productionReports: productionReport,
+    revisionSets,
+    revisionSummaries: productionRevisionSummaries,
+    onStartRevision: startRevision,
+    onUpdateRevisionMarks: updateRevisionMarks,
+    onLockPages: lockProductionPages,
+    onUnlockPages: unlockProductionPages,
+    onPrintRevisionPages: printRevisionPages,
+    onToggleOmittedScene: toggleOmittedScene,
+    onSetSceneNumber: setSceneNumber,
+    onExportProduction: exportProduction,
+    editable: canEdit,
+    collaborationSession: materializeSourceSession(session),
+    onCollaborationSession: installProjectSession,
+    onCollaborationTarget: openCollaborationTarget,
+    onCollaborationMessage: setOperationMessage,
+    collaborationSync,
+  };
 
   const referenceTargetOptions: Partial<Record<WorkspaceReferenceKind, { id: string; label: string }[]>> = {
     character: seriesReport.continuity.characters.map((item) => ({ id: item.name, label: item.name })),
     object: seriesReport.continuity.objects.map((item) => ({ id: item.name, label: item.name })),
     location: seriesReport.continuity.locations.map((item) => ({ id: item.name, label: item.name })),
   };
-  const renderReference = (panel: WorkspacePanelDefinition) => {
-    const kind = panel.referenceKind ?? (activeLayout.reference === "none" ? "previous-draft" : activeLayout.reference);
+
+  const renderReference = (kind: WorkspaceReferenceKind, targetId: string) => {
+    const label = REFERENCE_LABELS[kind];
     if (kind === "previous-episode" || kind === "previous-draft") {
       const document = kind === "previous-episode" ? episodeDocs[activeEpisode - 1] : previousDraftDocument;
-      return <ReferencePanel key={panel.id} document={document} label={panel.title} activeSceneNumber={activeScene?.number ?? 1} onSynchronizedScene={(number) => scenes[number - 1] && jumpToScene(scenes[number - 1].id)} />;
+      return <ReferencePanel document={document} label={label} activeSceneNumber={activeScene?.number ?? 1} onSynchronizedScene={(number) => scenes[number - 1] && jumpToScene(scenes[number - 1].id)} />;
     }
     if (kind === "next-episode") {
       const next = episodeDocs[activeEpisode + 1];
@@ -1275,25 +1387,25 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
       const body = next?.workspace?.treatments?.map((treatment) => treatment.markdown).filter(Boolean).join("\n\n")
         || next?.workspace?.treatment
         || "No next-episode treatment is available yet.";
-      return <InformationReferencePanel key={panel.id} label={panel.title} subtitle={next?.titlePage.title || "No next episode"} body={body} items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId, item.targetId)} />;
+      return <InformationReferencePanel label={label} subtitle={next?.titlePage.title || "No next episode"} body={body} items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId, item.targetId)} />;
     }
-    if (kind === "show-bible") return <InformationReferencePanel key={panel.id} label={panel.title} subtitle={seriesReport.showBible.title || session.name} body={seriesReport.showBible.markdown || "The show bible is empty. Add canon and format notes in the Series panel."} items={[]} onOpen={() => {}} />;
+    if (kind === "show-bible") return <InformationReferencePanel label={label} subtitle={seriesReport.showBible.title || session.name} body={seriesReport.showBible.markdown || "The show bible is empty. Add canon and format notes in the Series workspace."} items={[]} onOpen={() => {}} />;
     if (kind === "season-arc") {
       const seasonId = session.workspace.series.episodes[doc.id!]?.seasonId;
       const season = seriesReport.seasons.find((item) => item.id === seasonId) ?? seriesReport.seasons[0];
       const items: ReferenceItem[] = season?.episodes.map((episode) => ({ id: episode.documentId, title: `Episode ${episode.number} · ${episode.title}`, meta: `${episode.sceneCount} scenes · ~${episode.pageEstimate} pages`, detail: episode.summary, documentId: episode.documentId })) ?? [];
-      return <InformationReferencePanel key={panel.id} label={panel.title} subtitle={season?.title || "No season"} body={season?.arc || "No season arc has been written yet."} items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId)} />;
+      return <InformationReferencePanel label={label} subtitle={season?.title || "No season"} body={season?.arc || "No season arc has been written yet."} items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId)} />;
     }
     if (kind === "plot-history") {
       const items: ReferenceItem[] = seriesReport.plotThreads.map((thread) => ({ id: thread.id, title: `${thread.kind} · ${thread.label}`, meta: `${thread.status} · ${thread.episodes.length} episode(s)`, detail: thread.episodes.map((episode) => `${seriesReport.episodes.find((item) => item.documentId === episode.episodeId)?.title ?? episode.episodeId}: ${episode.status}`).join(" · "), documentId: thread.episodes[thread.episodes.length - 1]?.episodeId }));
-      return <InformationReferencePanel key={panel.id} label={panel.title} subtitle="Series plot threads" body="Persistent A/B/C story coverage across every episode." items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId)} />;
+      return <InformationReferencePanel label={label} subtitle="Series plot threads" body="Persistent A/B/C story coverage across every episode." items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId)} />;
     }
     if (kind === "timeline") {
       const items: ReferenceItem[] = session.workspace.series.continuity.filter((record) => record.kind === "timeline").slice().sort((left, right) => (left.timelineOrder ?? Number.MAX_SAFE_INTEGER) - (right.timelineOrder ?? Number.MAX_SAFE_INTEGER) || (left.timelineDate ?? "").localeCompare(right.timelineDate ?? "")).map((record) => ({ id: record.id, title: `${record.timelineOrder ?? "—"} · ${record.title}`, meta: record.timelineDate || "Relative story order", detail: record.detail, documentId: record.episodeIds[0] }));
-      return <InformationReferencePanel key={panel.id} label={panel.title} subtitle="Timeline continuity" body="Story chronology and dated continuity records." items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId)} />;
+      return <InformationReferencePanel label={label} subtitle="Timeline continuity" body="Story chronology and dated continuity records." items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId)} />;
     }
     if (kind === "character" || kind === "object" || kind === "location") {
-      const requested = panel.targetId?.trim().toUpperCase();
+      const requested = targetId.trim().toUpperCase();
       const entityProfiles = (entry: (typeof referenceAnalyses)[number]): ReferenceEntityProfile[] => kind === "character"
         ? entry.analysis.entities.characters
         : kind === "object"
@@ -1318,169 +1430,269 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
           : selected?.kind === "location"
             ? `${selected.interiorExterior.join(" / ")} · ${selected.timesOfDay.join(" / ")}`
             : `No ${kind} is available yet.`;
-      return <InformationReferencePanel key={panel.id} label={panel.title} subtitle={selected?.name || `No ${kind} selected`} body={detail} items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId, item.targetId)} />;
+      return <InformationReferencePanel label={label} subtitle={selected?.name || `No ${kind} selected`} body={detail} items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId, item.targetId)} />;
     }
-    return <InformationReferencePanel key={panel.id} label={panel.title} subtitle="No reference" body="Choose a persistent reference source in the layout composer." items={[]} onOpen={() => {}} />;
+    return <InformationReferencePanel label="Reference" subtitle="No reference" body="Choose a reference source above." items={[]} onOpen={() => {}} />;
   };
 
-  const fixedPanelTabs: Partial<Record<WorkspacePanelDefinition["kind"], InspectorTab>> = {
-    story: "Story",
-    treatment: "Treatment",
-    breakdown: "Breakdown",
-    versions: "Drafts",
-    series: "Series",
-    production: "Production",
-  };
-  const activateLayoutPanel = (groupId: string, panelId: string) => setSession((current) => ({
-    ...current,
-    workspace: {
-      ...current.workspace,
-      layouts: current.workspace.layouts.map((item) => {
-        if (item.id !== activeLayout.id) return item;
-        const normalized = normalizeWorkspaceLayout(item);
-        return { ...normalized, tabGroups: normalized.tabGroups.map((group) => group.id === groupId ? { ...group, activePanelId: panelId } : group) };
-      }),
-    },
-  }));
-  const renderWorkspacePanel = (panel: WorkspacePanelDefinition) => {
-    if (panel.kind === "navigator") return cloneElement(navigatorPanel, { key: panel.id });
-    if (panel.kind === "screenplay") return cloneElement(scriptPanel, { key: panel.id });
-    if (panel.kind === "companion") return cloneElement(companionPanel, { key: panel.id });
-    if (panel.kind === "inspector") return inspectorOpen ? renderInspector() : <div className="workspace-panel-empty">Inspector is hidden. Use Panel in the toolbar to reopen it.</div>;
-    if (panel.kind === "reference") return renderReference(panel);
-    const fixedTab = fixedPanelTabs[panel.kind];
-    return fixedTab ? renderInspector(fixedTab) : <div className="workspace-panel-empty">{panel.title} is unavailable.</div>;
-  };
-  const split = activeLayout.splits[0];
-  const splitIds = split?.groupIds ?? activeLayout.tabGroups.map((group) => group.id);
-  const orderedGroupIds = [...splitIds, ...activeLayout.tabGroups.map((group) => group.id).filter((id) => !splitIds.includes(id))];
-  const orderedGroups = orderedGroupIds.flatMap((id) => {
-    const group = activeLayout.tabGroups.find((item) => item.id === id);
-    return group ? [group] : [];
-  });
-  const splitDirection = split?.direction ?? "horizontal";
-  const updateSplit = (splitId: string, sizes: number[]) => setSession((current) => ({
-    ...current,
-    workspace: {
-      ...current.workspace,
-      layouts: current.workspace.layouts.map((item) => {
-        if (item.id !== activeLayout.id) return item;
-        const normalized = normalizeWorkspaceLayout(item);
-        return { ...normalized, splits: normalized.splits.map((candidate) => candidate.id === splitId ? { ...candidate, sizes } : candidate) };
-      }),
-    },
-  }));
-  const startSplitResize = (event: ReactPointerEvent<HTMLDivElement>, dividerIndex: number) => {
-    if (!split || !workspaceMainRef.current) return;
-    const bounds = workspaceMainRef.current.getBoundingClientRect();
-    const extent = splitDirection === "horizontal" ? bounds.width : bounds.height;
-    if (!extent) return;
-    splitDragRef.current = {
-      pointerId: event.pointerId,
-      dividerIndex,
-      start: splitDirection === "horizontal" ? event.clientX : event.clientY,
-      extent,
-      minimum: (splitDirection === "horizontal" ? 160 : 120) / extent,
-      split: { ...split, sizes: [...split.sizes] },
-    };
+  const startPaneResize = (event: ReactPointerEvent<HTMLDivElement>, pane: "nav" | "insp") => {
+    paneDragRef.current = { pointerId: event.pointerId, pane, startX: event.clientX, startWidth: pane === "nav" ? prefs.navWidth : prefs.inspWidth };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   };
-  const moveSplitResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = splitDragRef.current;
+  const movePaneResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = paneDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const position = splitDirection === "horizontal" ? event.clientX : event.clientY;
-    const resized = resizeWorkspaceSplit(drag.split, drag.dividerIndex, (position - drag.start) / drag.extent, drag.minimum);
-    updateSplit(drag.split.id, resized.sizes);
+    const delta = event.clientX - drag.startX;
+    if (drag.pane === "nav") setPref("navWidth", clamp(drag.startWidth + delta, 200, 460));
+    else setPref("inspWidth", clamp(drag.startWidth - delta, 260, 560));
   };
-  const stopSplitResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (splitDragRef.current?.pointerId !== event.pointerId) return;
-    splitDragRef.current = null;
+  const stopPaneResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (paneDragRef.current?.pointerId !== event.pointerId) return;
+    paneDragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
-  const resizeSplitWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>, dividerIndex: number) => {
-    if (!split) return;
-    const backward = splitDirection === "horizontal" ? event.key === "ArrowLeft" : event.key === "ArrowUp";
-    const forward = splitDirection === "horizontal" ? event.key === "ArrowRight" : event.key === "ArrowDown";
-    if (!backward && !forward) return;
-    event.preventDefault();
-    updateSplit(split.id, resizeWorkspaceSplit(split, dividerIndex, forward ? 0.02 : -0.02, 0.08).sizes);
-  };
-  const renderTabGroup = (group: WorkspaceLayout["tabGroups"][number]) => {
-    const panels = group.panelIds.flatMap((id) => {
-      const panel = activeLayout.panels.find((item) => item.id === id);
-      return panel ? [panel] : [];
-    });
-    const activePanel = panels.find((panel) => panel.id === group.activePanelId) ?? panels[0];
-    const ratio = split?.sizes[split.groupIds.indexOf(group.id)] ?? 1 / Math.max(1, orderedGroups.length);
-    const style: CSSProperties = { flex: `${ratio} 1 0%` };
-    return <section className="workspace-tab-group" style={style} key={group.id} aria-label={`${group.id} panel group`}>
-      <nav className="workspace-panel-tabs" aria-label={`${group.id} tabs`}>{panels.map((panel) => <button key={panel.id} className={panel.id === activePanel?.id ? "active" : ""} onClick={() => activateLayoutPanel(group.id, panel.id)}>{panel.title}</button>)}</nav>
-      {panels.length ? panels.map((panel) => <div className="workspace-panel-body" key={`${group.id}-${panel.id}`} hidden={panel.id !== activePanel?.id}>{renderWorkspacePanel(panel)}</div>) : <div className="workspace-panel-body"><div className="workspace-panel-empty">This tab group has no panel.</div></div>}
-    </section>;
-  };
 
-  return <div className={`workspace layout-${layout}`} style={{ "--navigator-width": `${activeLayout.navigatorWidth}px`, "--inspector-width": `${activeLayout.inspectorWidth}px` } as CSSProperties}>
-    {layoutManagerOpen && canEdit && <LayoutManager workspace={session.workspace} layout={activeLayout} referenceTargets={referenceTargetOptions} onWorkspace={(next) => setSession((current) => ({ ...current, workspace: next }))} onClose={() => setLayoutManagerOpen(false)} />}
-    {paletteOpen && <div className="command-backdrop" onMouseDown={() => setPaletteOpen(false)}><div className="command-palette" onMouseDown={(event) => event.stopPropagation()}><input autoFocus value={query} placeholder="Search every script, draft, and workspace…" onChange={(event) => setQuery(event.target.value)} />{query ? searchResults.map((result) => <button key={result.key} onClick={() => { result.action(); setPaletteOpen(false); }}>{result.label}</button>) : <><button disabled={!canEdit || busy} onClick={() => { void saveNow(); setPaletteOpen(false); }}>Save Project</button><button disabled={!canEdit} onClick={() => { saveDraftVersion(); setPaletteOpen(false); }}>Save Draft Version</button><button disabled={busy} onClick={() => { void exportFdx(); setPaletteOpen(false); }}>Export FDX</button><button onClick={() => { setInspectorOpen((open) => !open); setPaletteOpen(false); }}>Toggle Inspector</button><button disabled={!canEdit} onClick={() => { setLayoutManagerOpen(true); setPaletteOpen(false); }}>Manage Workspace Layouts</button></>}</div></div>}
-    {episodeDocs.length > 1 && <div className="workspace-episodes" aria-label="Television episodes">
-      {episodeDocs.map((episode, index) => <button key={episode.id ?? episode.source?.path ?? index} className={`episode-tab ${index === activeEpisode ? "active" : ""}`} onClick={() => selectEpisode(episode.id!)}>
-        {session.workspace.series.episodes[episode.id!]?.title || episode.titlePage.title || `Episode ${index + 1}`}
-      </button>)}
-    </div>}
-    <div className="toolbar">
-      <input className="project-name-input" aria-label="Project name" value={session.name} disabled={!canEdit} onChange={(event) => setSession({ ...session, name: event.target.value })} />
-      <select className="element-select" value={activeBlock?.type ?? "action"} disabled={!activeBlock || mode === "source" || doc.readOnly || !canEdit} onChange={(event) => setActiveType(event.target.value as ScreenplayElementType)}>
-        {ELEMENT_TYPES.map((type, index) => <option key={type} value={type}>{elementLabels[type]} — Ctrl+{index + 1}</option>)}
-      </select>
-      <div className="mode-toggle">
-        <button className={mode === "formatted" ? "active" : ""} onClick={() => mode === "source" && toggleMode()}>Formatted</button>
-        <button disabled={doc.readOnly || !canEdit} className={mode === "source" ? "active" : ""} onClick={() => mode === "formatted" && toggleMode()}>Fountain Source</button>
+  const projectMenu: MenuEntry[] = [
+    { label: "Save Project", hint: session.workspace.shortcuts.save || "", disabled: busy || !canEdit, onSelect: () => void saveNow() },
+    { label: "Save Project As…", disabled: busy || !canEdit, onSelect: () => void saveProjectAs() },
+    { label: "Save Draft Version", hint: session.workspace.shortcuts.saveVersion || "", disabled: !canEdit, onSelect: () => saveDraftVersion() },
+    "divider",
+    { label: "Export Fountain", onSelect: exportFountain },
+    { label: "Export FDX", disabled: busy, onSelect: () => void exportFdx() },
+    "divider",
+    { label: "Open FDX…", disabled: busy || !canEdit, onSelect: onOpenFdx },
+    ...(doc.source?.type === "fdx" && doc.source.path ? [
+      { label: "Open linked FDX externally", onSelect: () => void openExternalFile(doc.source!.path) },
+      { label: "Reveal linked FDX", onSelect: () => void revealExternalPath(doc.source!.path) },
+    ] satisfies MenuEntry[] : []),
+    "divider",
+    { label: "Close Project", onSelect: onExit },
+  ];
+
+  const episodeMenu: MenuEntry[] = [
+    { label: "New Blank Episode", disabled: busy || !canEdit, onSelect: addBlankEpisode },
+    { label: "Import Episode FDX…", disabled: busy || !canEdit, onSelect: () => void addEpisode() },
+  ];
+
+  const modes = availableModes(isTelevision);
+  const activeBranch = versionHistory.branches.find((branch) => branch.id === versionHistory.activeBranchId);
+  const previousScene = activeScene ? scenes[scenes.findIndex((scene) => scene.id === activeScene.id) - 1] : undefined;
+  const nextScene = activeScene ? scenes[scenes.findIndex((scene) => scene.id === activeScene.id) + 1] : undefined;
+
+  const banners = <>
+    {doc.source?.type === "fdx" && <div className="notice notice-linked">{doc.source.path ? "Linked FDX · edits stay in SCS until exported." : "Imported FDX · choose its watch folder on this computer to relink companion updates."} <span>{doc.source.fileName}</span></div>}
+    {externalChanged && <div className="notice notice-warning" role="alert">{externalConflict ? "Both SCS and the linked FDX changed. Choose which script text to keep; SCS snapshots the current draft first." : "The linked FDX changed outside SCS."} <button className="btn" disabled={!canEdit} onClick={reloadLinkedFdx}>{externalConflict ? "Use external FDX" : "Re-import and preserve metadata"}</button>{externalConflict && <button className="btn btn-ghost" disabled={!canEdit} onClick={keepLocalAfterConflict}>Keep SCS draft</button>}</div>}
+    {operationMessage && <div className="notice notice-status" role="status"><span>{operationMessage}</span><button className="notice-dismiss" aria-label="Dismiss message" onClick={() => setOperationMessage(null)}><Icon name="close" size={12} /></button></div>}
+    {!!doc.warnings?.length && <details className="notice notice-details"><summary>{doc.warnings.length} import warning{doc.warnings.length === 1 ? "" : "s"} — source data was preserved where possible</summary><ul>{doc.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><strong>{warning.code}</strong>: {warning.message}</li>)}</ul></details>}
+  </>;
+
+  const writeView = (
+    <div className="write-view">
+      <div className="write-toolbar" role="toolbar" aria-label="Writing tools">
+        <button className="tool-btn icon-only" aria-label={prefs.navOpen ? "Hide scene navigator" : "Show scene navigator"} aria-pressed={prefs.navOpen} title="Scene navigator" onClick={() => setPref("navOpen", !prefs.navOpen)}><Icon name="panel-left" /></button>
+        <select className="input element-select" aria-label="Current element" value={activeBlock?.type ?? "action"} disabled={!activeBlock || editorMode === "source" || doc.readOnly || !canEdit} onChange={(event) => setActiveType(event.target.value as ScreenplayElementType)}>
+          {ELEMENT_TYPES.map((type, index) => <option key={type} value={type}>{elementLabels[type]} — Ctrl+{index + 1}</option>)}
+        </select>
+        <div className="tool-group">
+          <button className="tool-btn icon-only" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={doc.readOnly || !canEdit || editorMode === "source"} onClick={() => editorHistoryRef.current?.undo()}><Icon name="undo" /></button>
+          <button className="tool-btn icon-only" aria-label="Redo" title="Redo (Ctrl+Y)" disabled={doc.readOnly || !canEdit || editorMode === "source"} onClick={() => editorHistoryRef.current?.redo()}><Icon name="redo" /></button>
+        </div>
+        <div className="tool-spacer" />
+        <Segmented
+          ariaLabel="Editor view"
+          options={[{ value: "formatted", label: "Formatted" }, { value: "source", label: "Fountain Source" }]}
+          value={editorMode}
+          disabled={doc.readOnly || !canEdit}
+          onChange={(value) => value !== editorMode && toggleEditorMode()}
+        />
+        <select className="input zoom-select" aria-label="Page zoom" value={String(prefs.zoom)} onChange={(event) => setPref("zoom", Number(event.target.value))}>
+          <option value="0.85">85%</option>
+          <option value="1">100%</option>
+          <option value="1.15">115%</option>
+          <option value="1.3">130%</option>
+        </select>
+        <button className="tool-btn icon-only" aria-label="Find in project" title={`Find (${session.workspace.shortcuts.commandPalette || "Ctrl+K"})`} onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
+        <button className="tool-btn icon-only" aria-label="Enter focus mode" title="Focus mode" onClick={() => setFocusMode(true)}><Icon name="focus" /></button>
+        <button className="tool-btn icon-only" aria-label={prefs.inspOpen ? "Hide inspector" : "Show inspector"} aria-pressed={prefs.inspOpen} title="Inspector" onClick={() => setPref("inspOpen", !prefs.inspOpen)}><Icon name="panel-right" /></button>
       </div>
-      <div className="toolbar-spacer" />
-      <button className="btn btn-ghost" onClick={() => setPaletteOpen(true)}>Search · {session.workspace.shortcuts.commandPalette || "unassigned"}</button>
-      <select className="element-select" aria-label="Workspace layout" value={layout} onChange={(event) => selectLayout(event.target.value)}>{session.workspace.layouts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-      <button className="btn btn-ghost" disabled={!canEdit} onClick={() => setLayoutManagerOpen(true)}>Layouts</button>
-      <button className="btn" onClick={() => void saveNow()} disabled={busy || !canEdit}>Save Project</button>
-      <button className="btn btn-ghost" onClick={saveProjectAs} disabled={busy || !canEdit}>Save Project As…</button>
-      <button className="btn" onClick={exportFountain}>Export Fountain</button>
-      <button className="btn btn-ghost" onClick={onOpenFdx} disabled={busy || !canEdit}>Open FDX</button>
-      {doc.source?.type === "fdx" && doc.source.path && <button className="btn btn-ghost" onClick={() => void openExternalFile(doc.source!.path)}>Open Externally</button>}
-      {doc.source?.type === "fdx" && doc.source.path && <button className="btn btn-ghost" onClick={() => void revealExternalPath(doc.source!.path)}>Reveal FDX</button>}
-      <button className="btn btn-ghost" onClick={addEpisode} disabled={busy || !canEdit}>Add Episode FDX</button>
-      <button className="btn btn-ghost" onClick={addBlankEpisode} disabled={busy || !canEdit}>New Episode</button>
-      <button className="btn btn-ghost" disabled={busy} onClick={() => void exportFdx()}>Export FDX</button>
-      <button className="btn" onClick={() => setInspectorOpen((open) => !open)}>{inspectorOpen ? "Panel ▸" : "◂ Panel"}</button>
+      {banners}
+      <div className="write-grid">
+        {prefs.navOpen && !focusMode && <>
+          <aside className="pane pane-nav" style={{ width: prefs.navWidth }}>
+            <SceneNavigator
+              title={doc.titlePage.title || "Untitled Screenplay"}
+              scenes={scenes}
+              structure={structure}
+              sceneMeta={workspace.sceneMeta ?? {}}
+              omittedSceneIds={workspace.omittedSceneIds ?? []}
+              pageEstimates={pageEstimates}
+              activeSceneId={activeScene?.id ?? null}
+              totalPages={pages}
+              canEdit={canEdit && !doc.readOnly}
+              onSelect={jumpToScene}
+              onMoveScene={moveSceneTo}
+            />
+          </aside>
+          <div className="pane-resize" role="separator" aria-orientation="vertical" aria-label="Resize scene navigator" tabIndex={0}
+            onPointerDown={(event) => startPaneResize(event, "nav")} onPointerMove={movePaneResize} onPointerUp={stopPaneResize} onPointerCancel={stopPaneResize}
+            onKeyDown={(event) => { if (event.key === "ArrowLeft") setPref("navWidth", clamp(prefs.navWidth - 16, 200, 460)); if (event.key === "ArrowRight") setPref("navWidth", clamp(prefs.navWidth + 16, 200, 460)); }} />
+        </>}
+        <div className="canvas" style={{ "--canvas-zoom": prefs.zoom } as React.CSSProperties}>
+          <fieldset className="canvas-fieldset" disabled={!canEdit}>
+            {editorMode === "formatted"
+              ? <Editor documentId={doc.id!} blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly || !canEdit || busy} productionPages={productionPageRows} historyRef={editorHistoryRef} historyStore={editorHistoryStore} />
+              : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} readOnly={!canEdit || busy} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
+          </fieldset>
+        </div>
+        {prefs.inspOpen && !focusMode && <>
+          <div className="pane-resize" role="separator" aria-orientation="vertical" aria-label="Resize inspector" tabIndex={0}
+            onPointerDown={(event) => startPaneResize(event, "insp")} onPointerMove={movePaneResize} onPointerUp={stopPaneResize} onPointerCancel={stopPaneResize}
+            onKeyDown={(event) => { if (event.key === "ArrowRight") setPref("inspWidth", clamp(prefs.inspWidth - 16, 260, 560)); if (event.key === "ArrowLeft") setPref("inspWidth", clamp(prefs.inspWidth + 16, 260, 560)); }} />
+          <aside className="pane pane-insp" style={{ width: prefs.inspWidth }} aria-label="Inspector">
+            <div className="pane-tabs" role="tablist" aria-label="Inspector panels">
+              <button role="tab" aria-selected={inspectorTab === "context"} className={inspectorTab === "context" ? "active" : ""} onClick={() => setInspectorTab("context")}>Inspector</button>
+              <button role="tab" aria-selected={inspectorTab === "reference"} className={inspectorTab === "reference" ? "active" : ""} onClick={() => setInspectorTab("reference")}>Reference</button>
+              <button className="pane-close" aria-label="Hide inspector" onClick={() => setPref("inspOpen", false)}><Icon name="close" size={12} /></button>
+            </div>
+            {inspectorTab === "context"
+              ? <ContextInspector activeBlock={activeBlock} activeScene={activeScene} structure={structure} workspace={workspace} sceneNotes={doc.sceneNotes} canEdit={canEdit && !doc.readOnly} sourceMode={editorMode === "source"} onSetType={setActiveType} onWorkspace={panelProps.onWorkspace} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} />
+              : <div className="reference-pane">
+                  <div className="reference-picker">
+                    <select className="input" aria-label="Reference source" value={referenceKind} onChange={(event) => { setReferenceKind(event.target.value as WorkspaceReferenceKind); setReferenceTarget(""); }}>
+                      {(Object.keys(REFERENCE_LABELS) as WorkspaceReferenceKind[]).filter((kind) => kind !== "none").map((kind) => <option key={kind} value={kind}>{REFERENCE_LABELS[kind]}</option>)}
+                    </select>
+                    {referenceTargetOptions[referenceKind] && (
+                      <select className="input" aria-label="Reference target" value={referenceTarget} onChange={(event) => setReferenceTarget(event.target.value)}>
+                        <option value="">First match</option>
+                        {referenceTargetOptions[referenceKind]!.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}
+                      </select>
+                    )}
+                  </div>
+                  {renderReference(referenceKind, referenceTarget)}
+                </div>}
+          </aside>
+        </>}
+      </div>
     </div>
-    {doc.source?.type === "fdx" && <div className="readonly-banner">{doc.source.path ? "Linked FDX · edits stay in SCS until exported." : "Imported FDX · choose its watch folder on this computer to relink companion updates."} <span>{doc.source.fileName}</span></div>}
-    {externalChanged && <div className="operation-message" role="alert">{externalConflict ? "Both SCS and the linked FDX changed. Choose which script text to keep; SCS snapshots the current draft first." : "The linked FDX changed outside SCS."} <button className="btn" disabled={!canEdit} onClick={reloadLinkedFdx}>{externalConflict ? "Use external FDX" : "Re-import and preserve metadata"}</button>{externalConflict && <button className="btn btn-ghost" disabled={!canEdit} onClick={keepLocalAfterConflict}>Keep SCS draft</button>}</div>}
-    {operationMessage && <div className="operation-message" role="status">{operationMessage}</div>}
-    {!!doc.warnings?.length && <details className="import-summary"><summary>{doc.warnings.length} import warning{doc.warnings.length === 1 ? "" : "s"} — source data was preserved where possible</summary><ul>{doc.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><strong>{warning.code}</strong>: {warning.message}</li>)}</ul></details>}
-    <div ref={workspaceMainRef} className={`workspace-main workspace-layout-runtime split-${splitDirection}`}>
-      {orderedGroups.length ? orderedGroups.flatMap((group, index) => [
-        renderTabGroup(group),
-        ...(index < orderedGroups.length - 1 && split ? [<div
-          className="workspace-split-handle"
-          key={`${split.id}-divider-${index}`}
-          role="separator"
-          tabIndex={0}
-          aria-label={`Resize ${group.id} panel group`}
-          aria-orientation={splitDirection === "horizontal" ? "vertical" : "horizontal"}
-          aria-valuenow={Math.round(split.sizes[index] * 100)}
-          onPointerDown={(event) => startSplitResize(event, index)}
-          onPointerMove={moveSplitResize}
-          onPointerUp={stopSplitResize}
-          onPointerCancel={stopSplitResize}
-          onKeyDown={(event) => resizeSplitWithKeyboard(event, index)}
-        />] : []),
-      ]) : scriptPanel}
-      {activeLayout.floatingPanels.map((floating) => {
-        const panel = activeLayout.panels.find((item) => item.id === floating.panelId);
-        return panel && <section className="workspace-floating-panel" key={floating.panelId} style={{ left: floating.x, top: floating.y, width: floating.width, height: floating.height }}><header>{panel.title}</header><div className="workspace-panel-body">{renderWorkspacePanel(panel)}</div></section>;
-      })}
+  );
+
+  const modeView = (title: string, blurb: string, tabs: { value: PanelTab; label: string }[] | null, activeTab: PanelTab, onTab: (tab: PanelTab) => void, content?: React.ReactNode) => (
+    <div className="mode-view">
+      <header className="mode-header">
+        <div>
+          <h2>{title}</h2>
+          <p>{blurb}</p>
+        </div>
+        {tabs && <Segmented ariaLabel={`${title} sections`} options={tabs} value={activeTab} onChange={onTab} />}
+      </header>
+      {banners}
+      <div className="mode-body">
+        {content ?? <PanelHost tab={activeTab} {...panelProps} />}
+      </div>
     </div>
-    <div className="statusbar"><span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span><span>{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span><span>~{pages} pages</span><span>{words} words</span><div className="toolbar-spacer" /><span>{doc.readOnly ? `Linked source · ${doc.source?.fileName ?? "FDX"}` : savedAt ? `Saved locally · ${savedAt}` : "Not saved yet"}</span><span className="status-draft">Draft: current · drafts panel →</span></div>
+  );
+
+  const content = mode === "write" ? writeView
+    : mode === "outline" ? modeView("Outline", MODE_META.outline.blurb, null, "Story", () => {})
+    : mode === "treatment" ? modeView("Treatment", MODE_META.treatment.blurb, null, "Treatment", () => {})
+    : mode === "reference" ? modeView("Reference", MODE_META.reference.blurb, [
+        { value: "Cast", label: "Cast" },
+        { value: "Props", label: "Props" },
+        { value: "Places", label: "Places" },
+        { value: "Assist", label: "Assist" },
+      ], referenceModeTab, setReferenceModeTab)
+    : mode === "series" ? modeView("Series", MODE_META.series.blurb, null, "Series", () => {})
+    : mode === "breakdown" ? modeView("Breakdown", MODE_META.breakdown.blurb, [
+        { value: "Breakdown", label: "Reports" },
+        { value: "Production", label: "Production" },
+      ], breakdownModeTab, setBreakdownModeTab)
+    : mode === "drafts" ? modeView("Drafts", MODE_META.drafts.blurb, null, "Drafts", () => {})
+    : mode === "team" ? modeView("Team", MODE_META.team.blurb, null, "Team", () => {})
+    : modeView("Companion", MODE_META.companion.blurb, null, "Story", () => {}, (
+        <CompanionDashboard documents={session.documents} files={watchFiles} folderPath={session.workspace.sync.watchFolderPath} recursive={session.workspace.sync.watchRecursive} busy={busy} stats={companionStats} onChooseFolder={() => void chooseFdxWatchFolder()} onRefresh={() => void refreshWatchFiles()} onRecursive={setWatchRecursive} onReviewFile={(file) => void reviewWatchFile(file)} onOpenFile={(path) => void openExternalFile(path)} onReveal={(path) => void revealExternalPath(path)} />
+      ));
+
+  return <div className={`shell ${focusMode ? "focus-mode" : ""}`}>
+    {paletteOpen && <div className="palette-backdrop" onMouseDown={() => setPaletteOpen(false)}>
+      <div className="palette" role="dialog" aria-label="Find and command" onMouseDown={(event) => event.stopPropagation()}>
+        <input autoFocus value={query} placeholder="Find scenes, dialogue, characters, drafts…" onChange={(event) => setQuery(event.target.value)} />
+        <div className="palette-results">
+          {query ? searchResults.map((result) => <button key={result.key} onClick={() => { result.action(); setPaletteOpen(false); }}>{result.label}</button>) : <>
+            <button disabled={!canEdit || busy} onClick={() => { void saveNow(); setPaletteOpen(false); }}>Save Project</button>
+            <button disabled={!canEdit} onClick={() => { saveDraftVersion(); setPaletteOpen(false); }}>Save Draft Version</button>
+            <button disabled={busy} onClick={() => { void exportFdx(); setPaletteOpen(false); }}>Export FDX</button>
+            <button onClick={() => { setPref("inspOpen", !prefs.inspOpen); setPaletteOpen(false); }}>Toggle Inspector</button>
+            <button onClick={() => { setPref("navOpen", !prefs.navOpen); setPaletteOpen(false); }}>Toggle Scene Navigator</button>
+            <button onClick={() => { setMode("write"); setFocusMode(true); setPaletteOpen(false); }}>Enter Focus Mode</button>
+            {modes.map((entry) => <button key={entry} onClick={() => { setMode(entry); setPaletteOpen(false); }}>Go to {MODE_META[entry].label}</button>)}
+          </>}
+          {query && !searchResults.length && <div className="palette-empty">No matches in this project.</div>}
+        </div>
+      </div>
+    </div>}
+
+    <header className="titlebar">
+      <button className="titlebar-mark" onClick={onExit} title="Back to launcher">SCS</button>
+      <input className="project-name" aria-label="Project name" value={session.name} disabled={!canEdit} onChange={(event) => setSession({ ...session, name: event.target.value })} />
+      <span className="titlebar-context">{MODE_META[mode].label}</span>
+      <div className="tool-spacer" />
+      <span className={`save-chip ${savedAt ? "saved" : ""}`} title="SCS autosaves a local recovery copy while you write">{savedAt ? `Saved · ${savedAt}` : doc.readOnly ? "Read-only" : "Autosave ready"}</span>
+      <button className="tool-btn" disabled={busy || !canEdit} onClick={() => void saveNow()}>Save</button>
+      <Menu label="Project" items={projectMenu} />
+      <button className="tool-btn icon-only" aria-label="Find in project" title={`Find (${session.workspace.shortcuts.commandPalette || "Ctrl+K"})`} onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
+    </header>
+
+    {isTelevision && <div className="episode-strip" aria-label="Television episodes">
+      <div className="episode-tabs">
+        {episodeDocs.map((episode, index) => <button key={episode.id ?? episode.source?.path ?? index} className={`episode-tab ${index === activeEpisode ? "active" : ""}`} onClick={() => selectEpisode(episode.id!)}>
+          {session.workspace.series.episodes[episode.id!]?.title || episode.titlePage.title || `Episode ${index + 1}`}
+        </button>)}
+      </div>
+      <Menu label="Episode" icon={<Icon name="plus" size={12} />} items={episodeMenu} buttonClassName="tool-btn episode-add" />
+    </div>}
+
+    <div className="shell-body">
+      <nav className="mode-rail" aria-label="Workspaces">
+        {modes.map((entry) => (
+          <button key={entry} className={`rail-btn ${mode === entry ? "active" : ""}`} aria-pressed={mode === entry} title={MODE_META[entry].blurb} onClick={() => setMode(entry)}>
+            <Icon name={MODE_META[entry].icon} />
+            <span>{MODE_META[entry].label}</span>
+          </button>
+        ))}
+      </nav>
+      <main className="shell-main">{content}</main>
+    </div>
+
+    {focusMode && <div className="focus-pill" role="toolbar" aria-label="Focus mode controls">
+      <button className="tool-btn icon-only" aria-label="Previous scene" disabled={!previousScene} onClick={() => previousScene && jumpToScene(previousScene.id)}><Icon name="back" size={12} /></button>
+      <span className="focus-pill-scene">{activeScene ? `${activeScene.sceneNumber ?? activeScene.number} · ${activeScene.heading}` : "No scene"}</span>
+      <button className="tool-btn icon-only" aria-label="Next scene" disabled={!nextScene} onClick={() => nextScene && jumpToScene(nextScene.id)}><Icon name="chevron-right" size={12} /></button>
+      <span className="focus-pill-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span>
+      <button className="tool-btn" onClick={() => setFocusMode(false)}>Exit Focus · Esc</button>
+    </div>}
+
+    <footer className="statusbar">
+      <span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span>
+      <span>{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span>
+      <span>~{pages} page{pages === 1 ? "" : "s"}</span>
+      <span>{words} words</span>
+      <div className="tool-spacer" />
+      <span className="status-draft">{activeBranch?.name ?? "Main Draft"}</span>
+      <span>{doc.readOnly ? `Linked source · ${doc.source?.fileName ?? "FDX"}` : savedAt ? `Saved locally · ${savedAt}` : "Not saved yet"}</span>
+    </footer>
   </div>;
+}
+
+function availableModes(isTelevision: boolean): Mode[] {
+  const modes: Mode[] = ["write", "outline", "treatment", "reference"];
+  if (isTelevision) modes.push("series");
+  modes.push("breakdown", "drafts", "team", "companion");
+  return modes;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 type ReferenceEntityProfile = CharacterProfile | ObjectProfile | LocationProfile;
@@ -1501,14 +1713,14 @@ function InformationReferencePanel({ label, subtitle, body, items, onOpen }: {
   items: ReferenceItem[];
   onOpen: (item: ReferenceItem) => void;
 }) {
-  return <aside className="reference-panel information-reference" aria-label={`${label} reference`}>
-    <header><div><span className="insp-kicker">Persistent reference</span><strong>{label}</strong></div><span>{subtitle}</span></header>
+  return <div className="reference-panel" aria-label={`${label} reference`}>
+    <header><div><span className="kicker">Reference</span><strong>{label}</strong></div><span>{subtitle}</span></header>
     <div className="reference-scroll">
       <p className="reference-prose">{body}</p>
       {items.map((item) => <button className="reference-info-card" key={item.id} onClick={() => onOpen(item)} disabled={!item.documentId}><strong>{item.title}</strong>{item.meta && <span>{item.meta}</span>}{item.detail && <p>{item.detail}</p>}</button>)}
       {!items.length && <div className="reference-empty">No matching records yet. This panel will update as the project develops.</div>}
     </div>
-  </aside>;
+  </div>;
 }
 
 function ReferencePanel({ document, label, activeSceneNumber, onSynchronizedScene }: {
@@ -1518,8 +1730,8 @@ function ReferencePanel({ document, label, activeSceneNumber, onSynchronizedScen
   onSynchronizedScene: (sceneNumber: number) => void;
 }) {
   const referenceScenes = useMemo(() => document ? deriveScenes(document.blocks) : [], [document]);
-  return <aside className="reference-panel" aria-label={`${label} reference`}>
-    <header><div><span className="insp-kicker">Synchronized reference</span><strong>{label}</strong></div><span>{document?.titlePage.title || "Not available"}</span></header>
+  return <div className="reference-panel" aria-label={`${label} reference`}>
+    <header><div><span className="kicker">Synchronized</span><strong>{label}</strong></div><span>{document?.titlePage.title || "Not available"}</span></header>
     {!document ? <div className="reference-empty">No matching script is available yet. Add an earlier episode or save a different draft version.</div> : <div className="reference-scroll">
       {referenceScenes.map((scene, index) => {
         const end = referenceScenes[index + 1]?.blockIndex ?? document.blocks.length;
@@ -1530,7 +1742,7 @@ function ReferencePanel({ document, label, activeSceneNumber, onSynchronizedScen
       })}
       {!referenceScenes.length && <div className="reference-empty">This reference contains no scene headings.</div>}
     </div>}
-  </aside>;
+  </div>;
 }
 
 function linkedBaselineMap(documents: ScreenplayDocument[]): Map<string, string> {

@@ -6,29 +6,25 @@ test.beforeEach(async ({ page }) => {
   await page.reload();
 });
 
-test("sample screenplay survives source mode and exposes workspace tools", async ({ page }) => {
-  await page.getByRole("button", { name: "Sample Project" }).click();
+test("sample screenplay survives source mode and exposes the mode workspaces", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
 
   await expect(page.getByRole("textbox", { name: "Project name" })).toHaveValue("THE LONG WAY HOME");
   const action = page.locator("textarea.blk-action").first();
   const edited = "E2E edit survives both screenplay modes.";
   await action.fill(edited);
 
-  await page.getByRole("button", { name: "Fountain Source" }).click();
+  await page.getByRole("tab", { name: "Fountain Source" }).click();
   await expect(page.locator("textarea.source-editor")).toHaveValue(new RegExp(edited));
-  await page.getByRole("button", { name: "Formatted" }).click();
+  await page.getByRole("tab", { name: "Formatted" }).click();
   await expect(page.locator("textarea.blk-action").first()).toHaveValue(edited);
-
-  await page.getByRole("button", { name: "Layouts", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Workspace layouts" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Panel composer" })).toBeVisible();
-  await page.getByRole("button", { name: "Close layout manager" }).click();
 
   await page.getByRole("button", { name: "Team", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Local identity and roles" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Comments and suggested changes" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Props", exact: true }).click();
+  await page.getByRole("button", { name: "Reference", exact: true }).click();
+  await page.getByRole("tab", { name: "Props" }).click();
   const manualObject = page.getByRole("textbox", { name: "Manual object name" });
   await manualObject.fill("E2E Compass");
   await page.getByRole("button", { name: "Add Object" }).click();
@@ -37,11 +33,12 @@ test("sample screenplay survives source mode and exposes workspace tools", async
 });
 
 test("opening an FDX immediately still protects the in-memory project", async ({ page }) => {
-  await page.getByRole("button", { name: "New Screenplay" }).click();
+  await page.getByRole("button", { name: "New Feature Screenplay" }).click();
   await page.locator("textarea.blk").first().fill("Unsaved in-memory scene.");
 
+  await page.getByRole("button", { name: "Project", exact: true }).click();
   const confirmation = page.waitForEvent("dialog");
-  const opening = page.getByRole("button", { name: "Open FDX", exact: true }).click();
+  const opening = page.getByRole("menuitem", { name: "Open FDX…" }).click();
   const dialog = await confirmation;
   expect(dialog.message()).toContain("Open a different project?");
   await dialog.dismiss();
@@ -50,28 +47,23 @@ test("opening an FDX immediately still protects the in-memory project", async ({
   await expect(page.locator("textarea.blk").first()).toHaveValue("UNSAVED IN-MEMORY SCENE.");
 });
 
-test("duplicating the Companion layout keeps its dashboard", async ({ page }) => {
-  await page.getByRole("button", { name: "Sample Project" }).click();
-  const layouts = page.getByRole("combobox", { name: "Workspace layout" });
-  await layouts.selectOption("companion");
+test("the companion workspace is reachable from the mode rail", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Companion", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Development dashboard" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Layouts", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Workspace layouts" });
-  await dialog.getByRole("button", { name: "Duplicate as custom" }).click();
-  await dialog.getByRole("button", { name: "Close layout manager" }).click();
-
-  await expect(layouts).toHaveValue("companion-copy");
-  await expect(page.getByRole("heading", { name: "Development dashboard" })).toBeVisible();
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  await expect(page.locator("textarea.blk").first()).toBeVisible();
 });
 
 test("television workspace adds and switches episodes", async ({ page }) => {
-  await page.getByRole("button", { name: "New Television Show" }).click();
+  await page.getByRole("button", { name: "New Television Project" }).click();
   await expect(page.getByRole("textbox", { name: "Project name" })).toHaveValue("Untitled Show");
 
-  await page.getByRole("button", { name: "New Episode", exact: true }).click();
+  await page.getByRole("button", { name: "Episode", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New Blank Episode" }).click();
   const episodes = page.locator('[aria-label="Television episodes"]');
-  await expect(episodes.getByRole("button")).toHaveCount(2);
+  await expect(episodes.locator(".episode-tab")).toHaveCount(2);
 
   await episodes.getByRole("button", { name: "Untitled Episode", exact: true }).click();
   await expect(episodes.locator("button.active")).toHaveText("Untitled Episode");
@@ -81,10 +73,11 @@ test("television workspace adds and switches episodes", async ({ page }) => {
 });
 
 test("an episode-scoped version restores only the active television script", async ({ page }) => {
-  await page.getByRole("button", { name: "New Television Show" }).click();
+  await page.getByRole("button", { name: "New Television Project" }).click();
   const episodes = page.locator('[aria-label="Television episodes"]');
   await page.locator("textarea.blk").first().fill("Episode checkpoint text.");
-  await page.getByRole("button", { name: "New Episode", exact: true }).click();
+  await page.getByRole("button", { name: "Episode", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New Blank Episode" }).click();
   await page.locator("textarea.blk").first().fill("Second episode before checkpoint.");
   await episodes.getByRole("button", { name: "Untitled Episode", exact: true }).click();
   await page.getByRole("button", { name: "Drafts", exact: true }).click();
@@ -93,89 +86,62 @@ test("an episode-scoped version restores only the active television script", asy
   await page.getByRole("button", { name: "Save Draft Version" }).click();
   await expect(page.locator(".version-row", { hasText: "Episode checkpoint" })).toContainText("episode");
 
+  await page.getByRole("button", { name: "Write", exact: true }).click();
   await page.locator("textarea.blk").first().fill("Changed after checkpoint.");
   await episodes.getByRole("button", { name: "Episode 2", exact: true }).click();
   await page.locator("textarea.blk").first().fill("Second episode changed later.");
   await episodes.getByRole("button", { name: "Untitled Episode", exact: true }).click();
+  await page.getByRole("button", { name: "Drafts", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator(".version-row", { hasText: "Episode checkpoint" }).getByRole("button", { name: "Restore" }).click();
+  await page.getByRole("button", { name: "Write", exact: true }).click();
   await expect(page.locator("textarea.blk").first()).toHaveValue("EPISODE CHECKPOINT TEXT.");
   await episodes.getByRole("button", { name: "Episode 2", exact: true }).click();
   await expect(page.locator("textarea.blk").first()).toHaveValue("SECOND EPISODE CHANGED LATER.");
 });
 
-test("a custom layout and targeted reference survive local recovery reopen", async ({ page }) => {
-  await page.getByRole("button", { name: "Sample Project" }).click();
-  await page.getByRole("button", { name: "Layouts", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Workspace layouts" });
-  await dialog.getByRole("button", { name: "Duplicate as custom" }).click();
-  await dialog.getByRole("combobox", { name: "Panel kind" }).selectOption("reference");
-  await dialog.getByRole("button", { name: "Add panel" }).click();
-  await dialog.getByRole("button", { name: "Add tab group" }).click();
-
-  const panelRow = dialog.locator('input[value="Reference"]').last().locator("xpath=ancestor::div[contains(@class, 'layout-topology')]");
-  await panelRow.getByLabel("Reference").selectOption("character");
-  await panelRow.getByLabel("Target").selectOption({ index: 1 });
-  await panelRow.getByLabel("Tab group").selectOption("tabs");
-  await panelRow.getByLabel("Title").fill("Character scenes");
-  await dialog.getByRole("combobox", { name: "Panel kind" }).selectOption("story");
-  await dialog.getByRole("button", { name: "Add panel" }).click();
-  const storyRow = dialog.locator('input[value="Story"]').last().locator("xpath=ancestor::div[contains(@class, 'layout-topology')]");
-  await storyRow.getByLabel("Tab group").selectOption("main-tabs");
-  await storyRow.getByLabel("Title").fill("Undo tab");
-  await dialog.getByRole("button", { name: "Save layout" }).click();
-  await dialog.getByRole("button", { name: "Close layout manager" }).click();
-
-  await expect(page.getByRole("button", { name: "Character scenes", exact: true })).toBeVisible();
-  await expect(page.getByLabel("Character scenes reference")).toContainText("Persistent reference");
-
-  await page.getByRole("button", { name: "Screenplay", exact: true }).click();
+test("edits survive local recovery and reopen from the launcher", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
   const action = page.locator("textarea.blk-action").first();
-  const original = await action.inputValue();
-  await action.fill("Undo survives a hidden screenplay tab.");
-  await page.getByRole("button", { name: "Undo tab", exact: true }).click();
-  await page.getByRole("button", { name: "Screenplay", exact: true }).click();
-  await action.press("Control+z");
-  await expect(action).toHaveValue(original);
+  await action.fill("Recovered across a full reload.");
 
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("Character scenes");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("Recovered across a full reload.");
   await page.reload();
-  await page.locator(".home-recent-item").click();
-  await expect(page.getByRole("combobox", { name: "Workspace layout" })).toHaveValue(/-copy$/);
-  await expect(page.getByRole("button", { name: "Character scenes", exact: true })).toBeVisible();
-  await expect(page.getByLabel("Character scenes reference")).toContainText("Persistent reference");
+  await page.locator(".launcher-recent").click();
+  await expect(page.locator("textarea.blk-action").first()).toHaveValue("Recovered across a full reload.");
 });
 
-test("multiple floating panels have independent saved frames", async ({ page }) => {
-  await page.getByRole("button", { name: "Sample Project" }).click();
-  await page.getByRole("button", { name: "Layouts", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Workspace layouts" });
-  await dialog.getByRole("button", { name: "Duplicate as custom" }).click();
+test("panels collapse, reopen, and focus mode strips the chrome", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
 
-  await dialog.getByRole("combobox", { name: "Panel kind" }).selectOption("reference");
-  await dialog.getByRole("button", { name: "Add panel" }).click();
-  const referenceRow = dialog.locator('input[value="Reference"]').last().locator("xpath=ancestor::div[contains(@class, 'layout-topology')]");
-  await referenceRow.getByLabel("Tab group").selectOption("floating");
-  await referenceRow.getByLabel("Reference floating left").fill("30");
-  await referenceRow.getByLabel("Reference floating top").fill("30");
+  await page.getByRole("button", { name: "Hide scene navigator" }).click();
+  await expect(page.locator(".pane-nav")).toHaveCount(0);
+  await page.getByRole("button", { name: "Show scene navigator" }).click();
+  await expect(page.locator(".pane-nav")).toBeVisible();
 
-  await dialog.getByRole("combobox", { name: "Panel kind" }).selectOption("breakdown");
-  await dialog.getByRole("button", { name: "Add panel" }).click();
-  const breakdownRow = dialog.locator('input[value="Breakdown"]').last().locator("xpath=ancestor::div[contains(@class, 'layout-topology')]");
-  await breakdownRow.getByLabel("Tab group").selectOption("floating");
-  await breakdownRow.getByLabel("Breakdown floating left").fill("500");
-  await breakdownRow.getByLabel("Breakdown floating top").fill("90");
+  await page.getByRole("button", { name: "Hide inspector" }).first().click();
+  await expect(page.locator(".pane-insp")).toHaveCount(0);
+  await page.getByRole("button", { name: "Show inspector" }).click();
+  await expect(page.locator(".pane-insp")).toBeVisible();
 
-  await dialog.getByRole("button", { name: "Save layout" }).click();
-  await dialog.getByRole("button", { name: "Close layout manager" }).click();
-  const frames = page.locator(".workspace-floating-panel");
-  await expect(frames).toHaveCount(2);
-  await expect(frames.nth(0)).toHaveCSS("left", "30px");
-  await expect(frames.nth(1)).toHaveCSS("left", "500px");
+  await page.getByRole("button", { name: "Enter focus mode" }).click();
+  await expect(page.locator(".titlebar")).toBeHidden();
+  await expect(page.locator(".focus-pill")).toBeVisible();
+  await expect(page.locator(".page").first()).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".titlebar")).toBeVisible();
+});
+
+test("the scene navigator jumps to the selected scene", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.locator(".nav-scene", { hasText: "EXT. REST STOP" }).click();
+  await expect(page.locator(".nav-scene.active")).toContainText("EXT. REST STOP");
+  await expect(page.locator(".insp-scene-heading")).toContainText("EXT. REST STOP");
+  await expect(page.locator("textarea.blk-scene_heading").nth(1)).toBeFocused();
 });
 
 test("viewer role cannot edit screenplay text or enter source mode", async ({ page }) => {
-  await page.getByRole("button", { name: "Sample Project" }).click();
+  await page.getByRole("button", { name: /sample project/i }).click();
   await page.getByRole("button", { name: "Team", exact: true }).click();
   const name = page.getByPlaceholder("Collaborator name");
   await name.fill("View Only");
@@ -183,6 +149,7 @@ test("viewer role cannot edit screenplay text or enter source mode", async ({ pa
   await page.getByRole("button", { name: "Add Collaborator" }).click();
   await page.getByLabel("Acting as").selectOption({ label: "View Only · Viewer" });
 
+  await page.getByRole("button", { name: "Write", exact: true }).click();
   await expect(page.locator("textarea.blk").first()).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Fountain Source" })).toBeDisabled();
+  await expect(page.getByRole("tab", { name: "Fountain Source" })).toBeDisabled();
 });

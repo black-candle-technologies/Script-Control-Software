@@ -1,20 +1,31 @@
 # Workspaces, Search, and Shortcuts
 
-The workspace renderer uses each saved layout's real panel topology. **Layouts** can add or remove screenplay, navigator, Inspector, Story, Treatment, Breakdown, Versions, Series, Production, and reference panels; place them into independently selectable tab groups; reorder groups; split horizontally or vertically; and float a panel in a saved frame. Built-in presets remain immutable and can be duplicated into fully editable custom layouts.
+The shell is organized as **modes** on a left rail. Every mode swaps the workspace around the same open project.
 
-| Preset | Primary workflow | Persistent reference |
-|---|---|---|
-| Writer | Script, scene navigator, focused Inspector | None |
-| Development | Screenplay plus Story/Treatment/Breakdown tab group | Any custom reference after duplication |
-| Revision | Current draft, previous draft, readable diffs, versions | Previous draft |
-| Television | Episode, Series/continuity tools, episode tabs | Previous episode |
-| Production | Script plus Breakdown/Production tab group | Any custom reference after duplication |
-| Companion | Watched FDX dashboard and development Inspector | None |
+| Mode | What it holds |
+|---|---|
+| Write | Scene navigator · screenplay paper · contextual inspector and reference panel |
+| Outline | Acts, sequences, scenes, and beats with Act/Sequence/Scene/Beat/Timeline views |
+| Treatment | Long-form Markdown treatments with links into structure and entities |
+| Reference | Cast, Props, and Places sheets (detection with confirm/rename/merge/split) plus the opt-in Assist prompt |
+| Series (TV) | Show bible, seasons, arcs, episode metadata, A/B/C stories, continuity database |
+| Breakdown | Reports (structure, plot threads, pacing, department breakdowns, exports) and Production tools (revisions, page locks, schedules, sides) |
+| Drafts | Save/restore draft versions, milestones, alternate drafts, compare, combine |
+| Team | Roles, comments, suggestions, shared-copy and Git-backed sync |
+| Companion | Final Draft watch-folder dashboard for FDX-first workflows |
 
-Reference panels persist independently, so one workspace can keep several sources visible or tabbed. Sources include previous episode, next-episode outline, previous draft, targeted character/object/location sheets, show bible, season arc, plot history, and timeline continuity. Character panels list all matching scenes, while object panels list prior mentions. Layout target selectors are populated from the current project when a matching entity exists.
+Series appears only for television projects; the episode strip under the title bar switches episodes and adds new ones (blank or imported FDX).
 
-The navigator and screenplay/reference views share the active selection. Panel membership, tab ownership, split ratios/direction, floating frames, synchronized groups, reference sources, and targets are validated before a custom layout is saved. Older navigator/Inspector/reference-only layouts upgrade automatically, while malformed topology is rejected rather than installed.
+## Panels
 
-The command palette searches every episode's headings and screenplay text, detected characters and objects, treatments, show-bible/season text, saved draft versions, and workspace layouts. Search navigation remains available to read-only roles; actions that restore a version or edit a layout remain disabled.
+In Write mode the scene navigator (left) and inspector (right) collapse from the toolbar and resize by dragging their edges (arrow keys work on the handles). Widths, open states, and zoom persist per machine (`scs.ui.v1` in local storage). The inspector's **Reference** tab hosts persistent sources: previous draft, previous/next episode, targeted character/object/location sheets, show bible, season arc, plot history, and timeline continuity. Synchronized sources follow the active scene.
 
-Default shortcuts are `Mod+K` for the command palette, `Mod+S` for local recovery save, and `Mod+Shift+S` for Save Draft Version. **Layouts** can assign or clear shortcuts for the palette, save, version save, Inspector toggle, layout manager, and previous/next episode. `Mod` maps to Command on macOS and Control elsewhere. Collisions are rejected and the saved bindings drive runtime behavior immediately.
+Mode selection maps onto the built-in layout ids from the domain model (`writer`, `development`, `revision`, `television`, `production`, `companion`), so projects saved by older builds reopen in the equivalent workspace. The saved-layout composer UI was retired in the interface redesign; layout validation and persistence remain in `src/domain/workspaceLayouts.ts`.
+
+## Search
+
+The command palette (`Mod+K`) searches every episode's headings and screenplay text, detected characters and objects, treatments, show-bible/season text, and saved draft versions, and offers direct commands: save, export, toggle panels, focus mode, and go-to-mode. Search stays available to read-only roles; restoring versions remains permission-gated.
+
+## Shortcuts
+
+Defaults: `Mod+K` palette · `Mod+S` save · `Mod+Shift+S` Save Draft Version. Bindings for the palette, save, version save, inspector toggle, and previous/next episode are stored per project and validated for collisions (see `docs/KEYBOARD_SHORTCUTS.md` for the full editing-key reference). `Mod` maps to Command on macOS and Control elsewhere.

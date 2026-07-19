@@ -26,9 +26,13 @@ interface EditorProps {
   focusRequest: { id: string; nonce: number } | null;
   readOnly?: boolean;
   productionPages?: ProductionPage[];
+  /** Filled during render so the writing toolbar can trigger undo/redo. */
+  historyRef?: React.MutableRefObject<{ undo: () => void; redo: () => void } | null>;
+  /** Owner-held undo store so history survives the editor unmounting (mode switches). */
+  historyStore?: React.MutableRefObject<Map<string, EditorHistory>>;
 }
 
-interface EditorHistory {
+export interface EditorHistory {
   blocks: ScreenplayBlock[];
   undo: ScreenplayBlock[][];
   redo: ScreenplayBlock[][];
@@ -49,11 +53,14 @@ export default function Editor({
   focusRequest,
   readOnly = false,
   productionPages,
+  historyRef,
+  historyStore,
 }: EditorProps) {
   const refs = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; pos: number } | null>(null);
   const lastFocusNonce = useRef(0);
-  const histories = useRef(new Map<string, EditorHistory>());
+  const ownHistories = useRef(new Map<string, EditorHistory>());
+  const histories = historyStore ?? ownHistories;
   const history = histories.current.get(documentId) ?? { blocks, undo: [], redo: [] };
   if (!histories.current.has(documentId)) histories.current.set(documentId, history);
   else if (history.blocks !== blocks) {
@@ -79,6 +86,28 @@ export default function Editor({
     history.blocks = next;
     onBlocksChange(next);
   };
+
+  const undo = () => {
+    if (readOnly) return;
+    const previous = history.undo.pop();
+    if (previous) {
+      history.redo.push(blocks.map((item) => ({ ...item })));
+      history.blocks = previous;
+      onBlocksChange(previous);
+    }
+  };
+
+  const redo = () => {
+    if (readOnly) return;
+    const next = history.redo.pop();
+    if (next) {
+      history.undo.push(blocks.map((item) => ({ ...item })));
+      history.blocks = next;
+      onBlocksChange(next);
+    }
+  };
+
+  if (historyRef) historyRef.current = { undo, redo };
 
   useLayoutEffect(() => {
     setActiveId(null);
@@ -154,22 +183,12 @@ export default function Editor({
 
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
-      const previous = history.undo.pop();
-      if (previous) {
-        history.redo.push(blocks.map((item) => ({ ...item })));
-        history.blocks = previous;
-        onBlocksChange(previous);
-      }
+      undo();
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
       e.preventDefault();
-      const next = history.redo.pop();
-      if (next) {
-        history.undo.push(blocks.map((item) => ({ ...item })));
-        history.blocks = next;
-        onBlocksChange(next);
-      }
+      redo();
       return;
     }
 

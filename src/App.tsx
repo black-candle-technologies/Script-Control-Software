@@ -1,19 +1,18 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import Home, { type DocChoice } from "./components/Home.tsx";
+import Launcher, { type DocChoice } from "./components/Launcher.tsx";
 import Workspace from "./components/Workspace.tsx";
-import Dashboard from "./components/Dashboard.tsx";
 import { createProjectSession, defaultAppInfo, emptyDocument, type AppInfo, type ProjectSession } from "./domain/index.ts";
 import { sampleScreenplay } from "./domain/sample.ts";
 import { loadSession } from "./storage.ts";
 import { chooseAndOpenProject, chooseAndParseFdx, messageFrom } from "./services/fdxService.ts";
 import "./App.css";
 
-type View = "home" | "write" | "foundation";
+type View = "launcher" | "write";
 
 function App() {
   const [appInfo, setAppInfo] = useState<AppInfo>(defaultAppInfo);
-  const [view, setView] = useState<View>("home");
+  const [view, setView] = useState<View>("launcher");
   const [session, setSession] = useState<ProjectSession | null>(null);
   const [docNonce, setDocNonce] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
@@ -44,7 +43,7 @@ function App() {
     setView("write");
   };
 
-  const savedTitle = view === "home" ? loadSession()?.name || null : null;
+  const savedTitle = view === "launcher" ? loadSession()?.name || null : null;
 
   const openFdx = async () => {
     if (!confirmProjectReplacement(Boolean(session))) return;
@@ -58,7 +57,7 @@ function App() {
       setView("write");
     } catch (error) {
       setImportError(messageFrom(error));
-      setView("home");
+      setView("launcher");
     } finally {
       setImporting(false);
     }
@@ -81,57 +80,18 @@ function App() {
     }
   };
 
-  return (
-    <div className={`app view-${view}`}>
-      <header className="topbar">
-        <button className="wordmark" onClick={() => setView("home")} title="Home">
-          {appInfo.short_name}
-        </button>
-        <span className="topbar-name">{appInfo.name}</span>
-        <nav className="topbar-nav">
-          {session && view !== "write" && (
-            <button className="link-btn" onClick={() => setView("write")}>
-              Back to script
-            </button>
-          )}
-          {view === "foundation" && (
-            <button className="link-btn" onClick={() => setView("home")}>
-              Home
-            </button>
-          )}
-        </nav>
-        <span className="phase-chip">
-          {appInfo.phase} · v{appInfo.version}
-        </span>
-      </header>
-
-      {view === "home" && (
-        <Home
-          appInfo={appInfo}
-          savedTitle={savedTitle}
-          onOpen={open}
-          onOpenFdx={openFdx}
-          onOpenProject={openProject}
-          importError={importError}
-          importing={importing}
-          onShowFoundation={() => setView("foundation")}
-        />
-      )}
-
-      {view === "write" && session && <Workspace key={docNonce} initialSession={session} onOpenFdx={openFdx} />}
-
-      {view === "foundation" && (
-        <main className="content">
-          <div className="hero">
-            <h1>Foundation status</h1>
-            <p className="positioning">
-              The architecture behind the writing workspace and its active local-first capabilities.
-            </p>
-          </div>
-          <Dashboard />
-        </main>
-      )}
-    </div>
+  return view === "write" && session ? (
+    <Workspace key={docNonce} initialSession={session} onOpenFdx={openFdx} onExit={() => setView("launcher")} />
+  ) : (
+    <Launcher
+      appInfo={appInfo}
+      savedTitle={savedTitle}
+      onOpen={open}
+      onOpenFdx={openFdx}
+      onOpenProject={openProject}
+      importError={importError}
+      importing={importing}
+    />
   );
 }
 

@@ -44,8 +44,6 @@ import {
 } from "../domain/index.ts";
 
 interface InspectorProps {
-  fixedTab?: InspectorTab;
-  blocks: ScreenplayBlock[];
   scenes: Scene[];
   characters: CharacterRef[];
   locations: LocationRef[];
@@ -54,8 +52,6 @@ interface InspectorProps {
   breakdown: Breakdown;
   analysis: ScriptAnalysis;
   activeScene: Scene | null;
-  sceneNotes: Record<string, string>;
-  onSceneNote: (sceneId: string, text: string) => void;
   workspace: WorkspaceData;
   onWorkspace: (patch: Partial<WorkspaceData>) => void;
   onJumpToScene: (sceneId: string) => void;
@@ -100,8 +96,8 @@ interface InspectorProps {
   collaborationSync: CollaborationSyncControls;
 }
 
-const TABS = ["Scene", "Story", "Treatment", "Cast", "Props", "Places", "Drafts", "Breakdown", "Series", "Production", "Team", "Assist"] as const;
-export type InspectorTab = (typeof TABS)[number];
+/** Workspace panels the mode shell can host full-width. */
+export type PanelTab = "Story" | "Treatment" | "Cast" | "Props" | "Places" | "Drafts" | "Breakdown" | "Series" | "Production" | "Team" | "Assist";
 const Hint = ({ children }: { children: React.ReactNode }) => <p className="insp-hint">{children}</p>;
 
 function formatDiffValue(value: unknown): string {
@@ -128,43 +124,26 @@ const snapshotScopeLabel = (scope?: SnapshotScope) => !scope || scope.kind === "
       ? `season · ${scope.seasonId}`
       : "show bible";
 
-export default function Inspector(props: InspectorProps) {
-  const [selectedTab, setSelectedTab] = useState<InspectorTab>(props.fixedTab ?? "Scene");
-  const tab = props.fixedTab ?? selectedTab;
-  return <aside className="inspector">
-    {!props.fixedTab && <nav className="insp-tabs">{TABS.map((name) => <button key={name} className={`insp-tab ${name === tab ? "active" : ""}`} onClick={() => setSelectedTab(name)}>{name}</button>)}</nav>}
-    <div className="insp-body">
-      {tab !== "Team" && tab !== "Assist" && <fieldset className="inspector-permission-scope" disabled={!props.editable}>
-        {tab === "Scene" && <SceneTab {...props} />}
-        {tab === "Story" && <StoryWorkspaceTab {...props} />}
-        {tab === "Treatment" && <TreatmentWorkspaceTab {...props} />}
-        {tab === "Cast" && <CastTab {...props} />}
-        {tab === "Props" && <PropsTab {...props} />}
-        {tab === "Places" && <PlacesTab {...props} />}
-        {tab === "Drafts" && <DraftsTab {...props} />}
-        {tab === "Breakdown" && <BreakdownTab {...props} />}
-        {tab === "Series" && <SeriesTab {...props} />}
-        {tab === "Production" && <ProductionTab {...props} />}
-      </fieldset>}
-      {tab === "Team" && <TeamPanel session={props.collaborationSession} activeScene={props.activeScene} onSession={props.onCollaborationSession} onOpenTarget={props.onCollaborationTarget} onMessage={props.onCollaborationMessage} sync={props.collaborationSync} />}
-      {tab === "Assist" && <AssistTab {...props} />}
-    </div>
-  </aside>;
-}
-
-function SceneTab({ blocks, scenes, activeScene, sceneNotes, onSceneNote, workspace, onWorkspace }: InspectorProps) {
-  if (!activeScene) return <Hint>Click into the script to inspect a scene.</Hint>;
-  const heading = parseHeading(activeScene.heading);
-  const end = scenes[activeScene.number]?.blockIndex ?? blocks.length;
-  const beats = blocks.slice(activeScene.blockIndex, end).filter((block) => block.type === "note" && block.text.trim());
-  const meta = workspace.sceneMeta?.[activeScene.id] ?? { summary: "", tags: "", status: "draft" as const };
-  const setMeta = (patch: Partial<typeof meta>) => onWorkspace({ sceneMeta: { ...workspace.sceneMeta, [activeScene.id]: { ...meta, ...patch } } });
-  return <div className="insp-stack">
-    <div className="insp-kicker">Scene {activeScene.number}</div><div className="insp-title">{activeScene.heading}</div>
-    <dl className="insp-facts"><dt>Set</dt><dd>{heading.intExt || "—"}</dd><dt>Location</dt><dd>{heading.location || "—"}</dd><dt>Time</dt><dd>{heading.timeOfDay || "—"}</dd><dt>Cast</dt><dd>{activeScene.characters.join(", ") || "—"}</dd></dl>
-    <h4>Beats</h4>{beats.length ? <ul className="insp-list">{beats.map((beat) => <li key={beat.id}>{beat.text}</li>)}</ul> : <Hint>Add a Note element to create a beat in this scene.</Hint>}
-    <h4>Development</h4><textarea className="insp-notes-input" value={meta.summary} placeholder="Scene summary…" onChange={(event) => setMeta({ summary: event.target.value })} /><input className="insp-notes-input" value={meta.tags} placeholder="Tags, comma separated" onChange={(event) => setMeta({ tags: event.target.value })} /><select className="element-select" value={meta.status} onChange={(event) => setMeta({ status: event.target.value as typeof meta.status })}><option value="outline">Outline</option><option value="draft">Draft</option><option value="revised">Revised</option><option value="locked">Locked</option></select>
-    <h4>Scene notes</h4><textarea className="insp-notes-input" value={sceneNotes[activeScene.id] ?? ""} placeholder="Notes and continuity…" onChange={(event) => onSceneNote(activeScene.id, event.target.value)} />
+/**
+ * Hosts one workspace panel full-width inside a mode. All of these panels used
+ * to be tabs of a cramped fixed sidebar; the mode shell now gives each one a
+ * real workspace surface.
+ */
+export default function PanelHost({ tab, ...props }: InspectorProps & { tab: PanelTab }) {
+  return <div className="panel-host">
+    {tab !== "Team" && tab !== "Assist" && <fieldset className="permission-scope" disabled={!props.editable}>
+      {tab === "Story" && <StoryWorkspaceTab {...props} />}
+      {tab === "Treatment" && <TreatmentWorkspaceTab {...props} />}
+      {tab === "Cast" && <CastTab {...props} />}
+      {tab === "Props" && <PropsTab {...props} />}
+      {tab === "Places" && <PlacesTab {...props} />}
+      {tab === "Drafts" && <DraftsTab {...props} />}
+      {tab === "Breakdown" && <BreakdownTab {...props} />}
+      {tab === "Series" && <SeriesTab {...props} />}
+      {tab === "Production" && <ProductionTab {...props} />}
+    </fieldset>}
+    {tab === "Team" && <TeamPanel session={props.collaborationSession} activeScene={props.activeScene} onSession={props.onCollaborationSession} onOpenTarget={props.onCollaborationTarget} onMessage={props.onCollaborationMessage} sync={props.collaborationSync} />}
+    {tab === "Assist" && <AssistTab {...props} />}
   </div>;
 }
 

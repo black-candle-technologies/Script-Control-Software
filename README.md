@@ -12,7 +12,7 @@ SCS is a local-first desktop workspace for screenwriting and film/television dev
 - Whole-project/episode/season/show-bible snapshots, Alternate Draft branches, milestones, scoped restore, readable semantic comparisons, and previewed per-conflict three-way merges.
 - Feature and television projects with episode tabs, shared cast/locations, show bible, season arcs, and continuity notes.
 - Revision colors, locked-page records, omitted scenes, draft labels, department notes, and Markdown/CSV/JSON/PDF report output.
-- Runtime-composed tab/split/floating workspaces, independently targeted draft/episode/entity/bible/arc/history/timeline references, project-wide search, command palette, and customizable shortcuts.
+- A mode-based shell (Write, Outline, Treatment, Reference, Series, Breakdown, Drafts, Team, Companion) with a hierarchical scene navigator, contextual inspector, focus mode, targeted draft/episode/entity/bible/arc/history/timeline references, project-wide search, command palette, and customizable shortcuts.
 - Linked-FDX watch folders, external-editor handoff, two-sided change detection, metadata-preserving re-import, and Companion mode.
 - Nine collaboration roles, scoped comments/suggestions, version approvals, writer-room tasks, provider-folder sync, per-conflict merge choices, and optional safe HTTPS Git sync.
 - Portable `.scs` folders with crash-recoverable, stale-write-protected manifests, open screenplay fallbacks, and machine-local recovery.
@@ -60,7 +60,8 @@ MyProject.scs/
 
 ## Guides
 
-- [Workspace layouts, search, and shortcuts](docs/WORKSPACES.md)
+- [Interface design](docs/UI_DESIGN.md) and [keyboard shortcuts](docs/KEYBOARD_SHORTCUTS.md)
+- [Workspaces, search, and shortcuts](docs/WORKSPACES.md)
 - [Collaboration, shared folders, roles, and Git sync](docs/COLLABORATION.md)
 - [FDX interoperability and Companion mode](docs/FDX_IMPORT.md)
 - [Portable project format](docs/PROJECT_FORMAT.md)
