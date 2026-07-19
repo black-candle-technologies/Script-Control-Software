@@ -9,7 +9,7 @@ import {
 } from "./screenplay.ts";
 import type { DraftSnapshot } from "./studio.ts";
 import type { SnapshotScope, VersionHistory } from "./versioning.ts";
-import { normalizeWorkspaceLayout, validateWorkspaceLayout } from "./workspaceLayouts.ts";
+import { normalizeWorkspaceLayout, validateWorkspaceLayout, type WorkspaceLayout } from "./workspaceLayouts.ts";
 
 export type ProjectSessionType = "featureFilm" | "television";
 export type CollaboratorRole =
@@ -907,7 +907,18 @@ function normalizeSeriesWorkspace(value: Record<string, unknown>, fallback: Seri
 }
 
 function normalizeSavedLayouts(value: unknown, fallback: SavedLayout[]): SavedLayout[] {
-  const builtins = fallback.map((layout) => normalizeWorkspaceLayout({ ...layout }));
+  const savedLayouts = Array.isArray(value) ? value.filter(isRecord) : [];
+  const builtins = fallback.map((layout) => {
+    const base = normalizeWorkspaceLayout({ ...layout });
+    const saved = savedLayouts.find((item) => item.id === base.id);
+    if (!saved || !safeLayoutTopology(saved)) return base;
+    const candidate = normalizeWorkspaceLayout({ ...base, splits: structuredClone(saved.splits) } as WorkspaceLayout);
+    const sameTopology = candidate.splits.length === base.splits.length && candidate.splits.every((split, index) => {
+      const original = base.splits[index];
+      return split.id === original.id && split.direction === original.direction && split.groupIds.length === original.groupIds.length && split.groupIds.every((id, groupIndex) => id === original.groupIds[groupIndex]);
+    });
+    return sameTopology && validateWorkspaceLayout(candidate).valid ? candidate : base;
+  });
   if (!Array.isArray(value)) return builtins;
   const builtinIds = new Set(builtins.map((layout) => layout.id));
   const ids = new Set(builtinIds);

@@ -65,6 +65,36 @@ pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
         .map_err(|error| format!("The item could not be revealed: {error}"))
 }
 
+#[tauri::command(rename_all = "camelCase")]
+pub fn write_fdx_export(path: String, contents: String) -> Result<String, String> {
+    let requested = PathBuf::from(path.trim());
+    if !requested.is_absolute() || !is_fdx(&requested) {
+        return Err("Choose an absolute filename ending in .fdx.".into());
+    }
+    if !contents.trim_start().starts_with("<?xml") || !contents.contains("<FinalDraft") {
+        return Err("The generated Final Draft document is invalid.".into());
+    }
+    let parent = requested
+        .parent()
+        .ok_or_else(|| "Choose an existing export folder.".to_string())?;
+    let parent = fs::canonicalize(parent)
+        .map_err(|error| format!("Export folder could not be accessed: {error}"))?;
+    if !parent.is_dir() {
+        return Err("Choose an existing export folder.".into());
+    }
+    let target = parent.join(
+        requested
+            .file_name()
+            .ok_or_else(|| "Choose a Final Draft filename.".to_string())?,
+    );
+    if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("Final Draft exports cannot replace symbolic links.".into());
+    }
+    fs::write(&target, contents.as_bytes())
+        .map_err(|error| format!("Final Draft export could not be written: {error}"))?;
+    Ok(requested.to_string_lossy().to_string())
+}
+
 fn file_info(path: PathBuf) -> Result<FdxFileInfo, String> {
     let metadata = fs::metadata(&path)
         .map_err(|error| format!("Final Draft file could not be inspected: {error}"))?;
@@ -193,5 +223,23 @@ mod tests {
         assert!(canonical_reveal_target(folder.0.to_string_lossy().as_ref()).is_ok());
         assert!(canonical_reveal_target(fdx.to_string_lossy().as_ref()).is_ok());
         assert!(canonical_reveal_target(text.to_string_lossy().as_ref()).is_err());
+    }
+
+    #[test]
+    fn writes_only_valid_fdx_exports() {
+        let folder = TestFolder::new();
+        let fdx = folder.0.join("export.fdx");
+        let xml = "<?xml version=\"1.0\"?><FinalDraft></FinalDraft>";
+        assert_eq!(
+            write_fdx_export(fdx.to_string_lossy().into(), xml.into()).unwrap(),
+            fdx.to_string_lossy()
+        );
+        assert_eq!(fs::read_to_string(&fdx).unwrap(), xml);
+        assert!(write_fdx_export(
+            folder.0.join("export.txt").to_string_lossy().into(),
+            xml.into()
+        )
+        .is_err());
+        assert!(write_fdx_export(fdx.to_string_lossy().into(), "not xml".into()).is_err());
     }
 }

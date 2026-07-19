@@ -178,7 +178,15 @@ function legacyLayoutState(layout: SavedLayout): Pick<WorkspaceLayout, "panels" 
   if (layout.id === "revision") addTabs("versions-tabs", [panel("versions", "Versions", "versions")]);
   if (layout.id === "television") addTabs("series-tabs", [panel("series", "Series", "series")]);
   if (layout.id === "production") addTabs("production-tabs", [panel("breakdown", "Breakdown", "breakdown"), panel("production", "Production", "production")]);
-  const splits = tabGroups.length > 1 ? [{ id: "main-split", direction: "horizontal" as const, groupIds: tabGroups.map((group) => group.id), sizes: tabGroups.map(() => 1 / tabGroups.length) }] : [];
+  const weights = tabGroups.map((group) => {
+    const kind = panels.find((item) => item.id === group.panelIds[0])?.kind;
+    if (kind === "navigator") return layout.navigatorWidth;
+    if (kind === "inspector") return layout.inspectorWidth;
+    if (kind === "screenplay" || kind === "companion") return 720;
+    return 360;
+  });
+  const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+  const splits = tabGroups.length > 1 ? [{ id: "main-split", direction: "horizontal" as const, groupIds: tabGroups.map((group) => group.id), sizes: weights.map((weight) => weight / weightTotal) }] : [];
   const synchronizedPanels = layout.reference === "none" ? [] : [{ id: "script-reference", panelIds: [primaryPanel.id, "reference"], mode: "active-scene" as const }];
   return { panels, tabGroups, splits, floatingPanels, synchronizedPanels };
 }
@@ -203,6 +211,17 @@ export function normalizeWorkspaceLayout(layout: SavedLayout | WorkspaceLayout):
     floatingPanels: layout.floatingPanels.map((item) => ({ ...item })),
     synchronizedPanels: layout.synchronizedPanels.map((item) => ({ ...item, panelIds: [...item.panelIds] })),
   };
+}
+
+export function resizeWorkspaceSplit(split: WorkspaceSplitState, dividerIndex: number, delta: number, minimum = 0): WorkspaceSplitState {
+  if (dividerIndex < 0 || dividerIndex >= split.sizes.length - 1 || !Number.isFinite(delta)) return split;
+  const pairTotal = split.sizes[dividerIndex] + split.sizes[dividerIndex + 1];
+  const safeMinimum = Math.min(Math.max(0, minimum), Math.max(0, pairTotal / 2 - 0.001));
+  const first = Math.min(pairTotal - safeMinimum, Math.max(safeMinimum, split.sizes[dividerIndex] + delta));
+  const sizes = [...split.sizes];
+  sizes[dividerIndex] = first;
+  sizes[dividerIndex + 1] = pairTotal - first;
+  return { ...split, sizes };
 }
 
 export function validateWorkspaceLayout(input: SavedLayout | WorkspaceLayout): LayoutValidationResult {

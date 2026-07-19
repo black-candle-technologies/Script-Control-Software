@@ -61,6 +61,18 @@ export const listFdxFiles = (folderPath: string, recursive = true) => invoke<Fdx
 export const openFdxInExternalEditor = (path: string) => invoke<void>("open_fdx_in_external_editor", { path });
 export const revealInFileManager = (path: string) => invoke<void>("reveal_in_file_manager", { path });
 
+export async function saveFdxExport(contents: string, suggestedName: string): Promise<string | null> {
+  const baseName = suggestedName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "screenplay";
+  let path = await save({
+    title: "Export Final Draft screenplay",
+    defaultPath: `${baseName}.fdx`,
+    filters: [{ name: "Final Draft", extensions: ["fdx"] }],
+  });
+  if (!path) return null;
+  if (!path.toLowerCase().endsWith(".fdx")) path += ".fdx";
+  return invoke<string>("write_fdx_export", { path, contents });
+}
+
 export async function saveProjectSession(session: ProjectSession, saveAs = false): Promise<ProjectSession | null> {
   let path = saveAs ? "" : session.projectPath;
   if (!path) {

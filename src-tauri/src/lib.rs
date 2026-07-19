@@ -5,7 +5,9 @@ mod git_sync;
 mod project_file;
 
 use domain::{AppInfo, PhaseStatus, SampleProject};
-use external_files::{list_fdx_files, open_fdx_in_external_editor, reveal_in_file_manager};
+use external_files::{
+    list_fdx_files, open_fdx_in_external_editor, reveal_in_file_manager, write_fdx_export,
+};
 use fdx::ScreenplayDocument;
 use project_file::{ProjectBundle, ProjectManifest, ProjectType};
 use serde_json::Value;
@@ -115,6 +117,7 @@ pub fn run() {
             list_fdx_files,
             open_fdx_in_external_editor,
             reveal_in_file_manager,
+            write_fdx_export,
             git_sync::git_sync_status,
             git_sync::git_sync_init,
             git_sync::git_sync_commit,

@@ -8,6 +8,7 @@ import {
   keyboardShortcutMatches,
   normalizeKeyboardShortcut,
   normalizeWorkspaceLayout,
+  resizeWorkspaceSplit,
   saveCustomLayout,
   setKeyboardShortcut,
   validateKeyboardShortcuts,
@@ -31,6 +32,19 @@ test("every existing SavedLayout preset upgrades to a valid panel and tab layout
   assert.deepEqual(normalizeWorkspaceLayout(workspace.layouts.find((layout) => layout.id === "production")!).tabGroups.find((group) => group.id === "production-tabs")?.panelIds, ["breakdown", "production"]);
   const companionCopy = duplicateWorkspaceLayout(workspace, "companion");
   assert.equal(getWorkspaceLayout(companionCopy, companionCopy.activeLayoutId)?.panels[0].kind, "companion");
+});
+
+test("split resizing keeps the total stable and enforces adjacent panel minimums", () => {
+  const split = normalizeWorkspaceLayout(defaultProjectWorkspace().layouts[0]).splits[0];
+  const resized = resizeWorkspaceSplit(split, 0, 0.1, 0.12);
+  assert.equal(resized.sizes.reduce((sum, size) => sum + size, 0), 1);
+  assert.equal(resized.sizes[0], split.sizes[0] + 0.1);
+  assert.equal(resizeWorkspaceSplit(split, 0, -1, 0.12).sizes[0], 0.12);
+
+  const session = createProjectSession();
+  const writer = normalizeWorkspaceLayout(session.workspace.layouts[0]);
+  session.workspace.layouts[0] = { ...writer, splits: [{ ...writer.splits[0], sizes: [0.2, 0.5, 0.3] }] };
+  assert.deepEqual(normalizeProjectSession(JSON.parse(JSON.stringify(session))).workspace.layouts[0].splits[0].sizes, [0.2, 0.5, 0.3]);
 });
 
 test("reference panels persist independent sources and targets while legacy layouts still upgrade", () => {

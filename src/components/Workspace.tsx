@@ -1,4 +1,4 @@
-import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import Editor from "./Editor.tsx";
 import Inspector, { type InspectorTab } from "./Inspector.tsx";
 import LayoutManager from "./LayoutManager.tsx";
@@ -42,6 +42,7 @@ import {
   normalizeWorkspaceLayout,
   parseFountain,
   reconcileImportedDocument,
+  resizeWorkspaceSplit,
   resolveStoryStructure,
   restoreProjectSnapshot,
   restoreLocalDocumentState,
@@ -94,6 +95,7 @@ import {
   openProjectSession,
   parseLinkedFdx,
   revealInFileManager,
+  saveFdxExport,
   saveProjectSession,
   type FdxFileInfo,
 } from "../services/fdxService.ts";
@@ -140,6 +142,15 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
   const [sharedConflict, setSharedConflict] = useState<{ base?: ProjectSession; theirs: ProjectSession; conflicts: MergeConflict[] } | null>(null);
   const [draggedScene, setDraggedScene] = useState<number | null>(null);
   const focusNonce = useRef(0);
+  const workspaceMainRef = useRef<HTMLDivElement>(null);
+  const splitDragRef = useRef<{
+    pointerId: number;
+    dividerIndex: number;
+    start: number;
+    extent: number;
+    minimum: number;
+    split: WorkspaceLayout["splits"][number];
+  } | null>(null);
   const sessionRef = useRef(session);
   const sourceRecoveryRef = useRef({ mode, sourceText, document: doc });
   sourceRecoveryRef.current = { mode, sourceText, document: doc };
@@ -406,10 +417,22 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
 
   const outputDocument = () => materializeSourceSession(session).documents.find((document) => document.id === doc.id) ?? doc;
   const exportFountain = () => download(toFountain(outputDocument()), "fountain", "text/plain");
-  const exportFdx = () => {
-    const { xml, warnings } = toFdxWithWarnings(outputDocument());
-    download(xml, "fdx", "application/xml");
-    setOperationMessage(warnings.length ? `FDX exported with ${warnings.length} preservation warning${warnings.length === 1 ? "" : "s"}: ${warnings.join(" ")}` : "FDX exported without preservation warnings.");
+  const exportFdx = async () => {
+    setBusy(true);
+    setOperationMessage(null);
+    try {
+      const output = outputDocument();
+      const { xml, warnings } = toFdxWithWarnings(output);
+      const path = await saveFdxExport(xml, output.titlePage.title || "screenplay");
+      if (!path) return;
+      setOperationMessage(warnings.length
+        ? `FDX exported to ${path} with ${warnings.length} preservation warning${warnings.length === 1 ? "" : "s"}: ${warnings.join(" ")}`
+        : `FDX exported to ${path} without preservation warnings.`);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    } finally {
+      setBusy(false);
+    }
   };
   const exportBreakdown = (format: "md" | "csv" | "json" | "pdf", section: AnalysisCsvSection = "scenes") => {
     const markdown = analysisToMarkdown(analysis);
@@ -1336,19 +1359,61 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
     return group ? [group] : [];
   });
   const splitDirection = split?.direction ?? "horizontal";
+  const updateSplit = (splitId: string, sizes: number[]) => setSession((current) => ({
+    ...current,
+    workspace: {
+      ...current.workspace,
+      layouts: current.workspace.layouts.map((item) => {
+        if (item.id !== activeLayout.id) return item;
+        const normalized = normalizeWorkspaceLayout(item);
+        return { ...normalized, splits: normalized.splits.map((candidate) => candidate.id === splitId ? { ...candidate, sizes } : candidate) };
+      }),
+    },
+  }));
+  const startSplitResize = (event: ReactPointerEvent<HTMLDivElement>, dividerIndex: number) => {
+    if (!split || !workspaceMainRef.current) return;
+    const bounds = workspaceMainRef.current.getBoundingClientRect();
+    const extent = splitDirection === "horizontal" ? bounds.width : bounds.height;
+    if (!extent) return;
+    splitDragRef.current = {
+      pointerId: event.pointerId,
+      dividerIndex,
+      start: splitDirection === "horizontal" ? event.clientX : event.clientY,
+      extent,
+      minimum: (splitDirection === "horizontal" ? 160 : 120) / extent,
+      split: { ...split, sizes: [...split.sizes] },
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+  const moveSplitResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = splitDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const position = splitDirection === "horizontal" ? event.clientX : event.clientY;
+    const resized = resizeWorkspaceSplit(drag.split, drag.dividerIndex, (position - drag.start) / drag.extent, drag.minimum);
+    updateSplit(drag.split.id, resized.sizes);
+  };
+  const stopSplitResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (splitDragRef.current?.pointerId !== event.pointerId) return;
+    splitDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const resizeSplitWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>, dividerIndex: number) => {
+    if (!split) return;
+    const backward = splitDirection === "horizontal" ? event.key === "ArrowLeft" : event.key === "ArrowUp";
+    const forward = splitDirection === "horizontal" ? event.key === "ArrowRight" : event.key === "ArrowDown";
+    if (!backward && !forward) return;
+    event.preventDefault();
+    updateSplit(split.id, resizeWorkspaceSplit(split, dividerIndex, forward ? 0.02 : -0.02, 0.08).sizes);
+  };
   const renderTabGroup = (group: WorkspaceLayout["tabGroups"][number]) => {
     const panels = group.panelIds.flatMap((id) => {
       const panel = activeLayout.panels.find((item) => item.id === id);
       return panel ? [panel] : [];
     });
     const activePanel = panels.find((panel) => panel.id === group.activePanelId) ?? panels[0];
-    const soleKind = panels.length === 1 ? panels[0].kind : undefined;
     const ratio = split?.sizes[split.groupIds.indexOf(group.id)] ?? 1 / Math.max(1, orderedGroups.length);
-    const style: CSSProperties = splitDirection === "horizontal" && soleKind === "navigator"
-      ? { flex: `0 0 ${activeLayout.navigatorWidth}px` }
-      : splitDirection === "horizontal" && soleKind === "inspector"
-        ? { flex: `0 0 ${activeLayout.inspectorWidth}px` }
-        : { flex: `${ratio} 1 0` };
+    const style: CSSProperties = { flex: `${ratio} 1 0%` };
     return <section className="workspace-tab-group" style={style} key={group.id} aria-label={`${group.id} panel group`}>
       <nav className="workspace-panel-tabs" aria-label={`${group.id} tabs`}>{panels.map((panel) => <button key={panel.id} className={panel.id === activePanel?.id ? "active" : ""} onClick={() => activateLayoutPanel(group.id, panel.id)}>{panel.title}</button>)}</nav>
       {panels.length ? panels.map((panel) => <div className="workspace-panel-body" key={`${group.id}-${panel.id}`} hidden={panel.id !== activePanel?.id}>{renderWorkspacePanel(panel)}</div>) : <div className="workspace-panel-body"><div className="workspace-panel-empty">This tab group has no panel.</div></div>}
@@ -1357,7 +1422,7 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
 
   return <div className={`workspace layout-${layout}`} style={{ "--navigator-width": `${activeLayout.navigatorWidth}px`, "--inspector-width": `${activeLayout.inspectorWidth}px` } as CSSProperties}>
     {layoutManagerOpen && canEdit && <LayoutManager workspace={session.workspace} layout={activeLayout} referenceTargets={referenceTargetOptions} onWorkspace={(next) => setSession((current) => ({ ...current, workspace: next }))} onClose={() => setLayoutManagerOpen(false)} />}
-    {paletteOpen && <div className="command-backdrop" onMouseDown={() => setPaletteOpen(false)}><div className="command-palette" onMouseDown={(event) => event.stopPropagation()}><input autoFocus value={query} placeholder="Search every script, draft, and workspace…" onChange={(event) => setQuery(event.target.value)} />{query ? searchResults.map((result) => <button key={result.key} onClick={() => { result.action(); setPaletteOpen(false); }}>{result.label}</button>) : <><button disabled={!canEdit || busy} onClick={() => { void saveNow(); setPaletteOpen(false); }}>Save Project</button><button disabled={!canEdit} onClick={() => { saveDraftVersion(); setPaletteOpen(false); }}>Save Draft Version</button><button onClick={() => { exportFdx(); setPaletteOpen(false); }}>Export FDX</button><button onClick={() => { setInspectorOpen((open) => !open); setPaletteOpen(false); }}>Toggle Inspector</button><button disabled={!canEdit} onClick={() => { setLayoutManagerOpen(true); setPaletteOpen(false); }}>Manage Workspace Layouts</button></>}</div></div>}
+    {paletteOpen && <div className="command-backdrop" onMouseDown={() => setPaletteOpen(false)}><div className="command-palette" onMouseDown={(event) => event.stopPropagation()}><input autoFocus value={query} placeholder="Search every script, draft, and workspace…" onChange={(event) => setQuery(event.target.value)} />{query ? searchResults.map((result) => <button key={result.key} onClick={() => { result.action(); setPaletteOpen(false); }}>{result.label}</button>) : <><button disabled={!canEdit || busy} onClick={() => { void saveNow(); setPaletteOpen(false); }}>Save Project</button><button disabled={!canEdit} onClick={() => { saveDraftVersion(); setPaletteOpen(false); }}>Save Draft Version</button><button disabled={busy} onClick={() => { void exportFdx(); setPaletteOpen(false); }}>Export FDX</button><button onClick={() => { setInspectorOpen((open) => !open); setPaletteOpen(false); }}>Toggle Inspector</button><button disabled={!canEdit} onClick={() => { setLayoutManagerOpen(true); setPaletteOpen(false); }}>Manage Workspace Layouts</button></>}</div></div>}
     {episodeDocs.length > 1 && <div className="workspace-episodes" aria-label="Television episodes">
       {episodeDocs.map((episode, index) => <button key={episode.id ?? episode.source?.path ?? index} className={`episode-tab ${index === activeEpisode ? "active" : ""}`} onClick={() => selectEpisode(episode.id!)}>
         {session.workspace.series.episodes[episode.id!]?.title || episode.titlePage.title || `Episode ${index + 1}`}
@@ -1384,15 +1449,31 @@ export default function Workspace({ initialSession, onOpenFdx }: WorkspaceProps)
       {doc.source?.type === "fdx" && doc.source.path && <button className="btn btn-ghost" onClick={() => void revealExternalPath(doc.source!.path)}>Reveal FDX</button>}
       <button className="btn btn-ghost" onClick={addEpisode} disabled={busy || !canEdit}>Add Episode FDX</button>
       <button className="btn btn-ghost" onClick={addBlankEpisode} disabled={busy || !canEdit}>New Episode</button>
-      <button className="btn btn-ghost" onClick={exportFdx}>Export FDX</button>
+      <button className="btn btn-ghost" disabled={busy} onClick={() => void exportFdx()}>Export FDX</button>
       <button className="btn" onClick={() => setInspectorOpen((open) => !open)}>{inspectorOpen ? "Panel ▸" : "◂ Panel"}</button>
     </div>
     {doc.source?.type === "fdx" && <div className="readonly-banner">{doc.source.path ? "Linked FDX · edits stay in SCS until exported." : "Imported FDX · choose its watch folder on this computer to relink companion updates."} <span>{doc.source.fileName}</span></div>}
     {externalChanged && <div className="operation-message" role="alert">{externalConflict ? "Both SCS and the linked FDX changed. Choose which script text to keep; SCS snapshots the current draft first." : "The linked FDX changed outside SCS."} <button className="btn" disabled={!canEdit} onClick={reloadLinkedFdx}>{externalConflict ? "Use external FDX" : "Re-import and preserve metadata"}</button>{externalConflict && <button className="btn btn-ghost" disabled={!canEdit} onClick={keepLocalAfterConflict}>Keep SCS draft</button>}</div>}
     {operationMessage && <div className="operation-message" role="status">{operationMessage}</div>}
     {!!doc.warnings?.length && <details className="import-summary"><summary>{doc.warnings.length} import warning{doc.warnings.length === 1 ? "" : "s"} — source data was preserved where possible</summary><ul>{doc.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><strong>{warning.code}</strong>: {warning.message}</li>)}</ul></details>}
-    <div className={`workspace-main workspace-layout-runtime split-${splitDirection}`}>
-      {orderedGroups.length ? orderedGroups.map(renderTabGroup) : scriptPanel}
+    <div ref={workspaceMainRef} className={`workspace-main workspace-layout-runtime split-${splitDirection}`}>
+      {orderedGroups.length ? orderedGroups.flatMap((group, index) => [
+        renderTabGroup(group),
+        ...(index < orderedGroups.length - 1 && split ? [<div
+          className="workspace-split-handle"
+          key={`${split.id}-divider-${index}`}
+          role="separator"
+          tabIndex={0}
+          aria-label={`Resize ${group.id} panel group`}
+          aria-orientation={splitDirection === "horizontal" ? "vertical" : "horizontal"}
+          aria-valuenow={Math.round(split.sizes[index] * 100)}
+          onPointerDown={(event) => startSplitResize(event, index)}
+          onPointerMove={moveSplitResize}
+          onPointerUp={stopSplitResize}
+          onPointerCancel={stopSplitResize}
+          onKeyDown={(event) => resizeSplitWithKeyboard(event, index)}
+        />] : []),
+      ]) : scriptPanel}
       {activeLayout.floatingPanels.map((floating) => {
         const panel = activeLayout.panels.find((item) => item.id === floating.panelId);
         return panel && <section className="workspace-floating-panel" key={floating.panelId} style={{ left: floating.x, top: floating.y, width: floating.width, height: floating.height }}><header>{panel.title}</header><div className="workspace-panel-body">{renderWorkspacePanel(panel)}</div></section>;

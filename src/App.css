@@ -599,6 +599,31 @@ button.wordmark {
 .workspace-layout-runtime.split-horizontal { flex-direction: row; }
 .workspace-layout-runtime.split-vertical { flex-direction: column; }
 
+.workspace-layout-runtime.split-horizontal > .workspace-tab-group { min-width: 160px; }
+.workspace-layout-runtime.split-vertical > .workspace-tab-group { min-height: 120px; }
+
+.workspace-split-handle {
+  position: relative;
+  z-index: 20;
+  flex: 0 0 7px;
+  background: var(--bg);
+  touch-action: none;
+  outline: none;
+}
+
+.workspace-split-handle::after {
+  content: "";
+  position: absolute;
+  background: var(--border-strong);
+}
+
+.split-horizontal > .workspace-split-handle { cursor: col-resize; }
+.split-horizontal > .workspace-split-handle::after { inset: 0 3px; }
+.split-vertical > .workspace-split-handle { cursor: row-resize; }
+.split-vertical > .workspace-split-handle::after { inset: 3px 0; }
+.workspace-split-handle:hover::after,
+.workspace-split-handle:focus-visible::after { background: var(--accent); }
+
 .workspace-tab-group {
   min-width: 0;
   min-height: 0;
