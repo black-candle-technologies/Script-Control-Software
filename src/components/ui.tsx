@@ -1,6 +1,18 @@
 /** Small shared SCS controls: dropdown menu, segmented switch, empty state. */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Icon from "./Icons.tsx";
+import { useTheme } from "../theme.ts";
+
+/** Sits far right on every surface: the sun means "go light", the moon "go dark". */
+export function ThemeToggle({ className = "tool-btn icon-only" }: { className?: string }) {
+  const [theme, toggle] = useTheme();
+  const label = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+  return (
+    <button type="button" className={className} onClick={toggle} aria-label={label} title={label}>
+      <Icon name={theme === "dark" ? "sun" : "moon"} />
+    </button>
+  );
+}
 
 export interface MenuItem {
   label: string;

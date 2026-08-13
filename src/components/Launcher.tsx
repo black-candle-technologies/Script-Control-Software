@@ -5,6 +5,7 @@
  */
 import type { AppInfo } from "../domain/index.ts";
 import Icon from "./Icons.tsx";
+import { ThemeToggle } from "./ui.tsx";
 
 export type DocChoice = "saved" | "sample" | "new" | "new-show";
 
@@ -29,6 +30,10 @@ export default function Launcher({ appInfo, savedTitle, onOpen, onOpenFdx, onOpe
       </aside>
 
       <main className="launcher-panel">
+        <div className="launcher-topbar">
+          <ThemeToggle />
+        </div>
+
         <section className="launcher-section" aria-label="Start">
           <h2>Start</h2>
           <div className="launcher-actions">

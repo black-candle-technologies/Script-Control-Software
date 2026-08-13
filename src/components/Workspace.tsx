@@ -5,7 +5,7 @@ import ContextInspector from "./ContextInspector.tsx";
 import SceneNavigator from "./SceneNavigator.tsx";
 import CompanionDashboard from "./CompanionDashboard.tsx";
 import Icon, { type IconName } from "./Icons.tsx";
-import { Menu, Segmented, type MenuEntry } from "./ui.tsx";
+import { Menu, Segmented, ThemeToggle, type MenuEntry } from "./ui.tsx";
 import {
   ELEMENT_TYPES,
   analysisToCsv,
@@ -1641,6 +1641,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       <button className="tool-btn" disabled={busy || !canEdit} onClick={() => void saveNow()}>Save</button>
       <Menu label="Project" items={projectMenu} />
       <button className="tool-btn icon-only" aria-label="Find in project" title={`Find (${session.workspace.shortcuts.commandPalette || "Ctrl+K"})`} onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
+      <ThemeToggle />
     </header>
 
     {isTelevision && <div className="episode-strip" aria-label="Television episodes">

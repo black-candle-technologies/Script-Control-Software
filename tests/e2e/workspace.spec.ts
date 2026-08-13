@@ -153,3 +153,30 @@ test("viewer role cannot edit screenplay text or enter source mode", async ({ pa
   await expect(page.locator("textarea.blk").first()).toBeDisabled();
   await expect(page.getByRole("tab", { name: "Fountain Source" })).toBeDisabled();
 });
+
+test("the theme switch flips both palettes and is remembered across a reload", async ({ page }) => {
+  const root = page.locator("html");
+  const body = page.locator("body");
+
+  // With nothing remembered, the palette follows the OS.
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.reload();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  await expect(body).toHaveCSS("background-color", "rgb(20, 22, 26)");
+
+  await page.getByRole("button", { name: "Switch to light theme" }).click();
+  await expect(root).toHaveAttribute("data-theme", "light");
+  await expect(body).toHaveCSS("background-color", "rgb(221, 216, 205)");
+
+  // The writer's choice sticks, beats the OS, and is painted before React mounts.
+  await page.reload();
+  await expect(root).toHaveAttribute("data-theme", "light");
+  await expect(body).toHaveCSS("background-color", "rgb(221, 216, 205)");
+
+  // It reaches the workspace chrome too, and switches back.
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await expect(page.locator(".titlebar")).toHaveCSS("background-color", "rgb(179, 174, 163)");
+  await page.getByRole("button", { name: "Switch to dark theme" }).click();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator(".titlebar")).toHaveCSS("background-color", "rgb(13, 15, 18)");
+});

@@ -27,7 +27,9 @@ type IconName =
   | "plus"
   | "menu"
   | "check"
-  | "back";
+  | "back"
+  | "sun"
+  | "moon";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   write: <><path d="M11.3 2.7a1.7 1.7 0 0 1 2.4 2.4l-7.6 7.6-3.3.9.9-3.3z" /><path d="M9.8 4.2l2.4 2.4" /></>,
@@ -52,6 +54,8 @@ const PATHS: Record<IconName, React.ReactNode> = {
   menu: <><circle cx="8" cy="3.4" r="1.1" fill="currentColor" stroke="none" /><circle cx="8" cy="8" r="1.1" fill="currentColor" stroke="none" /><circle cx="8" cy="12.6" r="1.1" fill="currentColor" stroke="none" /></>,
   check: <path d="M3 8.5l3.2 3.2L13 4.5" />,
   back: <><path d="M9.8 3.5L5.3 8l4.5 4.5" /></>,
+  sun: <><circle cx="8" cy="8" r="3" /><path d="M8 1.4v1.7" /><path d="M8 12.9v1.7" /><path d="M1.4 8h1.7" /><path d="M12.9 8h1.7" /><path d="M3.3 3.3l1.2 1.2" /><path d="M11.5 11.5l1.2 1.2" /><path d="M12.7 3.3l-1.2 1.2" /><path d="M4.5 11.5l-1.2 1.2" /></>,
+  moon: <path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z" />,
 };
 
 export default function Icon({ name, size = 16, ...rest }: { name: IconName; size?: number } & SVGProps<SVGSVGElement>) {
