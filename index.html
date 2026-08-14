@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/scs.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Script Control Software (SCS)</title>
+    <script>
+      // Paint the remembered palette before first render, so the app never
+      // flashes the wrong theme. src/theme.ts owns it from here on.
+      (function () {
+        var t;
+        try { t = localStorage.getItem("scs-theme"); } catch (e) { /* storage off */ }
+        if (t !== "dark" && t !== "light")
+          t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", t);
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
