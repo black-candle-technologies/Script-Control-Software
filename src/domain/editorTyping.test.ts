@@ -49,6 +49,25 @@ test("scene heading completion excludes the active heading from its history", ()
   });
 });
 
+test("a trailing space commits an exact location even when a longer location matches", () => {
+  const blocks = [
+    heading("one", "INT. SOMN NIGHTCLUB - NIGHT"),
+    heading("two", "INT. SOMN NIGHTCLUB: BACK HALLWAY - NIGHT"),
+    heading("active", ""),
+  ];
+
+  assert.deepEqual(sceneHeadingCompletion(blocks, "active", "INT. SOMN NIGHTCLUB"), {
+    stage: "location",
+    base: "INT. ",
+    candidates: ["SOMN NIGHTCLUB", "SOMN NIGHTCLUB: BACK HALLWAY"],
+  });
+  assert.deepEqual(sceneHeadingCompletion(blocks, "active", "INT. SOMN NIGHTCLUB "), {
+    stage: "separator",
+    base: "INT. SOMN NIGHTCLUB",
+    candidates: [" - "],
+  });
+});
+
 test("dialogue returns to action after one turn and character after an exchange", () => {
   const oneTurn: ScreenplayBlock[] = [
     { id: "c1", type: "character", text: "MARA" },

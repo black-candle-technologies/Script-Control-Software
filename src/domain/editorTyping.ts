@@ -53,6 +53,10 @@ export function sceneHeadingCompletion(
 
   const typedLocation = remainder.trim();
   const matchingLocations = locations.filter((location) => location.startsWith(typedLocation));
+  const committedExactLocation = remainder.endsWith(" ") && matchingLocations.includes(typedLocation);
+  if (committedExactLocation) {
+    return { stage: "separator", base: `${prefix} ${typedLocation}`, candidates: [" - "] };
+  }
   if (!typedLocation || matchingLocations.some((location) => location !== typedLocation)) {
     return { stage: "location", base: `${prefix} `, candidates: matchingLocations };
   }

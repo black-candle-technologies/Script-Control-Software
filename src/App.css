@@ -1225,6 +1225,11 @@ button.chip:hover { color: var(--text-1); background: var(--raise); }
 }
 .page .blk:first-child { margin-top: 0; }
 .blk:focus { background: var(--paper-highlight); box-shadow: -3px 0 0 var(--accent); }
+.blk.multi-selected,
+.blk.multi-selected:focus {
+  background: var(--paper-highlight);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
 .blk::placeholder { color: var(--paper-placeholder); }
 .blk.revised { box-shadow: inset -3px 0 var(--revision-mark, var(--paper-muted)); }
 

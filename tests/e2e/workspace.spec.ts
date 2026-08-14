@@ -66,7 +66,7 @@ test("screenplay typing shortcuts preserve the current line", async ({ page }) =
   await action.press("Tab");
   await expect(action).toHaveClass(/blk-character/);
   await action.press("Tab");
-  await expect(action).toHaveClass(/blk-action/);
+  await expect(action).toHaveClass(/blk-character/);
   await expect(page.locator("textarea.blk")).toHaveCount(2);
 });
 
@@ -159,6 +159,43 @@ test("scene heading menus support mouse and arrow selection with staged advancem
   await expect(page.locator("textarea.blk-action").first()).toBeFocused();
 });
 
+test("scene location selection commits an exact match while Tab cycling waits for Space", async ({ page }) => {
+  await page.getByRole("button", { name: "New Feature Screenplay" }).click();
+
+  const firstHeading = page.locator("textarea.blk").first();
+  await firstHeading.fill("INT. SOMN NIGHTCLUB - NIGHT");
+  await firstHeading.press("End");
+  await firstHeading.press("Enter");
+  const secondHeading = page.locator("textarea.blk").nth(1);
+  await secondHeading.press("Enter");
+  await secondHeading.fill("INT. SOMN NIGHTCLUB: BACK HALLWAY - NIGHT");
+  await secondHeading.press("End");
+  await secondHeading.press("Enter");
+
+  const selectedHeading = page.locator("textarea.blk").nth(2);
+  await selectedHeading.press("Enter");
+  await selectedHeading.fill("INT. SOMN");
+  let menu = page.getByRole("listbox", { name: "Scene heading suggestions" });
+  await menu.getByRole("option", { name: "SOMN NIGHTCLUB", exact: true }).click();
+  await expect(selectedHeading).toHaveValue("INT. SOMN NIGHTCLUB ");
+  await selectedHeading.press("Tab");
+  await expect(selectedHeading).toHaveValue("INT. SOMN NIGHTCLUB - ");
+
+  await selectedHeading.fill("INT. SOMN");
+  await selectedHeading.press("Tab");
+  await expect(selectedHeading).toHaveValue("INT. SOMN NIGHTCLUB");
+  await selectedHeading.press("Tab");
+  await expect(selectedHeading).toHaveValue("INT. SOMN NIGHTCLUB: BACK HALLWAY");
+  await selectedHeading.fill("INT. SOMN");
+  await selectedHeading.press("Tab");
+  await expect(selectedHeading).toHaveValue("INT. SOMN NIGHTCLUB");
+  await selectedHeading.press("Space");
+  await selectedHeading.press("Tab");
+  await expect(selectedHeading).toHaveValue("INT. SOMN NIGHTCLUB - ");
+  menu = page.getByRole("listbox", { name: "Scene heading suggestions" });
+  await expect(menu.getByRole("option", { name: "DAY" })).toBeVisible();
+});
+
 test("dialogue enter flow and parenthetical tabbing follow screenplay context", async ({ page }) => {
   await page.getByRole("button", { name: "New Feature Screenplay" }).click();
 
@@ -187,22 +224,27 @@ test("dialogue enter flow and parenthetical tabbing follow screenplay context", 
   await expect(continuingCharacter).toHaveClass(/blk-character/);
 
   await continuingCharacter.press("Enter");
-  await expect(continuingCharacter).toHaveClass(/blk-dialogue/);
+  await expect(continuingCharacter).toHaveClass(/blk-action/);
   await continuingCharacter.press("Tab");
-  await expect(continuingCharacter).toHaveClass(/blk-parenthetical/);
-  await expect(continuingCharacter).toHaveValue("()");
-  await expect(continuingCharacter).toBeFocused();
-  await expect(continuingCharacter).toHaveJSProperty("selectionStart", 1);
-  await expect(continuingCharacter).toHaveJSProperty("selectionEnd", 1);
-
-  await continuingCharacter.press("Tab");
-  await expect(continuingCharacter).toHaveClass(/blk-dialogue/);
-  await expect(continuingCharacter).toHaveValue("");
-  await continuingCharacter.press("Tab");
-  await continuingCharacter.pressSequentially("softly");
-  await expect(continuingCharacter).toHaveValue("(softly)");
+  await continuingCharacter.fill("MARA");
   await continuingCharacter.press("Enter");
-  await expect(continuingCharacter).toHaveValue("(softly)");
+  const continuingDialogue = page.locator("textarea.blk").nth(6);
+  await expect(continuingDialogue).toHaveClass(/blk-dialogue/);
+  await continuingDialogue.press("Tab");
+  await expect(continuingDialogue).toHaveClass(/blk-parenthetical/);
+  await expect(continuingDialogue).toHaveValue("()");
+  await expect(continuingDialogue).toBeFocused();
+  await expect(continuingDialogue).toHaveJSProperty("selectionStart", 1);
+  await expect(continuingDialogue).toHaveJSProperty("selectionEnd", 1);
+
+  await continuingDialogue.press("Tab");
+  await expect(continuingDialogue).toHaveClass(/blk-dialogue/);
+  await expect(continuingDialogue).toHaveValue("");
+  await continuingDialogue.press("Tab");
+  await continuingDialogue.pressSequentially("softly");
+  await expect(continuingDialogue).toHaveValue("(softly)");
+  await continuingDialogue.press("Enter");
+  await expect(continuingDialogue).toHaveValue("(softly)");
   await expect(page.locator("textarea.blk-dialogue").last()).toBeFocused();
 });
 
@@ -252,6 +294,56 @@ test("character suggestions support arrows, Enter, Tab selection, and Tab cyclin
   await expect(character).toHaveValue("MARA");
   await character.press("Tab");
   await expect(character).toHaveValue("DELL");
+
+  await character.fill("");
+  await character.press("Enter");
+  await expect(character).toHaveClass(/blk-action/);
+  await expect(character).toHaveValue("");
+  await character.press("Tab");
+  await expect(character).toHaveClass(/blk-character/);
+  await character.press("Tab");
+  await expect(character).toHaveValue("MARA");
+});
+
+test("Ctrl-drag selects contiguous screenplay blocks without changing ordinary selection", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+
+  const blocks = page.locator("textarea.blk");
+  const first = blocks.nth(0);
+  const third = blocks.nth(2);
+  const firstBox = await first.boundingBox();
+  const thirdBox = await third.boundingBox();
+  if (!firstBox || !thirdBox) throw new Error("Expected screenplay blocks to be visible");
+
+  await page.keyboard.down("Control");
+  await page.mouse.move(firstBox.x + 4, firstBox.y + firstBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(thirdBox.x + 4, thirdBox.y + thirdBox.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await expect(blocks.nth(0)).toHaveClass(/multi-selected/);
+  await expect(blocks.nth(1)).toHaveClass(/multi-selected/);
+  await expect(blocks.nth(2)).toHaveClass(/multi-selected/);
+  await expect(blocks.nth(3)).not.toHaveClass(/multi-selected/);
+
+  const expectedCopy = [await blocks.nth(0).inputValue(), await blocks.nth(1).inputValue(), await blocks.nth(2).inputValue()].join("\n");
+  await page.evaluate(() => {
+    const testWindow = window as typeof window & { __scsCopied?: string };
+    document.addEventListener("copy", (event) => {
+      testWindow.__scsCopied = event.clipboardData?.getData("text/plain") ?? "";
+    }, { once: true });
+  });
+  await first.press("Control+c");
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __scsCopied?: string }).__scsCopied)).toBe(expectedCopy);
+
+  await first.press("Escape");
+  await expect(page.locator("textarea.blk.multi-selected")).toHaveCount(0);
+
+  await page.mouse.move(firstBox.x + 4, firstBox.y + firstBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(thirdBox.x + 4, thirdBox.y + thirdBox.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect(page.locator("textarea.blk.multi-selected")).toHaveCount(0);
 });
 
 test("opening an FDX immediately still protects the in-memory project", async ({ page }) => {

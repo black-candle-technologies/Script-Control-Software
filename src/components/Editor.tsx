@@ -56,6 +56,11 @@ interface SuggestionSet {
   candidates: string[];
 }
 
+interface MultiBlockSelection {
+  anchorId: string;
+  focusId: string;
+}
+
 function resize(el: HTMLTextAreaElement) {
   el.style.height = "0";
   el.style.height = `${el.scrollHeight}px`;
@@ -78,6 +83,7 @@ export default function Editor({
   const pendingFocus = useRef<{ id: string; pos: number } | null>(null);
   const tabbedFromActionBlockId = useRef<string | null>(null);
   const tabCompletion = useRef<TabCompletionSession | null>(null);
+  const blockSelectionDrag = useRef<{ pointerId: number; anchorId: string } | null>(null);
   const lastFocusNonce = useRef(0);
   const ownHistories = useRef(new Map<string, EditorHistory>());
   const histories = historyStore ?? ownHistories;
@@ -90,6 +96,7 @@ export default function Editor({
   }
   const [activeId, setActiveId] = useState<string | null>(null);
   const [menuSelection, setMenuSelection] = useState<{ blockId: string; index: number } | null>(null);
+  const [multiBlockSelection, setMultiBlockSelection] = useState<MultiBlockSelection | null>(null);
   const pages = useMemo(() => {
     if (!productionPages?.length) return paginateBlocks(blocks);
     const byId = new Map(blocks.map((block) => [block.id, block]));
@@ -97,6 +104,15 @@ export default function Editor({
   }, [blocks, productionPages]);
   const indexes = useMemo(() => new Map(blocks.map((block, index) => [block.id, index])), [blocks]);
   const characterNames = useMemo(() => deriveCharacters(blocks).map((character) => character.name), [blocks]);
+  const multiSelectedIds = useMemo(() => {
+    if (!multiBlockSelection) return new Set<string>();
+    const anchor = indexes.get(multiBlockSelection.anchorId);
+    const focus = indexes.get(multiBlockSelection.focusId);
+    if (anchor === undefined || focus === undefined) return new Set<string>();
+    const start = Math.min(anchor, focus);
+    const end = Math.max(anchor, focus);
+    return new Set(blocks.slice(start, end + 1).map((block) => block.id));
+  }, [blocks, indexes, multiBlockSelection]);
 
   const commit = (next: ScreenplayBlock[]) => {
     history.undo.push(blocks.map((block) => ({ ...block })));
@@ -133,7 +149,9 @@ export default function Editor({
     pendingFocus.current = null;
     tabbedFromActionBlockId.current = null;
     tabCompletion.current = null;
+    blockSelectionDrag.current = null;
     setMenuSelection(null);
+    setMultiBlockSelection(null);
   }, [documentId]);
 
   useLayoutEffect(() => {
@@ -239,6 +257,7 @@ export default function Editor({
 
   const handleChange = (index: number, block: ScreenplayBlock, el: HTMLTextAreaElement) => {
     if (readOnly) return;
+    setMultiBlockSelection(null);
     if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
     if (tabCompletion.current?.blockId === block.id) tabCompletion.current = null;
     if (menuSelection?.blockId === block.id) setMenuSelection(null);
@@ -271,6 +290,11 @@ export default function Editor({
     index: number,
     block: ScreenplayBlock,
   ) => {
+    if (e.key === "Escape" && multiBlockSelection) {
+      e.preventDefault();
+      setMultiBlockSelection(null);
+      return;
+    }
     if (readOnly) return;
     const el = e.currentTarget;
     const { selectionStart, selectionEnd } = el;
@@ -324,7 +348,7 @@ export default function Editor({
       e.preventDefault();
       if (block.type === "scene_heading") {
         const current = tabCompletion.current;
-        let completion = current && current.blockId === block.id && current.renderedText === block.text && current.candidates.length > 1
+        let completion = current && current.blockId === block.id && current.renderedText === block.text
           ? current
           : null;
         if (!completion) {
@@ -346,12 +370,6 @@ export default function Editor({
         tabCompletion.current = completion.stage === "separator" ? null : completion;
         pendingFocus.current = { id: block.id, pos: text.length };
         update(index, { text });
-        return;
-      }
-      if (block.type === "character" && block.text === "" && tabbedFromActionBlockId.current === block.id) {
-        tabbedFromActionBlockId.current = null;
-        tabCompletion.current = null;
-        update(index, { type: "action" });
         return;
       }
       if (block.type === "character") {
@@ -381,6 +399,7 @@ export default function Editor({
           update(index, { text });
           return;
         }
+        if (block.text === "") return;
       }
       if (block.type === "dialogue" && !e.shiftKey) {
         const text = `(${block.text})`;
@@ -407,8 +426,9 @@ export default function Editor({
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (block.text === "" && block.type === "character" && tabbedFromActionBlockId.current === block.id) {
+      if (block.text === "" && block.type === "character") {
         tabbedFromActionBlockId.current = null;
+        tabCompletion.current = null;
         update(index, { type: "action" });
         return;
       }
@@ -498,11 +518,61 @@ export default function Editor({
     }
   };
 
+  const startBlockSelection = (event: React.PointerEvent<HTMLTextAreaElement>, block: ScreenplayBlock) => {
+    if (event.button !== 0) return;
+    if (!event.ctrlKey && !event.metaKey) {
+      blockSelectionDrag.current = null;
+      setMultiBlockSelection(null);
+      return;
+    }
+    event.preventDefault();
+    blockSelectionDrag.current = { pointerId: event.pointerId, anchorId: block.id };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setMultiBlockSelection({ anchorId: block.id, focusId: block.id });
+  };
+
+  const extendBlockSelection = (event: React.PointerEvent<HTMLTextAreaElement>) => {
+    const drag = blockSelectionDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId || (!event.ctrlKey && !event.metaKey)) return;
+    const target = globalThis.document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLTextAreaElement>("textarea.blk");
+    const focusId = target?.dataset.blockId;
+    if (!focusId || !indexes.has(focusId)) return;
+    setMultiBlockSelection((current) => current?.anchorId === drag.anchorId && current.focusId === focusId
+      ? current
+      : { anchorId: drag.anchorId, focusId });
+  };
+
+  const stopBlockSelection = (event: React.PointerEvent<HTMLTextAreaElement>) => {
+    const drag = blockSelectionDrag.current;
+    if (drag?.pointerId !== event.pointerId) return;
+    blockSelectionDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const anchor = refs.current.get(drag.anchorId);
+    if (anchor) {
+      anchor.focus({ preventScroll: true });
+      anchor.setSelectionRange(0, anchor.value.length);
+    }
+  };
+
+  const cancelBlockSelection = (event: React.PointerEvent<HTMLTextAreaElement>) => {
+    if (blockSelectionDrag.current?.pointerId !== event.pointerId) return;
+    blockSelectionDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setMultiBlockSelection(null);
+  };
+
+  const copyBlockSelection = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    if (!multiBlockSelection || multiSelectedIds.size === 0) return;
+    event.preventDefault();
+    const text = blocks.filter((block) => multiSelectedIds.has(block.id)).map((block) => block.text).join("\n");
+    event.clipboardData.setData("text/plain", text);
+  };
+
   const placeholderFor = (type: ScreenplayElementType, index: number) =>
     index === 0 && type === "scene_heading" ? "INT. LOCATION - DAY" : "";
 
   return (
-    <div className="editor-scroll">
+    <div className="editor-scroll" onCopy={copyBlockSelection}>
       <div className="title-card page-surface">
         <input
           className="title-card-title"
@@ -533,7 +603,8 @@ export default function Editor({
           <textarea
             rows={1}
             spellCheck={false}
-            className={`blk blk-${block.type}${block.textRuns?.some((run) => run.revisionId) ? " revised" : ""}`}
+            className={`blk blk-${block.type}${block.textRuns?.some((run) => run.revisionId) ? " revised" : ""}${multiSelectedIds.has(block.id) ? " multi-selected" : ""}`}
+            data-block-id={block.id}
             value={block.text}
             readOnly={readOnly}
             placeholder={placeholderFor(block.type, index)}
@@ -556,6 +627,10 @@ export default function Editor({
             }}
             onChange={(e) => handleChange(index, block, e.currentTarget)}
             onKeyDown={(e) => handleKeyDown(e, index, block)}
+            onPointerDown={(event) => startBlockSelection(event, block)}
+            onPointerMove={extendBlockSelection}
+            onPointerUp={stopBlockSelection}
+            onPointerCancel={cancelBlockSelection}
           />
           {suggestions && suggestions.candidates.length > 0 && <div id={menuId} className={`editor-suggestions suggestions-${block.type}`} role="listbox" aria-label={block.type === "character" ? "Character suggestions" : "Scene heading suggestions"}>{suggestions.candidates.map((candidate, candidateIndex) => <button id={`${menuId}-${candidateIndex}`} key={candidate} type="button" role="option" aria-selected={selectedIndex === candidateIndex} onMouseDown={(event) => event.preventDefault()} onClick={() => acceptSuggestion(index, block, suggestions, candidateIndex)}>{candidate.trim()}</button>)}</div>}
           </Fragment>;
