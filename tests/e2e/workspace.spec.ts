@@ -32,6 +32,38 @@ test("sample screenplay survives source mode and exposes the mode workspaces", a
   await expect(page.locator("summary.insp-card-title", { hasText: "E2E COMPASS" })).toBeVisible();
 });
 
+test("screenplay typing shortcuts preserve the current line", async ({ page }) => {
+  await page.getByRole("button", { name: "New Feature Screenplay" }).click();
+
+  const heading = page.locator("textarea.blk").first();
+  await heading.fill("INT. TEST ROOM - DAY");
+  await heading.press("End");
+  await heading.press("Enter");
+
+  const action = page.locator("textarea.blk").nth(1);
+  await expect(action).toHaveClass(/blk-action/);
+  await action.press("Enter");
+  await expect(action).toHaveClass(/blk-scene_heading/);
+  await expect(page.locator("textarea.blk")).toHaveCount(2);
+
+  await action.press("Enter");
+  await expect(action).toHaveClass(/blk-action/);
+  await action.press("Tab");
+  await expect(action).toHaveClass(/blk-character/);
+  await action.press("Enter");
+  await expect(action).toHaveClass(/blk-action/);
+  await expect(page.locator("textarea.blk")).toHaveCount(2);
+  await expect(heading).toHaveValue("INT. TEST ROOM - DAY");
+
+  await action.press("Tab");
+  await expect(action).toHaveClass(/blk-character/);
+  await action.press("Backspace");
+  await expect(action).toHaveClass(/blk-action/);
+  await expect(action).toBeFocused();
+  await expect(page.locator("textarea.blk")).toHaveCount(2);
+  await expect(heading).toHaveValue("INT. TEST ROOM - DAY");
+});
+
 test("opening an FDX immediately still protects the in-memory project", async ({ page }) => {
   await page.getByRole("button", { name: "New Feature Screenplay" }).click();
   await page.locator("textarea.blk").first().fill("Unsaved in-memory scene.");

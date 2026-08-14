@@ -58,6 +58,7 @@ export default function Editor({
 }: EditorProps) {
   const refs = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; pos: number } | null>(null);
+  const tabbedFromActionBlockId = useRef<string | null>(null);
   const lastFocusNonce = useRef(0);
   const ownHistories = useRef(new Map<string, EditorHistory>());
   const histories = historyStore ?? ownHistories;
@@ -112,7 +113,16 @@ export default function Editor({
   useLayoutEffect(() => {
     setActiveId(null);
     pendingFocus.current = null;
+    tabbedFromActionBlockId.current = null;
   }, [documentId]);
+
+  useLayoutEffect(() => {
+    if (!tabbedFromActionBlockId.current) return;
+    const block = blocks.find((item) => item.id === tabbedFromActionBlockId.current);
+    if (!block || block.type !== "character" || block.text !== "") {
+      tabbedFromActionBlockId.current = null;
+    }
+  }, [blocks]);
 
   // Apply structural focus moves (splits, merges, navigator jumps) after render,
   // and keep textarea heights in sync with their content.
@@ -147,6 +157,7 @@ export default function Editor({
 
   const handleChange = (index: number, block: ScreenplayBlock, el: HTMLTextAreaElement) => {
     if (readOnly) return;
+    if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
     let value = el.value;
     let type = block.type;
     const singleLine = !value.includes("\n");
@@ -195,6 +206,7 @@ export default function Editor({
     // Ctrl/Cmd+1..8 — set the element type directly.
     if ((e.ctrlKey || e.metaKey) && e.key >= "1" && e.key <= "8") {
       e.preventDefault();
+      if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
       update(index, { type: ELEMENT_TYPES[Number(e.key) - 1] });
       return;
     }
@@ -203,15 +215,28 @@ export default function Editor({
       e.preventDefault();
       const i = ELEMENT_TYPES.indexOf(block.type);
       const n = ELEMENT_TYPES.length;
-      update(index, { type: ELEMENT_TYPES[(i + (e.shiftKey ? -1 : 1) + n) % n] });
+      const type = ELEMENT_TYPES[(i + (e.shiftKey ? -1 : 1) + n) % n];
+      tabbedFromActionBlockId.current = block.type === "action" && type === "character" && block.text === ""
+        ? block.id
+        : null;
+      update(index, { type });
       return;
     }
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      if (block.text === "" && block.type === "character" && tabbedFromActionBlockId.current === block.id) {
+        tabbedFromActionBlockId.current = null;
+        update(index, { type: "action" });
+        return;
+      }
       const next = blocks.slice();
       if (block.text === "") {
-        // Enter on an empty element steps it forward instead of stacking blanks.
+        // Repeated Enter on a new action line starts the next scene without stacking blanks.
+        if (block.type === "action") {
+          update(index, { type: "scene_heading" });
+          return;
+        }
         const to = enterCreates[block.type];
         if (to !== block.type) {
           update(index, { type: to });
@@ -226,6 +251,13 @@ export default function Editor({
       next.splice(index + 1, 0, created);
       pendingFocus.current = { id: created.id, pos: 0 };
       commit(next);
+      return;
+    }
+
+    if (e.key === "Backspace" && block.text === "" && block.type === "character" && tabbedFromActionBlockId.current === block.id) {
+      e.preventDefault();
+      tabbedFromActionBlockId.current = null;
+      update(index, { type: "action" });
       return;
     }
 
@@ -320,6 +352,7 @@ export default function Editor({
               }
             }}
             onFocus={() => { setActiveId(block.id); onActiveBlock(block.id); }}
+            onBlur={() => { if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null; }}
             onChange={(e) => handleChange(index, block, e.currentTarget)}
             onKeyDown={(e) => handleKeyDown(e, index, block)}
           />
