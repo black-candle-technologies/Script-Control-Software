@@ -1225,13 +1225,15 @@ button.chip:hover { color: var(--text-1); background: var(--raise); }
   color: var(--paper-note-text);
 }
 
-.character-suggestions {
+.editor-suggestions {
   display: flex;
   gap: 0.3rem;
-  margin: 0.2rem 0 0 211px;
+  margin-top: 0.2rem;
   flex-wrap: wrap;
 }
-.character-suggestions button {
+.suggestions-character { margin-left: 211px; }
+.suggestions-scene_heading { margin-left: 0; }
+.editor-suggestions button {
   border: 1px solid var(--paper-chip-line);
   background: var(--paper-chip-bg);
   color: var(--paper-chip-text);
@@ -1239,7 +1241,11 @@ button.chip:hover { color: var(--text-1); background: var(--raise); }
   font: 11px var(--font-ui);
   cursor: pointer;
 }
-.character-suggestions button:hover { border-color: var(--paper-line); }
+.editor-suggestions button:hover,
+.editor-suggestions button[aria-selected="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 
 /* Fountain source view */
 .source-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }

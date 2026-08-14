@@ -3,8 +3,6 @@ import {
   ELEMENT_TYPES,
   enterCreates,
   deriveCharacters,
-  deriveLocations,
-  deriveScenes,
   isSceneHeadingText,
   isTransitionText,
   newBlock,
@@ -42,12 +40,20 @@ export interface EditorHistory {
 }
 
 interface TabCompletionSession {
+  kind: "scene_heading" | "character";
   blockId: string;
-  stage: SceneHeadingCompletionStage;
+  stage?: SceneHeadingCompletionStage;
   base: string;
   candidates: string[];
   index: number;
   renderedText: string;
+}
+
+interface SuggestionSet {
+  kind: "scene_heading" | "character";
+  stage?: SceneHeadingCompletionStage;
+  base: string;
+  candidates: string[];
 }
 
 function resize(el: HTMLTextAreaElement) {
@@ -83,6 +89,7 @@ export default function Editor({
     history.redo = [];
   }
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [menuSelection, setMenuSelection] = useState<{ blockId: string; index: number } | null>(null);
   const pages = useMemo(() => {
     if (!productionPages?.length) return paginateBlocks(blocks);
     const byId = new Map(blocks.map((block) => [block.id, block]));
@@ -90,8 +97,6 @@ export default function Editor({
   }, [blocks, productionPages]);
   const indexes = useMemo(() => new Map(blocks.map((block, index) => [block.id, index])), [blocks]);
   const characterNames = useMemo(() => deriveCharacters(blocks).map((character) => character.name), [blocks]);
-  const sceneHeadings = useMemo(() => deriveScenes(blocks).map((scene) => scene.heading), [blocks]);
-  const locationHeadings = useMemo(() => deriveLocations(blocks).flatMap((location) => [`INT. ${location.name} - DAY`, `EXT. ${location.name} - NIGHT`]), [blocks]);
 
   const commit = (next: ScreenplayBlock[]) => {
     history.undo.push(blocks.map((block) => ({ ...block })));
@@ -128,6 +133,7 @@ export default function Editor({
     pendingFocus.current = null;
     tabbedFromActionBlockId.current = null;
     tabCompletion.current = null;
+    setMenuSelection(null);
   }, [documentId]);
 
   useLayoutEffect(() => {
@@ -141,7 +147,7 @@ export default function Editor({
   useLayoutEffect(() => {
     if (!tabCompletion.current) return;
     const block = blocks.find((item) => item.id === tabCompletion.current?.blockId);
-    if (!block || block.type !== "scene_heading" || block.text !== tabCompletion.current.renderedText) {
+    if (!block || block.type !== tabCompletion.current.kind || block.text !== tabCompletion.current.renderedText) {
       tabCompletion.current = null;
     }
   }, [blocks]);
@@ -177,10 +183,64 @@ export default function Editor({
     commit(next);
   };
 
+  const suggestionsFor = (block: ScreenplayBlock): SuggestionSet | null => {
+    const cycle = tabCompletion.current;
+    if (cycle?.blockId === block.id && cycle.kind === block.type && cycle.renderedText === block.text) {
+      return { kind: cycle.kind, stage: cycle.stage, base: cycle.base, candidates: cycle.candidates };
+    }
+    if (block.type === "scene_heading") {
+      const completion = sceneHeadingCompletion(blocks, block.id, block.text);
+      return completion ? { kind: "scene_heading", ...completion } : null;
+    }
+    if (block.type === "character") {
+      const typed = block.text.trim().toUpperCase();
+      const candidates = characterNames.filter((name) => name !== typed && name.startsWith(typed));
+      return candidates.length ? { kind: "character", base: "", candidates } : null;
+    }
+    return null;
+  };
+
+  const acceptSuggestion = (
+    index: number,
+    block: ScreenplayBlock,
+    suggestions: SuggestionSet,
+    candidateIndex: number,
+  ) => {
+    const candidate = suggestions.candidates[candidateIndex];
+    if (!candidate) return;
+    tabCompletion.current = null;
+    setMenuSelection(null);
+
+    if (suggestions.kind === "character") {
+      pendingFocus.current = { id: block.id, pos: candidate.length };
+      update(index, { text: candidate });
+      return;
+    }
+
+    const completed = suggestions.base + candidate;
+    if (suggestions.stage !== "time") {
+      const text = completed.endsWith(" ") ? completed : `${completed} `;
+      pendingFocus.current = { id: block.id, pos: text.length };
+      update(index, { text });
+      return;
+    }
+
+    const next = blocks.slice();
+    next[index] = { ...block, text: completed };
+    let target = next[index + 1];
+    if (!target) {
+      target = newBlock("action");
+      next.splice(index + 1, 0, target);
+    }
+    pendingFocus.current = { id: target.id, pos: 0 };
+    commit(next);
+  };
+
   const handleChange = (index: number, block: ScreenplayBlock, el: HTMLTextAreaElement) => {
     if (readOnly) return;
     if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
     if (tabCompletion.current?.blockId === block.id) tabCompletion.current = null;
+    if (menuSelection?.blockId === block.id) setMenuSelection(null);
     let value = el.value;
     let type = block.type;
     const singleLine = !value.includes("\n");
@@ -215,14 +275,34 @@ export default function Editor({
     const { selectionStart, selectionEnd } = el;
     const collapsed = selectionStart === selectionEnd;
 
-    if (e.key !== "Tab" && tabCompletion.current?.blockId === block.id) {
-      tabCompletion.current = null;
-    }
-
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
       undo();
       return;
+    }
+
+    const suggestions = suggestionsFor(block);
+    const selected = menuSelection?.blockId === block.id ? menuSelection.index : null;
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && suggestions?.candidates.length) {
+      e.preventDefault();
+      const direction = e.key === "ArrowDown" ? 1 : -1;
+      const start = e.key === "ArrowDown" ? 0 : suggestions.candidates.length - 1;
+      setMenuSelection({
+        blockId: block.id,
+        index: selected === null
+          ? start
+          : (selected + direction + suggestions.candidates.length) % suggestions.candidates.length,
+      });
+      return;
+    }
+    if ((e.key === "Enter" || e.key === "Tab") && selected !== null && suggestions?.candidates.length) {
+      e.preventDefault();
+      acceptSuggestion(index, block, suggestions, selected);
+      return;
+    }
+
+    if (e.key !== "Tab" && tabCompletion.current?.blockId === block.id) {
+      tabCompletion.current = null;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
       e.preventDefault();
@@ -249,6 +329,7 @@ export default function Editor({
           const available = sceneHeadingCompletion(blocks, block.id, block.text);
           if (!available || available.candidates.length === 0) return;
           completion = {
+            kind: "scene_heading",
             blockId: block.id,
             ...available,
             index: e.shiftKey ? available.candidates.length - 1 : 0,
@@ -265,11 +346,51 @@ export default function Editor({
         update(index, { text });
         return;
       }
+      if (block.type === "character" && block.text === "" && tabbedFromActionBlockId.current === block.id) {
+        tabbedFromActionBlockId.current = null;
+        tabCompletion.current = null;
+        update(index, { type: "action" });
+        return;
+      }
+      if (block.type === "character") {
+        const current = tabCompletion.current;
+        const available = suggestionsFor(block);
+        let completion = current && current.kind === "character" && current.blockId === block.id && current.renderedText === block.text
+          ? current
+          : null;
+        if (!completion && available?.kind === "character" && available.candidates.length) {
+          completion = {
+            kind: "character",
+            blockId: block.id,
+            base: "",
+            candidates: available.candidates,
+            index: e.shiftKey ? available.candidates.length - 1 : 0,
+            renderedText: "",
+          };
+        } else if (completion) {
+          const direction = e.shiftKey ? -1 : 1;
+          completion.index = (completion.index + direction + completion.candidates.length) % completion.candidates.length;
+        }
+        if (completion) {
+          const text = completion.candidates[completion.index];
+          completion.renderedText = text;
+          tabCompletion.current = completion;
+          pendingFocus.current = { id: block.id, pos: text.length };
+          update(index, { text });
+          return;
+        }
+      }
       if (block.type === "dialogue" && !e.shiftKey) {
         const text = `(${block.text})`;
         tabCompletion.current = null;
         pendingFocus.current = { id: block.id, pos: text.length - 1 };
         update(index, { type: "parenthetical", text });
+        return;
+      }
+      if (block.type === "parenthetical" && block.text === "()") {
+        tabCompletion.current = null;
+        pendingFocus.current = { id: block.id, pos: 0 };
+        update(index, { type: "dialogue", text: "" });
         return;
       }
       const i = ELEMENT_TYPES.indexOf(block.type);
@@ -302,8 +423,15 @@ export default function Editor({
           return;
         }
       }
-      const before = block.text.slice(0, selectionStart);
-      const after = block.text.slice(selectionEnd);
+      const skipsClosingParenthesis = block.type === "parenthetical"
+        && block.text.length > 2
+        && collapsed
+        && selectionStart === block.text.length - 1
+        && block.text.endsWith(")");
+      const splitStart = skipsClosingParenthesis ? block.text.length : selectionStart;
+      const splitEnd = skipsClosingParenthesis ? block.text.length : selectionEnd;
+      const before = block.text.slice(0, splitStart);
+      const after = block.text.slice(splitEnd);
       // Splitting mid-text keeps the type; Enter at the end flows to the next element.
       const createdType = after
         ? block.type
@@ -395,8 +523,10 @@ export default function Editor({
       {pages.map((page, pageIndex) => <div className="page page-surface" key={`page-${pageIndex}`} data-page={productionPages?.[pageIndex]?.label ?? pageIndex + 1} data-revision-color={productionPages?.[pageIndex]?.color ?? ""}>
         {page.map((block) => {
           const index = indexes.get(block.id)!;
-          const completionNames = block.type === "character" ? characterNames : block.type === "scene_heading" ? [...new Set([...sceneHeadings, ...locationHeadings])] : [];
-          const suggestions = activeId === block.id ? completionNames.filter((name) => name !== block.text && name.startsWith(block.text.trim().toUpperCase())).slice(0, 5) : [];
+          const suggestions = activeId === block.id ? suggestionsFor(block) : null;
+          const cycleIndex = tabCompletion.current?.blockId === block.id ? tabCompletion.current.index : -1;
+          const selectedIndex = menuSelection?.blockId === block.id ? menuSelection.index : cycleIndex;
+          const menuId = `suggestions-${block.id}`;
           return <Fragment key={block.id}>
           <textarea
             rows={1}
@@ -413,15 +543,19 @@ export default function Editor({
                 refs.current.delete(block.id);
               }
             }}
-            onFocus={() => { setActiveId(block.id); onActiveBlock(block.id); }}
+            aria-controls={suggestions?.candidates.length ? menuId : undefined}
+            aria-expanded={Boolean(suggestions?.candidates.length)}
+            aria-activedescendant={selectedIndex >= 0 ? `${menuId}-${selectedIndex}` : undefined}
+            onFocus={() => { setActiveId(block.id); setMenuSelection(null); onActiveBlock(block.id); }}
             onBlur={() => {
               if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
               if (tabCompletion.current?.blockId === block.id) tabCompletion.current = null;
+              if (menuSelection?.blockId === block.id) setMenuSelection(null);
             }}
             onChange={(e) => handleChange(index, block, e.currentTarget)}
             onKeyDown={(e) => handleKeyDown(e, index, block)}
           />
-          {suggestions.length > 0 && <div className="character-suggestions">{suggestions.map((name) => <button key={name} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => { update(index, { text: name }); refs.current.get(block.id)?.focus(); }}>{name}</button>)}</div>}
+          {suggestions && suggestions.candidates.length > 0 && <div id={menuId} className={`editor-suggestions suggestions-${block.type}`} role="listbox" aria-label={block.type === "character" ? "Character suggestions" : "Scene heading suggestions"}>{suggestions.candidates.map((candidate, candidateIndex) => <button id={`${menuId}-${candidateIndex}`} key={candidate} type="button" role="option" aria-selected={selectedIndex === candidateIndex} onMouseDown={(event) => event.preventDefault()} onClick={() => acceptSuggestion(index, block, suggestions, candidateIndex)}>{candidate.trim()}</button>)}</div>}
           </Fragment>;
         })}
       </div>)}

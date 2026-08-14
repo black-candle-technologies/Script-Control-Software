@@ -18,12 +18,12 @@ Configurable actions also include the inspector toggle and previous/next episode
 | Keys | Action |
 |---|---|
 | `Enter` | Next element in screenplay flow. A single dialogue turn returns to action; an uninterrupted exchange of two or more turns continues with a character cue. Mid-text splits the block, and repeated Enter on a blank action starts a scene heading |
-| `Tab` / `Shift+Tab` | Cycle the current element type forward / backward. In a scene heading, Tab completes its prefix, prior location, separator, and time; in dialogue, Tab inserts a parenthetical and places the caret inside `()` |
+| `Tab` / `Shift+Tab` | Cycle the current element type forward / backward. Tab cycles scene-heading and character suggestions; when a suggestion is selected with Up/Down, Enter or Tab accepts it. In dialogue, Tab inserts a parenthetical and places the caret inside `()`; Tab on untouched `()` returns to dialogue |
 | `Ctrl+1`–`Ctrl+8` | Set element directly: Scene Heading, Action, Character, Dialogue, Parenthetical, Transition, Shot, Note |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo (also on the writing toolbar) |
 | `Backspace` at start | Merge into the previous block |
 | `Delete` at end | Merge the next block in |
-| `↑` / `↓` at block edge | Move the caret across blocks |
+| `↑` / `↓` | Select the previous/next visible scene-heading or character suggestion; otherwise move the caret across blocks at a block edge |
 
 ## Typing recognition
 

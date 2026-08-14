@@ -62,6 +62,12 @@ test("screenplay typing shortcuts preserve the current line", async ({ page }) =
   await expect(action).toBeFocused();
   await expect(page.locator("textarea.blk")).toHaveCount(2);
   await expect(heading).toHaveValue("INT. TEST ROOM - DAY");
+
+  await action.press("Tab");
+  await expect(action).toHaveClass(/blk-character/);
+  await action.press("Tab");
+  await expect(action).toHaveClass(/blk-action/);
+  await expect(page.locator("textarea.blk")).toHaveCount(2);
 });
 
 test("scene headings tab through prefixes, prior locations, separators, and times", async ({ page }) => {
@@ -112,6 +118,40 @@ test("scene headings tab through prefixes, prior locations, separators, and time
   await expect(nextHeading).toHaveValue("INT. KITCHEN - DUSK");
 });
 
+test("scene heading menus support mouse and arrow selection with staged advancement", async ({ page }) => {
+  await page.getByRole("button", { name: "New Feature Screenplay" }).click();
+
+  const firstHeading = page.locator("textarea.blk").first();
+  await firstHeading.fill("INT. KITCHEN - DAWN");
+  await firstHeading.press("End");
+  await firstHeading.press("Enter");
+  const nextHeading = page.locator("textarea.blk").nth(1);
+  await nextHeading.press("Enter");
+
+  let menu = page.getByRole("listbox", { name: "Scene heading suggestions" });
+  await expect(menu.getByRole("option")).toHaveText(["INT.", "EXT.", "I/E."]);
+  await nextHeading.press("ArrowUp");
+  await expect(menu.getByRole("option", { name: "I/E." })).toHaveAttribute("aria-selected", "true");
+  await nextHeading.press("ArrowDown");
+  await nextHeading.press("ArrowDown");
+  await expect(menu.getByRole("option", { name: "EXT." })).toHaveAttribute("aria-selected", "true");
+  await nextHeading.press("Enter");
+  await expect(nextHeading).toHaveValue("EXT. ");
+
+  menu = page.getByRole("listbox", { name: "Scene heading suggestions" });
+  await menu.getByRole("option", { name: "KITCHEN" }).click();
+  await expect(nextHeading).toHaveValue("EXT. KITCHEN ");
+  await menu.getByRole("option", { name: "-", exact: true }).click();
+  await expect(nextHeading).toHaveValue("EXT. KITCHEN - ");
+
+  await nextHeading.press("ArrowDown");
+  await nextHeading.press("ArrowDown");
+  await expect(menu.getByRole("option", { name: "NIGHT" })).toHaveAttribute("aria-selected", "true");
+  await nextHeading.press("Enter");
+  await expect(nextHeading).toHaveValue("EXT. KITCHEN - NIGHT");
+  await expect(page.locator("textarea.blk-action").first()).toBeFocused();
+});
+
 test("dialogue enter flow and parenthetical tabbing follow screenplay context", async ({ page }) => {
   await page.getByRole("button", { name: "New Feature Screenplay" }).click();
 
@@ -147,6 +187,61 @@ test("dialogue enter flow and parenthetical tabbing follow screenplay context", 
   await expect(continuingCharacter).toBeFocused();
   await expect(continuingCharacter).toHaveJSProperty("selectionStart", 1);
   await expect(continuingCharacter).toHaveJSProperty("selectionEnd", 1);
+
+  await continuingCharacter.press("Tab");
+  await expect(continuingCharacter).toHaveClass(/blk-dialogue/);
+  await expect(continuingCharacter).toHaveValue("");
+  await continuingCharacter.press("Tab");
+  await continuingCharacter.pressSequentially("softly");
+  await expect(continuingCharacter).toHaveValue("(softly)");
+  await continuingCharacter.press("Enter");
+  await expect(continuingCharacter).toHaveValue("(softly)");
+  await expect(page.locator("textarea.blk-dialogue").last()).toBeFocused();
+});
+
+test("character suggestions support arrows, Enter, Tab selection, and Tab cycling", async ({ page }) => {
+  await page.getByRole("button", { name: "New Feature Screenplay" }).click();
+
+  const heading = page.locator("textarea.blk").first();
+  await heading.fill("INT. TEST ROOM - DAY");
+  await heading.press("End");
+  await heading.press("Enter");
+  const mara = page.locator("textarea.blk").nth(1);
+  await mara.press("Tab");
+  await mara.fill("MARA");
+  await mara.press("Enter");
+  const dialogueOne = page.locator("textarea.blk").nth(2);
+  await dialogueOne.fill("Hello.");
+  await dialogueOne.press("Enter");
+  const dell = page.locator("textarea.blk").nth(3);
+  await dell.press("Tab");
+  await dell.fill("DELL");
+  await dell.press("Enter");
+  const dialogueTwo = page.locator("textarea.blk").nth(4);
+  await dialogueTwo.fill("Hi.");
+  await dialogueTwo.press("Enter");
+
+  const character = page.locator("textarea.blk").nth(5);
+  const menu = page.getByRole("listbox", { name: "Character suggestions" });
+  await expect(menu.getByRole("option")).toHaveText(["MARA", "DELL"]);
+  await character.press("ArrowUp");
+  await expect(menu.getByRole("option", { name: "DELL" })).toHaveAttribute("aria-selected", "true");
+  await character.press("ArrowDown");
+  await expect(menu.getByRole("option", { name: "MARA" })).toHaveAttribute("aria-selected", "true");
+  await character.press("ArrowDown");
+  await character.press("Enter");
+  await expect(character).toHaveValue("DELL");
+
+  await character.fill("");
+  await character.press("ArrowDown");
+  await character.press("Tab");
+  await expect(character).toHaveValue("MARA");
+
+  await character.fill("");
+  await character.press("Tab");
+  await expect(character).toHaveValue("MARA");
+  await character.press("Tab");
+  await expect(character).toHaveValue("DELL");
 });
 
 test("opening an FDX immediately still protects the in-memory project", async ({ page }) => {
