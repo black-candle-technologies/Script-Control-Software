@@ -3,6 +3,7 @@ mod external_files;
 mod fdx;
 mod git_sync;
 mod project_file;
+mod treatment_files;
 
 use domain::{AppInfo, PhaseStatus, SampleProject};
 use external_files::{
@@ -13,6 +14,7 @@ use project_file::{ProjectBundle, ProjectManifest, ProjectType};
 use serde_json::Value;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
+use treatment_files::{read_treatment_file, write_treatment_file};
 
 /// Returns the application's identity so the frontend shell can render its
 /// title bar and hero without hard-coding the version or phase.
@@ -118,6 +120,8 @@ pub fn run() {
             open_fdx_in_external_editor,
             reveal_in_file_manager,
             write_fdx_export,
+            read_treatment_file,
+            write_treatment_file,
             git_sync::git_sync_status,
             git_sync::git_sync_init,
             git_sync::git_sync_commit,

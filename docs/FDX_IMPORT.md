@@ -1,8 +1,10 @@
 # FDX Interoperability
 
-Rust parses local FDX XML into typed blocks, styled text runs, scenes, cast, locations, source metadata, and preservation warnings. Unknown paragraph types and safe XML attributes remain attached to imported blocks and round-trip through export.
+Rust parses local FDX XML into typed blocks, styled text runs, scenes, cast, locations, Beat Board data, source metadata, and preservation warnings. Unknown screenplay paragraph types and safe XML attributes remain attached to imported blocks and round-trip through export. Beat Board and header/footer paragraphs are scoped separately, so they never appear as screenplay text.
 
-Imported documents are editable. Unchanged styled runs retain style and revision attributes; if edited paragraph text no longer matches its imported runs, `toFdxWithWarnings` reports the plain-text fallback. Invalid XML characters are replaced and unsafe attribute names are omitted with warnings so the result remains valid XML. SCS workspace data and scene notes stay outside the FDX payload. The linked source is watched; external changes require an explicit re-import that preserves SCS metadata.
+Final Draft Beat cards import into the outline with their stable IDs, titles, bodies, colors, board rectangles, and beat-to-beat flow lines. Final Draft Outline and Summary paragraphs also become outline notes instead of visible screenplay blocks. FDX export writes outline beats back as Beat Board list items and display-board records.
+
+Imported documents are editable. Unchanged styled runs retain style and revision attributes; if edited paragraph text no longer matches its imported runs, `toFdxWithWarnings` reports the plain-text fallback. Invalid XML characters are replaced and unsafe attribute names are omitted with warnings so the result remains valid XML. Private SCS workspace data and scene notes stay outside the FDX payload; outline beats are the deliberate interoperability exception. The linked source is watched; external changes require an explicit re-import that preserves SCS metadata.
 
 Import warnings with a source paragraph are clickable and focus the affected screenplay block.
 

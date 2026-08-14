@@ -48,6 +48,8 @@ export default function SceneNavigator({
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const sceneById = useMemo(() => new Map(scenes.map((scene) => [scene.id, scene])), [scenes]);
   const omitted = useMemo(() => new Set(omittedSceneIds), [omittedSceneIds]);
+  const assignedSceneIds = useMemo(() => new Set(structure.acts.flatMap((act) => act.sequences.flatMap((sequence) => sequence.sceneIds))), [structure.acts]);
+  const unassignedScenes = scenes.filter((scene) => !assignedSceneIds.has(scene.id));
 
   const toggleAct = (actId: string) =>
     setCollapsedActs((current) => {
@@ -135,6 +137,17 @@ export default function SceneNavigator({
             </section>
           );
         })}
+        {!!unassignedScenes.length && (
+          <section className="nav-act nav-unassigned">
+            <div className="nav-act-header">
+              <span className="nav-act-title">Unassigned scenes</span>
+              <span className="nav-act-count">{unassignedScenes.length}</span>
+            </div>
+            <ol className="nav-scenes">
+              {unassignedScenes.map(renderScene)}
+            </ol>
+          </section>
+        )}
         {!scenes.length && (
           <div className="nav-empty">
             No scenes yet.

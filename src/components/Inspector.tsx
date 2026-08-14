@@ -2,16 +2,20 @@ import { useMemo, useState } from "react";
 import TeamPanel, { type CollaborationSyncControls } from "./TeamPanel.tsx";
 import {
   createManualObjectOverride,
+  draftReviewPreview,
+  hasPermission,
   moveStoryScene,
   nextRevisionColor,
   parseHeading,
   REVISION_COLORS,
+  sceneOrderForSequences,
   type Breakdown,
   type AnalysisCsvSection,
   type AnalysisEntityKind,
   type CharacterRef,
   type ContinuityRecord,
   type CustomStoryStructure,
+  type DraftReviewStatus,
   type DetectedObject,
   type EntityOverride,
   type EpisodeMeta,
@@ -55,6 +59,7 @@ interface InspectorProps {
   activeScene: Scene | null;
   workspace: WorkspaceData;
   onWorkspace: (patch: Partial<WorkspaceData>) => void;
+  onApplyStoryStructure: (structure: CustomStoryStructure) => void;
   onJumpToScene: (sceneId: string) => void;
   entityFocusRequest: { kind: "character" | "location"; id: string; nonce: number } | null;
   onOpenEntityBreakdown: (kind: "character" | "location", entityId: string) => void;
@@ -72,8 +77,14 @@ interface InspectorProps {
   onPreviewCombineDrafts: (sourceBranchId: string) => void;
   onCombineDrafts: (sourceBranchId: string, resolution: MergeResolutionPlan) => void;
   onCancelCombineDrafts: () => void;
+  onOpenDraftReview: (title: string, description: string, sourceBranchId: string, targetBranchId: string, reviewerIds: string[]) => void;
+  onRefreshDraftReview: (reviewId: string) => void;
+  onUpdateDraftReviewStatus: (reviewId: string, status: Exclude<DraftReviewStatus, "applied">) => void;
+  onResolveDraftReview: (reviewId: string, path: string, resolution: "ours" | "theirs" | null) => void;
+  onApplyDraftReview: (reviewId: string) => void;
   onExportBreakdown: (format: "md" | "csv" | "json" | "pdf", section?: AnalysisCsvSection) => void;
-  onExportTreatment: (format: "md" | "pdf") => void;
+  onImportTreatment: () => void;
+  onExportTreatment: (format: "md" | "docx" | "pdf") => void;
   projectWorkspace: ProjectWorkspace;
   seriesReport: SeriesWorkspaceReport;
   activeDocumentId: string;
@@ -102,6 +113,12 @@ interface InspectorProps {
 /** Workspace panels the mode shell can host full-width. */
 export type PanelTab = "Story" | "Treatment" | "Cast" | "Props" | "Places" | "Drafts" | "Breakdown" | "Series" | "Production" | "Team" | "Assist";
 const Hint = ({ children }: { children: React.ReactNode }) => <p className="insp-hint">{children}</p>;
+
+const storyCssColor = (value?: string) => {
+  if (!value) return undefined;
+  const rgb16 = /^#([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})$/i.exec(value);
+  return rgb16 ? `#${rgb16.slice(1).map((channel) => channel.slice(0, 2)).join("")}` : /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
+};
 
 function formatDiffValue(value: unknown): string {
   if (value === undefined) return "Not present";
@@ -134,26 +151,28 @@ const snapshotScopeLabel = (scope?: SnapshotScope) => !scope || scope.kind === "
  */
 export default function PanelHost({ tab, ...props }: InspectorProps & { tab: PanelTab }) {
   return <div className="panel-host">
-    {tab !== "Team" && tab !== "Assist" && <fieldset className="permission-scope" disabled={!props.editable}>
+    {tab !== "Team" && tab !== "Assist" && tab !== "Drafts" && <fieldset className="permission-scope" disabled={!props.editable}>
       {tab === "Story" && <StoryWorkspaceTab {...props} />}
       {tab === "Treatment" && <TreatmentWorkspaceTab {...props} />}
       {tab === "Cast" && <CastTab {...props} />}
       {tab === "Props" && <PropsTab {...props} />}
       {tab === "Places" && <PlacesTab {...props} />}
-      {tab === "Drafts" && <DraftsTab {...props} />}
       {tab === "Breakdown" && <BreakdownTab {...props} />}
       {tab === "Series" && <SeriesTab {...props} />}
       {tab === "Production" && <ProductionTab {...props} />}
     </fieldset>}
+    {tab === "Drafts" && <DraftsTab {...props} />}
     {tab === "Team" && <TeamPanel session={props.collaborationSession} activeScene={props.activeScene} onSession={props.onCollaborationSession} onOpenTarget={props.onCollaborationTarget} onMessage={props.onCollaborationMessage} sync={props.collaborationSync} />}
     {tab === "Assist" && <AssistTab {...props} />}
   </div>;
 }
 
-function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, onJumpToScene }: InspectorProps) {
-  const [draggedStoryScene, setDraggedStoryScene] = useState<string | null>(null);
+function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, onApplyStoryStructure, onJumpToScene }: InspectorProps) {
+  const [draggedItem, setDraggedItem] = useState<{ kind: "sequence" | "scene" | "beat"; id: string } | null>(null);
+  const [deleteAllArmed, setDeleteAllArmed] = useState(false);
   const view = workspace.storyBoardView ?? "scene";
   const save = (next: CustomStoryStructure) => onWorkspace({ storyStructure: next });
+  const apply = (next: CustomStoryStructure) => onApplyStoryStructure(next);
   const updateAct = (id: string, title: string) => save({
     ...customStructure,
     acts: customStructure.acts.map((act) => act.id === id ? { ...act, title } : act),
@@ -184,34 +203,140 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
     ...customStructure,
     sequences: customStructure.sequences.map((sequence) => sequence.id === id ? { ...sequence, ...patch } : sequence),
   });
-  const toggleSceneAssignment = (sequenceId: string, sceneId: string) => save({
+  const assignScene = (sequenceId: string, sceneId: string, applyOrder = false) => {
+    const next = {
     ...customStructure,
     sequences: customStructure.sequences.map((sequence) => ({
       ...sequence,
-      sceneIds: sequence.id === sequenceId && !sequence.sceneIds.includes(sceneId)
-        ? [...sequence.sceneIds, sceneId]
+      sceneIds: sequence.id === sequenceId
+        ? [...sequence.sceneIds.filter((id) => id !== sceneId), sceneId]
         : sequence.sceneIds.filter((id) => id !== sceneId),
     })),
+    };
+    (applyOrder ? apply : save)(next);
+  };
+  const removeScene = (sequenceId: string, sceneId: string) => save({
+    ...customStructure,
+    sequences: customStructure.sequences.map((sequence) => sequence.id === sequenceId
+      ? { ...sequence, sceneIds: sequence.sceneIds.filter((id) => id !== sceneId) }
+      : sequence),
   });
+  const moveSequence = (sequenceId: string, actId: string, beforeId?: string) => {
+    const sequence = customStructure.sequences.find((item) => item.id === sequenceId);
+    if (!sequence) return;
+    if (beforeId === sequenceId && sequence.actId === actId) return;
+    const next = customStructure.sequences.filter((item) => item.id !== sequenceId);
+    const insertion = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
+    next.splice(insertion < 0 ? next.length : insertion, 0, { ...sequence, actId });
+    apply({ ...customStructure, sequences: next, sceneOrder: sceneOrderForSequences(customStructure, next) });
+  };
+  const moveSequenceWithinAct = (sequenceId: string, direction: -1 | 1) => {
+    const sequence = customStructure.sequences.find((item) => item.id === sequenceId);
+    if (!sequence) return;
+    const siblings = customStructure.sequences.filter((item) => item.actId === sequence.actId);
+    const index = siblings.findIndex((item) => item.id === sequenceId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= siblings.length) return;
+    const beforeId = direction < 0 ? siblings[target].id : siblings[target + 1]?.id;
+    moveSequence(sequenceId, sequence.actId, beforeId);
+  };
+  const canMoveSequenceWithinAct = (sequenceId: string, direction: -1 | 1) => {
+    const sequence = customStructure.sequences.find((item) => item.id === sequenceId);
+    if (!sequence) return false;
+    const siblings = customStructure.sequences.filter((item) => item.actId === sequence.actId);
+    const index = siblings.findIndex((item) => item.id === sequenceId);
+    return index >= 0 && index + direction >= 0 && index + direction < siblings.length;
+  };
+  const moveSceneOnBoard = (sceneId: string, sequenceId: string | undefined, beforeSceneId?: string) => {
+    const order = customStructure.sceneOrder.filter((id) => id !== sceneId);
+    let insertion = beforeSceneId ? order.indexOf(beforeSceneId) : -1;
+    if (insertion < 0 && sequenceId) {
+      const destination = customStructure.sequences.find((item) => item.id === sequenceId);
+      const last = [...(destination?.sceneIds ?? [])].reverse().find((id) => id !== sceneId);
+      insertion = last ? order.indexOf(last) + 1 : order.length;
+    }
+    order.splice(insertion < 0 ? order.length : insertion, 0, sceneId);
+    apply({
+      ...customStructure,
+      sceneOrder: order,
+      sequences: customStructure.sequences.map((sequence) => ({
+        ...sequence,
+        sceneIds: sequence.id === sequenceId
+          ? (() => {
+            const ids = sequence.sceneIds.filter((id) => id !== sceneId);
+            const index = beforeSceneId ? ids.indexOf(beforeSceneId) : -1;
+            ids.splice(index < 0 ? ids.length : index, 0, sceneId);
+            return ids;
+          })()
+          : sequence.sceneIds.filter((id) => id !== sceneId),
+      })),
+    });
+  };
   const addBeat = () => save({
     ...customStructure,
-    beats: [...customStructure.beats, { id: `beat-${crypto.randomUUID()}`, text: "New beat", sceneId: scenes[0]?.id, status: "idea", moments: [] }],
+    beats: [...customStructure.beats, { id: `beat-${crypto.randomUUID()}`, title: "New beat", text: "New beat", sceneId: scenes[0]?.id, status: "idea", moments: [], source: "scs" }],
   });
   const updateBeat = (id: string, patch: Partial<CustomStoryStructure["beats"][number]>) => save({
     ...customStructure,
     beats: customStructure.beats.map((beat) => beat.id === id ? { ...beat, ...patch } : beat),
   });
+  const moveBeat = (id: string, to: number) => {
+    const beats = customStructure.beats.filter((beat) => beat.id !== id);
+    const beat = customStructure.beats.find((item) => item.id === id);
+    if (!beat) return;
+    beats.splice(Math.max(0, Math.min(to, beats.length)), 0, beat);
+    save({ ...customStructure, beats });
+  };
   const orderedScenes = customStructure.sceneOrder
     .map((id) => scenes.find((scene) => scene.id === id))
     .filter((scene): scene is Scene => Boolean(scene));
+  const assignedSceneIds = new Set(customStructure.sequences.flatMap((sequence) => sequence.sceneIds));
+  const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
+  const clearDrag = () => setDraggedItem(null);
+  const renderBoardBeat = (beat: CustomStoryStructure["beats"][number], extraClass = "") => {
+    const beatIndex = customStructure.beats.findIndex((item) => item.id === beat.id);
+    const label = beat.title || beat.text;
+    return <div className={`story-board-beat ${extraClass}`.trim()} key={beat.id} style={storyCssColor(beat.color) ? { borderColor: storyCssColor(beat.color) } : undefined} draggable onDragStart={(event) => { event.stopPropagation(); setDraggedItem({ kind: "beat", id: beat.id }); }} onDragEnd={clearDrag}>
+      <span>{label}</span>
+      <span className="story-board-reorder" role="group" aria-label={`Reorder ${label}`}>
+        <button className="link-btn" aria-label={`Move ${label} earlier`} disabled={beatIndex <= 0} onClick={(event) => { event.stopPropagation(); moveBeat(beat.id, beatIndex - 1); }}>↑</button>
+        <button className="link-btn" aria-label={`Move ${label} later`} disabled={beatIndex < 0 || beatIndex === customStructure.beats.length - 1} onClick={(event) => { event.stopPropagation(); moveBeat(beat.id, beatIndex + 1); }}>↓</button>
+      </span>
+    </div>;
+  };
 
   return <div className="insp-stack">
-    <Hint>Custom Act → Sequence → Scene → Beat → Moment structure stays beside the screenplay, so outlining never rewrites script text.</Hint>
+    <Hint>Build the outline visually, then drag scenes into the order the screenplay should use. Sequence membership stays editable without changing script text.</Hint>
     <div className="board-view-switch">
-      {(["act", "sequence", "scene", "beat", "timeline"] as StoryBoardView[]).map((name) =>
-        <button key={name} className={`btn btn-ghost ${view === name ? "active" : ""}`} onClick={() => onWorkspace({ storyBoardView: name })}>{name[0].toUpperCase() + name.slice(1)}</button>,
+      {(["board", "act", "sequence", "scene", "beat", "timeline"] as StoryBoardView[]).map((name) =>
+        <button key={name} className={`btn btn-ghost ${view === name ? "active" : ""}`} onClick={() => onWorkspace({ storyBoardView: name })}>{name === "board" ? "Visual Board" : name[0].toUpperCase() + name.slice(1)}</button>,
       )}
     </div>
+    {view === "board" && <>
+      <div className="btn-row"><button className="btn" onClick={addAct}>Add Act</button><button className="btn btn-ghost" onClick={addSequence}>Add Sequence</button><button className="btn btn-ghost" onClick={addBeat}>Add Beat</button></div>
+      <div className="story-board" aria-label="Visual story board">
+        {customStructure.acts.map((act) => <section className="story-board-act" key={act.id} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedItem?.kind === "sequence") moveSequence(draggedItem.id, act.id); clearDrag(); }}>
+          <header><input aria-label="Act title" value={act.title} onChange={(event) => updateAct(act.id, event.target.value)} /><span>{customStructure.sequences.filter((sequence) => sequence.actId === act.id).length} sequences</span></header>
+          <div className="story-board-lane">
+            {customStructure.sequences.filter((sequence) => sequence.actId === act.id).map((sequence) => <article className="story-board-sequence" key={sequence.id} draggable onDragStart={() => setDraggedItem({ kind: "sequence", id: sequence.id })} onDragEnd={clearDrag} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); if (draggedItem?.kind === "sequence") moveSequence(draggedItem.id, act.id, sequence.id); else if (draggedItem?.kind === "scene") moveSceneOnBoard(draggedItem.id, sequence.id); clearDrag(); }}>
+              <input aria-label="Sequence title" value={sequence.title} onChange={(event) => updateSequence(sequence.id, { title: event.target.value })} />
+              <div className="story-board-reorder" role="group" aria-label={`Reorder ${sequence.title || "sequence"}`}><button className="link-btn" aria-label={`Move ${sequence.title || "sequence"} earlier`} disabled={!canMoveSequenceWithinAct(sequence.id, -1)} onClick={(event) => { event.stopPropagation(); moveSequenceWithinAct(sequence.id, -1); }}>←</button><button className="link-btn" aria-label={`Move ${sequence.title || "sequence"} later`} disabled={!canMoveSequenceWithinAct(sequence.id, 1)} onClick={(event) => { event.stopPropagation(); moveSequenceWithinAct(sequence.id, 1); }}>→</button></div>
+              <div className="story-board-scenes">
+                {customStructure.sceneOrder.filter((sceneId) => sequence.sceneIds.includes(sceneId)).map((sceneId) => { const scene = sceneById.get(sceneId); if (!scene) return null; return <div className="story-board-scene" key={scene.id} draggable onDragStart={(event) => { event.stopPropagation(); setDraggedItem({ kind: "scene", id: scene.id }); }} onDragEnd={clearDrag} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); if (draggedItem?.kind === "scene") moveSceneOnBoard(draggedItem.id, sequence.id, scene.id); else if (draggedItem?.kind === "beat") updateBeat(draggedItem.id, { sceneId: scene.id, sequenceId: undefined }); clearDrag(); }}>
+                  <button className="link-btn" onClick={() => onJumpToScene(scene.id)}>Scene {scene.number}: {scene.heading}</button>
+                  {customStructure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => renderBoardBeat(beat))}
+                </div>; })}
+                {!sequence.sceneIds.length && <span className="story-board-empty">Drop scenes here</span>}
+              </div>
+              {customStructure.beats.filter((beat) => beat.sequenceId === sequence.id && !beat.sceneId).map((beat) => renderBoardBeat(beat, "sequence-beat"))}
+            </article>)}
+            {!customStructure.sequences.some((sequence) => sequence.actId === act.id) && <div className="story-board-empty">Drop a sequence into this act</div>}
+          </div>
+        </section>)}
+        <section className="story-board-unassigned" onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedItem?.kind === "scene") moveSceneOnBoard(draggedItem.id, undefined); else if (draggedItem?.kind === "beat") updateBeat(draggedItem.id, { sceneId: undefined, sequenceId: undefined }); clearDrag(); }}><strong>Unassigned scenes</strong>{orderedScenes.filter((scene) => !assignedSceneIds.has(scene.id)).map((scene) => <button key={scene.id} className="story-board-scene link-btn" draggable onDragStart={() => setDraggedItem({ kind: "scene", id: scene.id })} onDragEnd={clearDrag} onClick={() => onJumpToScene(scene.id)}>Scene {scene.number}: {scene.heading}</button>)}<strong>Unplaced beats</strong>{customStructure.beats.filter((beat) => !beat.sceneId && !beat.sequenceId).map((beat) => renderBoardBeat(beat))}</section>
+      </div>
+      {!!customStructure.connections?.length && <div className="story-board-connections"><strong>Beat connections</strong>{customStructure.connections.map((connection) => <span key={connection.id}><i style={storyCssColor(connection.color) ? { background: storyCssColor(connection.color) } : undefined} />{customStructure.beats.find((beat) => beat.id === connection.fromId)?.title || customStructure.beats.find((beat) => beat.id === connection.fromId)?.text || "Beat"} → {customStructure.beats.find((beat) => beat.id === connection.toId)?.title || customStructure.beats.find((beat) => beat.id === connection.toId)?.text || "Beat"}</span>)}</div>}
+    </>}
     {view === "act" && <>
       <button className="btn" onClick={addAct}>Add Act</button>
       {customStructure.acts.map((act) => <div className="insp-card" key={act.id}>
@@ -221,27 +346,37 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
       </div>)}
     </>}
     {view === "sequence" && <>
-      <button className="btn" onClick={addSequence}>Add Sequence</button>
-      {customStructure.sequences.map((sequence) => <div className="insp-card" key={sequence.id}>
-        <input aria-label="Sequence title" className="insp-notes-input" value={sequence.title} onChange={(event) => updateSequence(sequence.id, { title: event.target.value })} />
-        <select className="element-select" aria-label="Parent act" value={sequence.actId} onChange={(event) => updateSequence(sequence.id, { actId: event.target.value })}>
-          {customStructure.acts.map((act) => <option key={act.id} value={act.id}>{act.title}</option>)}
-        </select>
-        {scenes.map((scene) => <label className="check-row" key={scene.id}><input type="checkbox" checked={sequence.sceneIds.includes(scene.id)} onChange={() => toggleSceneAssignment(sequence.id, scene.id)} /> {scene.heading}</label>)}
-        <button className="link-btn" disabled={customStructure.sequences.length === 1} onClick={() => save({ ...customStructure, sequences: customStructure.sequences.filter((item) => item.id !== sequence.id) })}>Remove</button>
-      </div>)}
+      <div className="btn-row"><button className="btn" onClick={addSequence}>Add Sequence</button>{customStructure.sequences.length > 0 && <button className={deleteAllArmed ? "btn btn-danger" : "btn btn-ghost"} onClick={() => { if (!deleteAllArmed) { setDeleteAllArmed(true); return; } save({ ...customStructure, sequences: [], beats: customStructure.beats.map((beat) => ({ ...beat, sequenceId: undefined })) }); setDeleteAllArmed(false); }}>{deleteAllArmed ? "Confirm Delete All" : "Delete All Sequences"}</button>}{deleteAllArmed && <button className="link-btn" onClick={() => setDeleteAllArmed(false)}>Cancel</button>}</div>
+      {!customStructure.sequences.length && <Hint>No sequences yet. Add one when the story needs it.</Hint>}
+      {customStructure.sequences.map((sequence) => {
+        const siblings = customStructure.sequences.filter((item) => item.actId === sequence.actId);
+        const siblingIndex = siblings.findIndex((item) => item.id === sequence.id);
+        return <details className="insp-card compact-sequence" key={sequence.id}>
+          <summary><strong>{sequence.title || "Untitled sequence"}</strong><span>{sequence.sceneIds.length} scene{sequence.sceneIds.length === 1 ? "" : "s"}</span></summary>
+          <input aria-label="Sequence title" className="insp-notes-input" value={sequence.title} onChange={(event) => updateSequence(sequence.id, { title: event.target.value })} />
+          <select className="element-select" aria-label="Parent act" value={sequence.actId} onChange={(event) => moveSequence(sequence.id, event.target.value)}>
+            {customStructure.acts.map((act) => <option key={act.id} value={act.id}>{act.title}</option>)}
+          </select>
+          <div className="btn-row" aria-label={`Reorder ${sequence.title || "sequence"}`}><button className="btn btn-ghost" aria-label={`Move ${sequence.title || "sequence"} earlier`} disabled={siblingIndex <= 0} onClick={() => moveSequenceWithinAct(sequence.id, -1)}>Move Earlier</button><button className="btn btn-ghost" aria-label={`Move ${sequence.title || "sequence"} later`} disabled={siblingIndex < 0 || siblingIndex === siblings.length - 1} onClick={() => moveSequenceWithinAct(sequence.id, 1)}>Move Later</button></div>
+          <label className="insp-card-meta">Add a scene<select className="element-select" aria-label={`Add scene to ${sequence.title}`} value="" onChange={(event) => { if (event.target.value) assignScene(sequence.id, event.target.value); }}><option value="">Choose scene...</option>{scenes.filter((scene) => !sequence.sceneIds.includes(scene.id)).map((scene) => <option value={scene.id} key={scene.id}>{scene.number}. {scene.heading}{assignedSceneIds.has(scene.id) ? " (move)" : ""}</option>)}</select></label>
+          <div className="compact-scene-list">{sequence.sceneIds.map((id) => { const scene = sceneById.get(id); return scene ? <div key={id}><button className="link-btn" onClick={() => onJumpToScene(id)}>{scene.number}. {scene.heading}</button><button className="link-btn" aria-label={`Remove ${scene.heading} from ${sequence.title}`} onClick={() => removeScene(sequence.id, id)}>Remove</button></div> : null; })}</div>
+          <div className="btn-row"><button className="btn btn-ghost" disabled={!sequence.sceneIds.length} onClick={() => updateSequence(sequence.id, { sceneIds: [] })}>Clear All Scenes</button><button className="link-btn" onClick={() => save({ ...customStructure, sequences: customStructure.sequences.filter((item) => item.id !== sequence.id), beats: customStructure.beats.map((beat) => beat.sequenceId === sequence.id ? { ...beat, sequenceId: undefined } : beat) })}>Delete Sequence</button></div>
+        </details>;
+      })}
     </>}
     {view === "scene" && <div className="story-card-grid">
-      {orderedScenes.map((scene, index) => <div className="insp-card" key={scene.id} draggable onDragStart={() => setDraggedStoryScene(scene.id)} onDragEnd={() => setDraggedStoryScene(null)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedStoryScene && draggedStoryScene !== scene.id) save(moveStoryScene(customStructure, draggedStoryScene, index)); setDraggedStoryScene(null); }}>
+      {orderedScenes.map((scene, index) => <div className="insp-card" key={scene.id} draggable onDragStart={() => setDraggedItem({ kind: "scene", id: scene.id })} onDragEnd={clearDrag} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedItem?.kind === "scene" && draggedItem.id !== scene.id) apply(moveStoryScene(customStructure, draggedItem.id, index)); clearDrag(); }}>
         <button className="link-btn insp-card-title" onClick={() => onJumpToScene(scene.id)}>Scene {scene.number} · {scene.heading}</button>
         <div className="insp-card-meta">{workspace.sceneMeta?.[scene.id]?.summary || "No summary"}</div>
-        <div className="insp-card-meta">Drag to rearrange metadata order.</div><div className="btn-row"><button className="btn btn-ghost" disabled={index === 0} onClick={() => save(moveStoryScene(customStructure, scene.id, index - 1))}>↑</button><button className="btn btn-ghost" disabled={index === orderedScenes.length - 1} onClick={() => save(moveStoryScene(customStructure, scene.id, index + 1))}>↓</button></div>
+        <div className="insp-card-meta">Drag to reorder this scene in the screenplay.</div><div className="btn-row"><button className="btn btn-ghost" disabled={index === 0} onClick={() => apply(moveStoryScene(customStructure, scene.id, index - 1))}>↑</button><button className="btn btn-ghost" disabled={index === orderedScenes.length - 1} onClick={() => apply(moveStoryScene(customStructure, scene.id, index + 1))}>↓</button></div>
       </div>)}
     </div>}
     {view === "beat" && <>
       <button className="btn" onClick={addBeat}>Add Beat</button>
-      {customStructure.beats.map((beat) => <div className="insp-card" key={beat.id}>
+      {customStructure.beats.map((beat, beatIndex) => <div className="insp-card" key={beat.id}>
+        <input aria-label="Beat title" className="insp-notes-input" value={beat.title ?? ""} placeholder="Beat title" onChange={(event) => updateBeat(beat.id, { title: event.target.value })} />
         <textarea className="insp-notes-input" value={beat.text} onChange={(event) => updateBeat(beat.id, { text: event.target.value })} />
+        <label className="insp-card-meta">Card color<input aria-label="Beat color" className="insp-notes-input" value={beat.color ?? ""} placeholder="#F5C451 or Final Draft color" onChange={(event) => updateBeat(beat.id, { color: event.target.value || undefined })} /></label>
         <select className="element-select" aria-label="Beat placement" value={beat.sceneId ? `scene:${beat.sceneId}` : beat.sequenceId ? `sequence:${beat.sequenceId}` : ""} onChange={(event) => { const [kind, id] = event.target.value.split(":"); updateBeat(beat.id, { sceneId: kind === "scene" ? id : undefined, sequenceId: kind === "sequence" ? id : undefined }); }}>
           <option value="">Unplaced</option>
           <optgroup label="Scenes">{scenes.map((scene) => <option value={`scene:${scene.id}`} key={scene.id}>{scene.heading}</option>)}</optgroup>
@@ -250,7 +385,10 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
         <select className="element-select" value={beat.status} onChange={(event) => updateBeat(beat.id, { status: event.target.value as typeof beat.status })}><option value="idea">Idea</option><option value="drafted">Drafted</option><option value="complete">Complete</option></select>
         <h4>Moments</h4>
         {beat.moments.map((moment) => <input key={moment.id} className="insp-notes-input" value={moment.text} onChange={(event) => updateBeat(beat.id, { moments: beat.moments.map((item) => item.id === moment.id ? { ...item, text: event.target.value } : item) })} />)}
-        <div className="btn-row"><button className="btn btn-ghost" onClick={() => updateBeat(beat.id, { moments: [...beat.moments, { id: `moment-${crypto.randomUUID()}`, text: "New moment" }] })}>Add Moment</button><button className="link-btn" onClick={() => save({ ...customStructure, beats: customStructure.beats.filter((item) => item.id !== beat.id) })}>Remove Beat</button></div>
+        <label className="insp-card-meta">Connect to beat<select aria-label={`Connect ${beat.title || beat.text} to beat`} className="element-select" value="" onChange={(event) => { const targetId = event.target.value; if (!targetId) return; save({ ...customStructure, connections: [...(customStructure.connections ?? []), { id: `connection-${crypto.randomUUID()}`, fromId: beat.id, toId: targetId }] }); }}><option value="">Choose beat...</option>{customStructure.beats.filter((target) => target.id !== beat.id && !(customStructure.connections ?? []).some((connection) => connection.fromId === beat.id && connection.toId === target.id)).map((target) => <option key={target.id} value={target.id}>{target.title || target.text}</option>)}</select></label>
+        {(customStructure.connections ?? []).filter((connection) => connection.fromId === beat.id || connection.toId === beat.id).map((connection) => { const otherId = connection.fromId === beat.id ? connection.toId : connection.fromId; const other = customStructure.beats.find((item) => item.id === otherId); return <div className="chip" key={connection.id}>{connection.fromId === beat.id ? "To" : "From"}: {other?.title || other?.text || "Beat"}<button className="link-btn" aria-label="Remove beat connection" onClick={() => save({ ...customStructure, connections: customStructure.connections?.filter((item) => item.id !== connection.id) })}>×</button></div>; })}
+        <div className="btn-row" aria-label={`Reorder ${beat.title || beat.text}`}><button className="btn btn-ghost" aria-label={`Move ${beat.title || beat.text} earlier`} disabled={beatIndex === 0} onClick={() => moveBeat(beat.id, beatIndex - 1)}>Move Earlier</button><button className="btn btn-ghost" aria-label={`Move ${beat.title || beat.text} later`} disabled={beatIndex === customStructure.beats.length - 1} onClick={() => moveBeat(beat.id, beatIndex + 1)}>Move Later</button></div>
+        <div className="btn-row"><button className="btn btn-ghost" onClick={() => updateBeat(beat.id, { moments: [...beat.moments, { id: `moment-${crypto.randomUUID()}`, text: "New moment" }] })}>Add Moment</button><button className="link-btn" onClick={() => save({ ...customStructure, beats: customStructure.beats.filter((item) => item.id !== beat.id), connections: customStructure.connections?.filter((connection) => connection.fromId !== beat.id && connection.toId !== beat.id) })}>Remove Beat</button></div>
       </div>)}
     </>}
     {view === "timeline" && <ol className="timeline-list">
@@ -259,7 +397,7 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
   </div>;
 }
 
-function TreatmentWorkspaceTab({ workspace, onWorkspace, onExportTreatment, scenes, characters, objects, locations, customStructure }: InspectorProps) {
+function TreatmentWorkspaceTab({ workspace, onWorkspace, onImportTreatment, onExportTreatment, scenes, characters, objects, locations, customStructure }: InspectorProps) {
   type LinkType = TreatmentDocument["links"][number]["targetType"];
   const documents: TreatmentDocument[] = workspace.treatments?.length
     ? workspace.treatments
@@ -300,6 +438,7 @@ function TreatmentWorkspaceTab({ workspace, onWorkspace, onExportTreatment, scen
         {documents.map((document) => <option key={document.id} value={document.id}>{document.title}</option>)}
       </select>
       <button className="btn" onClick={() => { const id = `treatment-${crypto.randomUUID()}`; saveDocuments([...documents, { id, title: `Treatment ${documents.length + 1}`, markdown: "", links: [] }], id); }}>New</button>
+      <button className="btn btn-ghost" onClick={onImportTreatment}>Import</button>
     </div>
     <input className="insp-notes-input" aria-label="Treatment title" value={active.title} onChange={(event) => update({ title: event.target.value })} />
     <textarea className="insp-notes-input treatment-input" value={active.markdown} placeholder="# Treatment\n\n## Act I\n…" onChange={(event) => update({ markdown: event.target.value })} />
@@ -313,7 +452,8 @@ function TreatmentWorkspaceTab({ workspace, onWorkspace, onExportTreatment, scen
     {active.links.map((link) => <div className="chip" key={link.id}>{link.sectionLabel ? `${link.sectionLabel} → ` : ""}{link.targetType}: {link.label}<button className="link-btn" aria-label={`Remove ${link.label} link`} onClick={() => update({ links: active.links.filter((item) => item.id !== link.id) })}>×</button></div>)}
     <div className="btn-row">
       <button className="btn" onClick={() => onExportTreatment("md")}>Export Markdown</button>
-      <button className="btn btn-ghost" onClick={() => onExportTreatment("pdf")}>Print PDF</button>
+      <button className="btn btn-ghost" onClick={() => onExportTreatment("docx")}>Export Word</button>
+      <button className="btn btn-ghost" onClick={() => onExportTreatment("pdf")}>Export PDF</button>
       <button className="link-btn" disabled={documents.length === 1} onClick={() => { const next = documents.filter((document) => document.id !== active.id); saveDocuments(next, next[0].id); }}>Delete</button>
     </div>
   </div>;
@@ -424,7 +564,7 @@ function PlacesTab({ analysis, workspace, onWorkspace, entityFocusRequest }: Ins
   </EntityDetails>)}</div>;
 }
 
-function DraftsTab({ versionHistory, versionComparison, mergeConflicts, mergePreviewReady, mergePreviewSourceId, onSaveVersion, onRestoreVersion, onCompareVersions, onCreateAlternateDraft, onSwitchAlternateDraft, onSelectCombineDraftSource, onPreviewCombineDrafts, onCombineDrafts, onCancelCombineDrafts, collaborationSession, projectWorkspace, activeDocumentId }: InspectorProps) {
+function DraftsTab({ versionHistory, versionComparison, onSaveVersion, onRestoreVersion, onCompareVersions, onCreateAlternateDraft, onSwitchAlternateDraft, onOpenDraftReview, onRefreshDraftReview, onUpdateDraftReviewStatus, onResolveDraftReview, onApplyDraftReview, collaborationSession, projectWorkspace, onProjectWorkspace, activeDocumentId, editable }: InspectorProps) {
   const snapshots = [...versionHistory.snapshots].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const projectSnapshots = snapshots.filter((snapshot) => !snapshot.scope || snapshot.scope.kind === "project");
   const [name, setName] = useState("");
@@ -436,12 +576,42 @@ function DraftsTab({ versionHistory, versionComparison, mergeConflicts, mergePre
   const [compareFrom, setCompareFrom] = useState("");
   const [compareTo, setCompareTo] = useState("");
   const [compareMode, setCompareMode] = useState<SnapshotDiffMode>("scene");
-  const [mergeResolutions, setMergeResolutions] = useState<Record<string, "ours" | "theirs">>({});
+  const [reviewTitle, setReviewTitle] = useState("");
+  const [reviewDescription, setReviewDescription] = useState("");
+  const [reviewSource, setReviewSource] = useState("");
+  const [reviewTarget, setReviewTarget] = useState("");
+  const [reviewerIds, setReviewerIds] = useState<string[]>([]);
+  const [reviewComments, setReviewComments] = useState<Record<string, string>>({});
+  const actorId = projectWorkspace.currentUserId;
+  const canComment = hasPermission(projectWorkspace, actorId, "comment");
+  const canResolveConflicts = hasPermission(projectWorkspace, actorId, "resolve-conflicts");
   const activeBranch = versionHistory.branches.find((branch) => branch.id === versionHistory.activeBranchId);
   const defaultAlternateBase = projectSnapshots.some((snapshot) => snapshot.id === activeBranch?.headSnapshotId)
     ? activeBranch!.headSnapshotId
     : projectSnapshots[0]?.id ?? "";
   const milestones = new Map(versionHistory.milestones.map((item) => [item.snapshotId, item]));
+  const defaultReviewTarget = versionHistory.branches.some((branch) => branch.id === reviewTarget)
+    ? reviewTarget
+    : versionHistory.activeBranchId;
+  const defaultReviewSource = versionHistory.branches.some((branch) => branch.id === reviewSource && branch.id !== defaultReviewTarget)
+    ? reviewSource
+    : versionHistory.branches.find((branch) => branch.id !== defaultReviewTarget)?.id ?? "";
+  const branchName = (id: string) => versionHistory.branches.find((branch) => branch.id === id)?.name ?? id;
+  const addReviewComment = (reviewId: string) => {
+    const text = reviewComments[reviewId]?.trim();
+    if (!text) return;
+    onProjectWorkspace({ reviews: [...projectWorkspace.reviews, {
+      id: `review-comment-${crypto.randomUUID()}`,
+      kind: "comment" as const,
+      authorId: projectWorkspace.currentUserId,
+      targetType: "draft-review" as const,
+      targetId: reviewId,
+      text,
+      status: "open" as const,
+      createdAt: new Date().toISOString(),
+    }] });
+    setReviewComments((current) => ({ ...current, [reviewId]: "" }));
+  };
   const save = () => {
     const label = name.trim() || `Draft ${versionHistory.snapshots.length + 1}`;
     const episode = projectWorkspace.series.episodes[activeDocumentId];
@@ -462,22 +632,64 @@ function DraftsTab({ versionHistory, versionComparison, mergeConflicts, mergePre
     { value: "document", label: "Documents" }, { value: "block", label: "All script blocks" }, { value: "metadata", label: "All metadata" },
   ];
   return <div className="insp-stack">
-    <Hint>Project History snapshots every episode and shared project field. Alternate Drafts branch safely and can be combined with explicit conflict preference.</Hint>
-    <h4>Save Draft Version</h4>
-    <input className="insp-notes-input" value={name} placeholder={`Draft ${versionHistory.snapshots.length + 1} name`} onChange={(event) => setName(event.target.value)} />
-    <textarea className="insp-notes-input" value={description} placeholder="What changed?" onChange={(event) => setDescription(event.target.value)} />
-    {collaborationSession.projectType === "television" && <label className="insp-card-meta">Version scope<select aria-label="Version scope" className="element-select" value={snapshotScope} onChange={(event) => setSnapshotScope(event.target.value as SnapshotScope["kind"])}><option value="project">Whole project</option><option value="episode">Active episode</option><option value="season">Active season</option><option value="show-bible">Show bible</option></select></label>}
-    <label className="check-row"><input type="checkbox" checked={milestone} onChange={(event) => setMilestone(event.target.checked)} /> Mark as milestone</label>
-    <button className="btn btn-primary" onClick={save}>Save Draft Version</button>
-    {!!versionHistory.branches.length && <><h4>Alternate Drafts</h4><label className="insp-card-meta">Working draft<select className="element-select" value={versionHistory.activeBranchId} onChange={(event) => onSwitchAlternateDraft(event.target.value)}>{versionHistory.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label></>}
-    {!!projectSnapshots.length && <div className="insp-card">
-      <input className="insp-notes-input" value={alternateName} placeholder="Alternate draft name" onChange={(event) => setAlternateName(event.target.value)} />
-      <select className="element-select" value={alternateBase} onChange={(event) => setAlternateBase(event.target.value)}><option value="">Branch from active draft head…</option>{projectSnapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select>
-      <button className="btn btn-ghost" disabled={!alternateName.trim() || !defaultAlternateBase} onClick={() => { onCreateAlternateDraft(alternateName, alternateBase || defaultAlternateBase); setAlternateName(""); }}>Create Alternate Draft</button>
-    </div>}
-    {versionHistory.branches.length > 1 && <div className="insp-card diff-comparison"><h4>Combine Drafts</h4><select className="element-select" value={mergePreviewSourceId} onChange={(event) => { setMergeResolutions({}); onSelectCombineDraftSource(event.target.value); }}><option value="">Choose alternate…</option>{versionHistory.branches.filter((branch) => branch.id !== versionHistory.activeBranchId).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select><button className="btn" disabled={!mergePreviewSourceId} onClick={() => { setMergeResolutions({}); onPreviewCombineDrafts(mergePreviewSourceId); }}>Preview Combine</button>
-      {mergePreviewReady && <><div className="insp-card-meta">{mergeConflicts.length ? `${mergeConflicts.length} overlapping changes need an explicit choice.` : "No overlapping changes; this combine is clean."}</div>{mergeConflicts.map((conflict) => <div className="diff-row" key={conflict.path}><strong>{conflict.kind} · {conflict.path}</strong><div className="diff-values"><div><span>Base</span><pre>{formatDiffValue(conflict.base)}</pre></div><div><span>Current draft</span><pre>{formatDiffValue(conflict.ours)}</pre></div><div><span>Alternate draft</span><pre>{formatDiffValue(conflict.theirs)}</pre></div></div><label className="insp-card-meta">Use<select aria-label={`Resolve ${conflict.path}`} className="element-select" value={mergeResolutions[conflict.path] ?? "ours"} onChange={(event) => setMergeResolutions((current) => ({ ...current, [conflict.path]: event.target.value as "ours" | "theirs" }))}><option value="ours">Current draft</option><option value="theirs">Alternate draft</option></select></label></div>)}<div className="btn-row"><button className="btn btn-primary" onClick={() => { onCombineDrafts(mergePreviewSourceId, { default: "ours", paths: mergeResolutions }); setMergeResolutions({}); }}>Apply Combine</button><button className="btn btn-ghost" onClick={() => { setMergeResolutions({}); onCancelCombineDrafts(); }}>Cancel</button></div></>}
-    </div>}
+    <Hint>Save versions, branch Alternate Drafts, and use Draft Reviews to discuss, approve, resolve overlaps, and apply work safely.</Hint>
+    <fieldset className="permission-scope" aria-label="Draft editing controls" disabled={!editable}>
+      <h4>Save Draft Version</h4>
+      <input className="insp-notes-input" value={name} placeholder={`Draft ${versionHistory.snapshots.length + 1} name`} onChange={(event) => setName(event.target.value)} />
+      <textarea className="insp-notes-input" value={description} placeholder="What changed?" onChange={(event) => setDescription(event.target.value)} />
+      {collaborationSession.projectType === "television" && <label className="insp-card-meta">Version scope<select aria-label="Version scope" className="element-select" value={snapshotScope} onChange={(event) => setSnapshotScope(event.target.value as SnapshotScope["kind"])}><option value="project">Whole project</option><option value="episode">Active episode</option><option value="season">Active season</option><option value="show-bible">Show bible</option></select></label>}
+      <label className="check-row"><input type="checkbox" checked={milestone} onChange={(event) => setMilestone(event.target.checked)} /> Mark as milestone</label>
+      <button className="btn btn-primary" onClick={save}>Save Draft Version</button>
+      {!!versionHistory.branches.length && <><h4>Draft Branches</h4><label className="insp-card-meta">Working draft<select className="element-select" value={versionHistory.activeBranchId} onChange={(event) => onSwitchAlternateDraft(event.target.value)}>{versionHistory.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label></>}
+      {!!projectSnapshots.length && <div className="insp-card">
+        <input className="insp-notes-input" value={alternateName} placeholder="Alternate draft name" onChange={(event) => setAlternateName(event.target.value)} />
+        <select className="element-select" value={alternateBase} onChange={(event) => setAlternateBase(event.target.value)}><option value="">Branch from active draft head…</option>{projectSnapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select>
+        <button className="btn btn-ghost" disabled={!alternateName.trim() || !defaultAlternateBase} onClick={() => { onCreateAlternateDraft(alternateName, alternateBase || defaultAlternateBase); setAlternateName(""); }}>Create Alternate Draft</button>
+      </div>}
+      {versionHistory.branches.length > 1 && <>
+        <h4>Open Draft Review</h4>
+        <div className="insp-card draft-review-create">
+          <input className="insp-notes-input" aria-label="Draft Review title" value={reviewTitle} placeholder="Review title" onChange={(event) => setReviewTitle(event.target.value)} />
+          <textarea className="insp-notes-input" aria-label="Draft Review description" value={reviewDescription} placeholder="What should reviewers focus on?" onChange={(event) => setReviewDescription(event.target.value)} />
+          <div className="draft-review-route"><label className="insp-card-meta">From<select className="element-select" aria-label="Review source draft" value={defaultReviewSource} onChange={(event) => setReviewSource(event.target.value)}>{versionHistory.branches.filter((branch) => branch.id !== defaultReviewTarget).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label><span aria-hidden="true">→</span><label className="insp-card-meta">Into<select className="element-select" aria-label="Review target draft" value={defaultReviewTarget} onChange={(event) => { setReviewTarget(event.target.value); if (event.target.value === defaultReviewSource) setReviewSource(""); }}>{versionHistory.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label></div>
+          <details><summary className="link-btn">Choose reviewers ({reviewerIds.length})</summary>{projectWorkspace.collaborators.filter((person) => person.id !== projectWorkspace.currentUserId && hasPermission(projectWorkspace, person.id, "approve")).map((person) => <label className="check-row" key={person.id}><input type="checkbox" checked={reviewerIds.includes(person.id)} onChange={() => setReviewerIds((current) => current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id])} /> {person.name} · {person.role}</label>)}</details>
+          <button className="btn btn-primary" disabled={!reviewTitle.trim() || !defaultReviewSource || defaultReviewSource === defaultReviewTarget} onClick={() => { onOpenDraftReview(reviewTitle, reviewDescription, defaultReviewSource, defaultReviewTarget, reviewerIds); setReviewTitle(""); setReviewDescription(""); setReviewerIds([]); }}>Open Draft Review</button>
+        </div>
+      </>}
+    </fieldset>
+    {!!versionHistory.draftReviews.length && <><h4>Draft Reviews</h4><div className="draft-review-list">{[...versionHistory.draftReviews].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((review) => {
+      const preview = draftReviewPreview(versionHistory, review.id);
+      const comments = projectWorkspace.reviews.filter((item) => item.targetType === "draft-review" && item.targetId === review.id);
+      const changeCount = preview.comparison.documentChanges.length + preview.comparison.blockChanges.length + preview.comparison.metadataChanges.length;
+      const closed = review.status === "closed" || review.status === "applied";
+      const assignedReviewer = review.reviewerIds.length === 0 || review.reviewerIds.includes(actorId);
+      const canDecide = assignedReviewer && hasPermission(projectWorkspace, actorId, "approve");
+      const canManageReview = review.authorId === actorId || hasPermission(projectWorkspace, actorId, "manage-reviews");
+      const reviewerNames = review.reviewerIds.map((reviewerId) => projectWorkspace.collaborators.find((person) => person.id === reviewerId)?.name ?? "Unknown reviewer");
+      return <details className="insp-card draft-review" key={review.id}>
+        <summary><span><strong>{review.title}</strong><small>{branchName(review.sourceBranchId)} → {branchName(review.targetBranchId)}</small><small>{reviewerNames.length ? `Reviewers: ${reviewerNames.join(", ")}` : "No assigned reviewers"}</small></span><span className={`draft-review-status status-${review.status}`}>{review.status.replace(/-/g, " ")}</span></summary>
+        {review.description && <p className="insp-card-desc">{review.description}</p>}
+        <div className="insp-card-meta">{changeCount} change{changeCount === 1 ? "" : "s"} · {preview.conflicts.length} overlapping edit{preview.conflicts.length === 1 ? "" : "s"} · updated {new Date(review.updatedAt).toLocaleString()}</div>
+        {preview.outdated && review.status !== "applied" && <div className="draft-review-warning"><span>This review is out of date because one of its drafts changed.</span><button className="btn btn-ghost" disabled={!editable} onClick={() => onRefreshDraftReview(review.id)}>Refresh Review</button></div>}
+        <details><summary className="link-btn">Changes ({changeCount})</summary><div className="diff-comparison">
+          {preview.comparison.documentChanges.slice(0, 30).map((change) => <div className="diff-row" key={`review-document-${change.documentId}`}><strong>{change.kind} document · {change.title}</strong></div>)}
+          {preview.comparison.blockChanges.slice(0, 30).map((change, index) => <div className="diff-row" key={`review-block-${change.documentId}-${change.blockId}-${index}`}><strong>{change.kind} script block</strong><div className="diff-values"><div><span>Before</span><pre>{formatDiffValue(change.before)}</pre></div><div><span>After</span><pre>{formatDiffValue(change.after)}</pre></div></div></div>)}
+          {preview.comparison.metadataChanges.slice(0, 30).map((change) => <div className="diff-row" key={`review-meta-${change.path}`}><strong>{change.path.replace(/[.[\]]+/g, " ").trim()}</strong><div className="diff-values"><div><span>Before</span><pre>{formatDiffValue(change.before)}</pre></div><div><span>After</span><pre>{formatDiffValue(change.after)}</pre></div></div></div>)}
+          {changeCount > 30 && <Hint>Showing the first 30 changes. Use Compare Drafts below for a focused view.</Hint>}
+        </div></details>
+        {!!preview.conflicts.length && <details open><summary className="link-btn">Overlapping edits ({preview.conflicts.length})</summary>{preview.conflicts.map((conflict) => <div className="diff-row" key={conflict.path}><strong>{conflict.kind.replace(/-/g, " ")} · {conflict.path.replace(/[.[\]]+/g, " ").trim()}</strong><div className="diff-values"><div><span>Common version</span><pre>{formatDiffValue(conflict.base)}</pre></div><div><span>{branchName(review.targetBranchId)}</span><pre>{formatDiffValue(conflict.ours)}</pre></div><div><span>{branchName(review.sourceBranchId)}</span><pre>{formatDiffValue(conflict.theirs)}</pre></div></div><label className="insp-card-meta">Keep in the applied draft<select className="element-select" aria-label={`Resolve ${conflict.path}`} disabled={preview.outdated || closed || !canResolveConflicts} value={review.resolutions[conflict.path] ?? ""} onChange={(event) => onResolveDraftReview(review.id, conflict.path, event.target.value ? event.target.value as "ours" | "theirs" : null)}><option value="">Choose a version...</option><option value="ours">{branchName(review.targetBranchId)}</option><option value="theirs">{branchName(review.sourceBranchId)}</option></select></label></div>)}</details>}
+        <h5>Discussion</h5>
+        {comments.length ? comments.map((comment) => <div className="draft-review-comment" key={comment.id}><div><strong>{projectWorkspace.collaborators.find((person) => person.id === comment.authorId)?.name ?? "Collaborator"}</strong><span>{new Date(comment.createdAt).toLocaleString()}</span></div><p>{comment.text}</p>{comment.status === "open" && (comment.authorId === actorId ? canComment : hasPermission(projectWorkspace, actorId, "manage-reviews")) && <button className="link-btn" onClick={() => onProjectWorkspace({ reviews: projectWorkspace.reviews.map((item) => item.id === comment.id ? { ...item, status: "resolved" } : item) })}>Resolve</button>}</div>) : <Hint>No comments yet.</Hint>}
+        {!closed && canComment && <div className="btn-row"><input className="insp-notes-input" aria-label={`Comment on ${review.title}`} value={reviewComments[review.id] ?? ""} placeholder="Leave a review comment" onChange={(event) => setReviewComments((current) => ({ ...current, [review.id]: event.target.value }))} /><button className="btn btn-ghost" disabled={!reviewComments[review.id]?.trim()} onClick={() => addReviewComment(review.id)}>Comment</button></div>}
+        <div className="btn-row">
+          {!closed && canDecide && <button className="btn btn-ghost" onClick={() => onUpdateDraftReviewStatus(review.id, "changes-requested")}>Request Changes</button>}
+          {!closed && canDecide && <button className="btn" disabled={preview.outdated || preview.unresolvedConflictPaths.length > 0} onClick={() => onUpdateDraftReviewStatus(review.id, "approved")}>Approve</button>}
+          {review.status === "changes-requested" && canDecide && <button className="btn btn-ghost" onClick={() => onUpdateDraftReviewStatus(review.id, "open")}>Reopen</button>}
+          {preview.readyToApply && editable && canResolveConflicts && <button className="btn btn-primary" onClick={() => onApplyDraftReview(review.id)}>Apply Draft</button>}
+          {review.status !== "applied" && canManageReview && <button className="link-btn" onClick={() => onUpdateDraftReviewStatus(review.id, review.status === "closed" ? "open" : "closed")}>{review.status === "closed" ? "Reopen Review" : "Close Review"}</button>}
+        </div>
+      </details>;
+    })}</div></>}
     {snapshots.length > 1 && <><h4>Compare Drafts</h4><select className="element-select" value={compareFrom} onChange={(event) => setCompareFrom(event.target.value)}><option value="">Earlier draft…</option>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select><select className="element-select" value={compareTo} onChange={(event) => setCompareTo(event.target.value)}><option value="">Later draft…</option>{snapshots.map((snapshot) => <option key={snapshot.id} value={snapshot.id}>{snapshot.name}</option>)}</select><select className="element-select" value={compareMode} onChange={(event) => setCompareMode(event.target.value as SnapshotDiffMode)}>{modes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select><button className="btn btn-ghost" disabled={!compareFrom || !compareTo || compareFrom === compareTo} onClick={() => onCompareVersions(compareFrom, compareTo, compareMode)}>Compare</button></>}
     {versionComparison && <div className="insp-card diff-comparison"><div className="insp-card-title">{versionComparison.mode} comparison</div><div className="insp-card-meta">Scope: {snapshotScopeLabel(versionComparison.scope)}</div>
       {!versionComparison.documentChanges.length && !versionComparison.blockChanges.length && !versionComparison.metadataChanges.length && <Hint>No differences in this view.</Hint>}
@@ -487,7 +699,7 @@ function DraftsTab({ versionHistory, versionComparison, mergeConflicts, mergePre
       {versionComparison.documentChanges.length + versionComparison.blockChanges.length + versionComparison.metadataChanges.length > 200 && <Hint>Showing the first 200 changes. Export or narrow the comparison mode for a focused review.</Hint>}
     </div>}
     <h4>Project History{activeBranch ? ` · ${activeBranch.name}` : ""}</h4>
-    <div className="version-list">{snapshots.map((snapshot) => <div className="version-row" key={snapshot.id}><div className="version-top"><span className="version-label">{snapshot.name}</span>{milestones.has(snapshot.id) && <span className="milestone-tag">milestone</span>}<span className="milestone-tag">{snapshotScopeLabel(snapshot.scope)}</span><span className="version-when">{new Date(snapshot.createdAt).toLocaleString()}</span></div><div className="version-note">{snapshot.description || "No description"} · {versionHistory.branches.find((branch) => branch.id === snapshot.branchId)?.name ?? snapshot.branchId ?? "Main Draft"}</div><button className="link-btn" onClick={() => onRestoreVersion(snapshot)}>Restore</button></div>)}</div>
+    <div className="version-list">{snapshots.map((snapshot) => <div className="version-row" key={snapshot.id}><div className="version-top"><span className="version-label">{snapshot.name}</span>{milestones.has(snapshot.id) && <span className="milestone-tag">milestone</span>}<span className="milestone-tag">{snapshotScopeLabel(snapshot.scope)}</span><span className="version-when">{new Date(snapshot.createdAt).toLocaleString()}</span></div><div className="version-note">{snapshot.description || "No description"} · {versionHistory.branches.find((branch) => branch.id === snapshot.branchId)?.name ?? snapshot.branchId ?? "Main Draft"}</div><button className="link-btn" disabled={!editable} onClick={() => onRestoreVersion(snapshot)}>Restore</button></div>)}</div>
   </div>;
 }
 

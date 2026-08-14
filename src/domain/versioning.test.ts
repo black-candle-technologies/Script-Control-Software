@@ -9,10 +9,16 @@ import {
   createAlternateDraft,
   createProjectSnapshot,
   createVersionHistory,
+  draftReviewPreview,
+  markDraftReviewApplied,
   mergeSnapshots,
+  openDraftReview,
+  refreshDraftReview,
   restoreProjectSnapshot,
   saveSnapshot,
+  setDraftReviewResolution,
   snapshotScopeOf,
+  updateDraftReviewStatus,
 } from "./versioning.ts";
 
 const blocks = (prefix: string): ScreenplayBlock[] => [
@@ -39,7 +45,7 @@ const session = (): ProjectSession => ({
   updatedAt: "2026-01-01T00:00:00.000Z",
   documents: [document("doc-1", "Pilot"), document("doc-2", "Episode 2")],
   versions: [],
-  versionHistory: { snapshots: [], branches: [], milestones: [], activeBranchId: "main" },
+  versionHistory: { snapshots: [], branches: [], milestones: [], draftReviews: [], activeBranchId: "main" },
   workspace: defaultProjectWorkspace(),
   projectPath: "C:/projects/versioning-test",
   activeDocumentId: "doc-1",
@@ -98,6 +104,145 @@ test("named project snapshots, alternate drafts, and milestones are immutable", 
   restored.name = "Mutated restore";
   assert.equal(base.session.name, "Versioning Test");
   assert.equal(restoreProjectSnapshot(base, project).documents[0].source?.path, "C:/Writer/private.fdx");
+});
+
+test("Draft Reviews pin branch heads, expose changes, and refresh when a draft advances", () => {
+  const original = session();
+  const base = snapshot(original, "review-base");
+  let history = createAlternateDraft(createVersionHistory(base), { id: "rewrite", name: "Rewrite", fromSnapshotId: base.id });
+  const rewrite = structuredClone(original);
+  rewrite.documents[0].blocks[1].text = "The room grows dark.";
+  history = saveSnapshot(history, snapshot(rewrite, "rewrite-1"), "rewrite");
+
+  const opened = openDraftReview(history, {
+    id: "review-1",
+    title: "  Darker opening  ",
+    description: "  Review the new opening.  ",
+    sourceBranchId: "rewrite",
+    targetBranchId: "main",
+    authorId: "writer",
+    reviewerIds: ["producer", " producer ", ""],
+    createdAt: "2026-05-01T00:00:00.000Z",
+  });
+  assert.equal(history.draftReviews.length, 0);
+  assert.deepEqual(opened.draftReviews[0], {
+    id: "review-1",
+    title: "Darker opening",
+    description: "Review the new opening.",
+    sourceBranchId: "rewrite",
+    targetBranchId: "main",
+    baseSnapshotId: "review-base",
+    sourceSnapshotId: "rewrite-1",
+    targetSnapshotId: "review-base",
+    authorId: "writer",
+    reviewerIds: ["producer"],
+    status: "open",
+    createdAt: "2026-05-01T00:00:00.000Z",
+    updatedAt: "2026-05-01T00:00:00.000Z",
+    resolutions: {},
+  });
+  const preview = draftReviewPreview(opened, "review-1", "block");
+  assert.deepEqual(preview.comparison.blockChanges.map((change) => [change.blockId, change.kind]), [["doc-1-action", "edited"]]);
+  assert.equal(preview.conflicts.length, 0);
+  assert.equal(preview.outdated, false);
+  assert.equal(preview.readyToApply, false);
+  const approved = updateDraftReviewStatus(opened, "review-1", "approved", "2026-05-01T01:00:00.000Z");
+  assert.equal(draftReviewPreview(approved, "review-1").readyToApply, true);
+  assert.equal(opened.draftReviews[0].status, "open");
+
+  const laterRewrite = structuredClone(rewrite);
+  laterRewrite.documents[0].blocks[3].text = "Is anybody there?";
+  const advanced = saveSnapshot(approved, snapshot(laterRewrite, "rewrite-2"), "rewrite");
+  assert.equal(draftReviewPreview(advanced, "review-1").sourceOutdated, true);
+  assert.equal(draftReviewPreview(advanced, "review-1").readyToApply, false);
+  const refreshed = refreshDraftReview(advanced, "review-1", "2026-05-02T00:00:00.000Z");
+  assert.equal(refreshed.draftReviews[0].sourceSnapshotId, "rewrite-2");
+  assert.equal(refreshed.draftReviews[0].status, "open");
+  assert.deepEqual(refreshed.draftReviews[0].resolutions, {});
+  assert.equal(draftReviewPreview(refreshed, "review-1").outdated, false);
+
+  assert.throws(() => openDraftReview(history, { id: "bad", title: "Bad", sourceBranchId: "main", targetBranchId: "main", authorId: "writer", createdAt: "now" }), /different source and target/i);
+});
+
+test("Draft Reviews require explicit overlap choices and record a two-parent applied version", () => {
+  const original = session();
+  const base = snapshot(original, "combine-base");
+  let history = createAlternateDraft(createVersionHistory(base), { id: "alternate", name: "Alternate", fromSnapshotId: base.id });
+  const current = structuredClone(original);
+  current.documents[0].blocks[1].text = "The current draft room burns.";
+  history = saveSnapshot(history, snapshot(current, "main-2"), "main");
+  const incoming = structuredClone(original);
+  incoming.documents[0].blocks[1].text = "The alternate draft room floods.";
+  history = saveSnapshot(history, snapshot(incoming, "alternate-2"), "alternate");
+  history = openDraftReview(history, {
+    id: "conflicted-review",
+    title: "Choose the room",
+    sourceBranchId: "alternate",
+    targetBranchId: "main",
+    authorId: "writer",
+    createdAt: "2026-06-01T00:00:00.000Z",
+  });
+
+  const initial = draftReviewPreview(history, "conflicted-review");
+  assert.deepEqual(initial.conflicts.map((conflict) => conflict.path), ["/documents/doc-1/blocks/doc-1-action/text"]);
+  assert.deepEqual(initial.unresolvedConflictPaths, ["/documents/doc-1/blocks/doc-1-action/text"]);
+  history = updateDraftReviewStatus(history, "conflicted-review", "approved", "2026-06-01T01:00:00.000Z");
+  assert.equal(draftReviewPreview(history, "conflicted-review").readyToApply, false);
+  history = setDraftReviewResolution(history, "conflicted-review", initial.conflicts[0].path, "theirs", "2026-06-01T02:00:00.000Z");
+  assert.equal(history.draftReviews[0].status, "open");
+  assert.equal(draftReviewPreview(history, "conflicted-review").mergeResult.merged.documents[0].blocks[1].text, "The alternate draft room floods.");
+  assert.throws(() => setDraftReviewResolution(history, "conflicted-review", "/missing", "ours", "later"), /does not exist/);
+  history = updateDraftReviewStatus(history, "conflicted-review", "approved", "2026-06-01T03:00:00.000Z");
+  const ready = draftReviewPreview(history, "conflicted-review");
+  assert.equal(ready.readyToApply, true);
+
+  const appliedSnapshot = createProjectSnapshot(ready.mergeResult.merged, {
+    id: "applied-review",
+    name: "Applied Alternate",
+    createdAt: "2026-06-01T04:00:00.000Z",
+    parentIds: [ready.targetSnapshot.id, ready.sourceSnapshot.id],
+    branchId: "main",
+  });
+  history = saveSnapshot(history, appliedSnapshot, "main");
+  history = markDraftReviewApplied(history, "conflicted-review", appliedSnapshot.id, "2026-06-01T04:00:00.000Z");
+  assert.equal(history.draftReviews[0].status, "applied");
+  assert.equal(history.draftReviews[0].appliedSnapshotId, "applied-review");
+  assert.deepEqual(history.snapshots.find((item) => item.id === "applied-review")?.parentIds, ["main-2", "alternate-2"]);
+  assert.throws(() => updateDraftReviewStatus(history, "conflicted-review", "open", "later"), /final/);
+});
+
+test("Draft Review normalization repairs collaborators and keeps only valid anchored discussion", () => {
+  const project = session();
+  const base = snapshot(project, "portable-review-base");
+  let history = createAlternateDraft(createVersionHistory(base), { id: "portable-alternate", name: "Portable Alternate", fromSnapshotId: base.id });
+  const changed = structuredClone(project);
+  changed.documents[0].blocks[1].text = "Portable review change.";
+  history = saveSnapshot(history, snapshot(changed, "portable-alternate-1"), "portable-alternate");
+  history = openDraftReview(history, {
+    id: "portable-review",
+    title: "Portable review",
+    sourceBranchId: "portable-alternate",
+    targetBranchId: "main",
+    authorId: "missing-author",
+    reviewerIds: ["local-owner", "missing-reviewer"],
+    createdAt: "2026-06-02T00:00:00.000Z",
+  });
+  project.versionHistory = history;
+  project.workspace.reviews = [
+    { id: "review-comment", kind: "comment", authorId: "missing-author", targetType: "draft-review", targetId: "portable-review", changePath: " /documents/doc-1/blocks/doc-1-action/text ", text: "Discuss this line.", status: "open", createdAt: "now" },
+    { id: "orphan-comment", kind: "comment", authorId: "local-owner", targetType: "draft-review", targetId: "missing-review", text: "Orphaned.", status: "open", createdAt: "now" },
+  ];
+
+  const normalized = normalizeProjectSession(project);
+  assert.equal(normalized.versionHistory.draftReviews[0].authorId, "local-owner");
+  assert.deepEqual(normalized.versionHistory.draftReviews[0].reviewerIds, ["local-owner"]);
+  assert.deepEqual(normalized.workspace.reviews.map((review) => review.id), ["review-comment"]);
+  assert.equal(normalized.workspace.reviews[0].authorId, "local-owner");
+  assert.equal(normalized.workspace.reviews[0].changePath, "/documents/doc-1/blocks/doc-1-action/text");
+
+  const malformed = structuredClone(project) as ProjectSession & { versionHistory: { draftReviews: Array<Record<string, unknown>> } };
+  malformed.versionHistory.draftReviews.push({ ...malformed.versionHistory.draftReviews[0], id: "bad-review", sourceBranchId: "missing-branch" });
+  assert.deepEqual(normalizeProjectSession(malformed).versionHistory.draftReviews.map((review) => review.id), ["portable-review"]);
 });
 
 test("television snapshot scopes restore only their episode, season, or show-bible boundary", () => {

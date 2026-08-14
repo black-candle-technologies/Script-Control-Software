@@ -69,13 +69,40 @@ export interface ScreenplayDocument {
   workspace?: WorkspaceData;
 }
 
-export type StoryBoardView = "act" | "sequence" | "scene" | "beat" | "timeline";
+export type StoryBoardView = "board" | "act" | "sequence" | "scene" | "beat" | "timeline";
+
+export interface StoryBoardRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface StoryBoardCanvas {
+  id?: string;
+  width: number;
+  height: number;
+  zoomLevel?: number;
+  scrollOrigin?: string;
+}
+
+export interface StoryConnection {
+  id: string;
+  fromId: string;
+  toId: string;
+  color?: string;
+  frontCap?: string;
+  endCap?: string;
+  board?: StoryBoardRect;
+}
 
 export interface CustomStoryStructure {
   acts: { id: string; title: string }[];
   sequences: { id: string; actId: string; title: string; sceneIds: string[] }[];
-  beats: { id: string; text: string; sceneId?: string; sequenceId?: string; status: "idea" | "drafted" | "complete"; moments: { id: string; text: string }[] }[];
+  beats: { id: string; title?: string; text: string; color?: string; board?: StoryBoardRect; sceneId?: string; sequenceId?: string; status: "idea" | "drafted" | "complete"; moments: { id: string; text: string }[]; source?: "scs" | "fdx" }[];
   sceneOrder: string[];
+  connections?: StoryConnection[];
+  board?: StoryBoardCanvas;
 }
 
 export interface TreatmentDocument {
@@ -135,7 +162,7 @@ export interface WorkspaceData {
 export const emptyWorkspace = (): WorkspaceData => ({
   treatment: "",
   treatments: [],
-  storyBoardView: "scene",
+  storyBoardView: "board",
   showBible: "",
   continuity: "",
   seasonArc: "",
@@ -405,7 +432,7 @@ export function reconcileScreenplayDocument(previous: ScreenplayDocument, parsed
   const workspace = { ...emptyWorkspace(), ...parsed.workspace, ...previous.workspace };
   workspace.sceneMeta = remapRecord(previous.workspace?.sceneMeta);
   workspace.omittedSceneIds = remapSceneIds(previous.workspace?.omittedSceneIds);
-  workspace.storyStructure = previous.workspace?.storyStructure ? {
+  const previousStructure = previous.workspace?.storyStructure ? {
     ...previous.workspace.storyStructure,
     sceneOrder: remapSceneIds(previous.workspace.storyStructure.sceneOrder),
     sequences: previous.workspace.storyStructure.sequences.map((sequence) => ({
@@ -418,6 +445,41 @@ export function reconcileScreenplayDocument(previous: ScreenplayDocument, parsed
       moments: beat.moments.map((moment) => ({ ...moment })),
     })),
   } : undefined;
+  const importedStructure = parsed.workspace?.storyStructure;
+  if (!previousStructure) {
+    const parsedBlockIds = new Map(parsed.blocks.map((block, index) => [block.id, blocks[index]?.id ?? block.id]));
+    workspace.storyStructure = importedStructure ? {
+      ...importedStructure,
+      sceneOrder: importedStructure.sceneOrder.map((id) => parsedBlockIds.get(id) ?? id),
+    } : undefined;
+  } else if (!importedStructure) {
+    workspace.storyStructure = previousStructure;
+  } else {
+    // Final Draft owns records tagged as FDX beats; SCS-owned beats and mixed
+    // connections remain local. Stable ListItem ids make repeated imports
+    // deterministic without duplicating the board.
+    const previousFdxIds = new Set(previousStructure.beats.filter((beat) => beat.source === "fdx").map((beat) => beat.id));
+    const importedFdxBeats = importedStructure.beats.filter((beat) => beat.source === "fdx");
+    const importedFdxIds = new Set(importedFdxBeats.map((beat) => beat.id));
+    const localConnections = (previousStructure.connections ?? []).filter((connection) =>
+      !(previousFdxIds.has(connection.fromId) && previousFdxIds.has(connection.toId)),
+    );
+    const importedConnectionIds = new Set((importedStructure.connections ?? []).map((connection) => connection.id));
+    workspace.storyStructure = {
+      ...previousStructure,
+      beats: [
+        ...previousStructure.beats.filter((beat) => beat.source !== "fdx"),
+        ...importedFdxBeats,
+      ],
+      connections: [
+        ...localConnections.filter((connection) => !importedConnectionIds.has(connection.id)
+          && (!previousFdxIds.has(connection.fromId) || importedFdxIds.has(connection.fromId))
+          && (!previousFdxIds.has(connection.toId) || importedFdxIds.has(connection.toId))),
+        ...(importedStructure.connections ?? []),
+      ],
+      ...(importedStructure.board ? { board: importedStructure.board } : {}),
+    };
+  }
   workspace.treatments = previous.workspace?.treatments?.map((treatment) => ({
     ...treatment,
     links: treatment.links.flatMap((link) => {

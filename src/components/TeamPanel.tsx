@@ -220,6 +220,13 @@ function compact(value: unknown): string {
 
 function describeReviewTarget(session: ProjectSession, review: ReviewItem): { label: string; documentId?: string; focusId?: string } {
   if (review.targetType === "project") return { label: `Project · ${session.name}` };
+  if (review.targetType === "draft-review") {
+    const draftReview = session.versionHistory.draftReviews.find((item) => item.id === review.targetId);
+    if (!draftReview) return { label: "Draft Review · missing review" };
+    const source = session.versionHistory.branches.find((branch) => branch.id === draftReview.sourceBranchId)?.name ?? draftReview.sourceBranchId;
+    const target = session.versionHistory.branches.find((branch) => branch.id === draftReview.targetBranchId)?.name ?? draftReview.targetBranchId;
+    return { label: `Draft Review · ${draftReview.title} · ${source} → ${target}` };
+  }
   const matches = session.documents.filter((document) => document.id === (review.documentId ?? (review.targetType === "episode" ? review.targetId : undefined))
     || (!review.documentId && review.targetType === "scene" && deriveScenes(document.blocks).some((scene) => scene.id === review.targetId))
     || (!review.documentId && review.targetType === "block" && document.blocks.some((block) => block.id === review.targetId)));

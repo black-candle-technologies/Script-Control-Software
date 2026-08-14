@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FinalDraft DocumentType="Script" Template="No" Version="6">
+  <Content>
+    <Paragraph Type="Action" Id="action-1"><Text>FADE IN:</Text></Paragraph>
+    <Paragraph Type="Outline 1" Id="outline-1"><Text>Imported outline</Text></Paragraph>
+    <Paragraph Type="Summary" Id="summary-1"><Text>This belongs in the outline, not on the screenplay page.</Text></Paragraph>
+    <Paragraph Type="Scene Heading" Id="scene-1"><Text>INT. ROOM - NIGHT</Text></Paragraph>
+    <Paragraph Type="Action" Id="action-2"><Text>The screenplay continues.</Text></Paragraph>
+  </Content>
+  <HeaderAndFooter>
+    <Header><Content><Paragraph Type="General"><Text>Header text must not become screenplay text.</Text></Paragraph></Content></Header>
+  </HeaderAndFooter>
+  <ListItems>
+    <ListItem Color="#AAAABBBBCCCC" Id="beat-a" Title="First beat" Type="Beat">
+      <Content>
+        <Paragraph><Text>First body line.</Text></Paragraph>
+        <Paragraph><Text>Second body line.</Text></Paragraph>
+      </Content>
+    </ListItem>
+    <ListItem Color="#DDDDEEEEFFFF" Id="beat-b" Title="Second beat" Type="Beat">
+      <Content><Paragraph><Text>Second body.</Text></Paragraph></Content>
+    </ListItem>
+    <ListItem Color="#111122223333" EndCap="Arrow" EndPoint="beat-b" FrontCap="None" Id="link-a-b" StartPoint="beat-a" Type="PeerLink"/>
+  </ListItems>
+  <DisplayBoards>
+    <DisplayBoard Height="1000" Id="board-1" ScrollOrigin="20,40" Type="Beat" Width="2000" ZoomLevel="110.5">
+      <Item Height="180" Id="beat-a" Left="60" Top="80" Width="240"/>
+      <Item Height="160" Id="beat-b" Left="420" Top="300" Width="220"/>
+      <Item Height="80" Id="link-a-b" Left="280" Top="180" Width="160"/>
+    </DisplayBoard>
+  </DisplayBoards>
+</FinalDraft>

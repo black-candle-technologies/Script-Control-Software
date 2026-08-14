@@ -123,6 +123,92 @@ pub struct ImportWarning {
     pub data_preserved: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryBoardRect {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryBoardCanvas {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub width: f64,
+    pub height: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zoom_level: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_origin: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryBeat {
+    pub id: String,
+    pub title: String,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board: Option<StoryBoardRect>,
+    pub status: String,
+    pub moments: Vec<StoryMoment>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryMoment {
+    pub id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryConnection {
+    pub id: String,
+    pub from_id: String,
+    pub to_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub front_cap: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_cap: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board: Option<StoryBoardRect>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryAct {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedStoryStructure {
+    pub acts: Vec<StoryAct>,
+    pub sequences: Vec<serde_json::Value>,
+    pub beats: Vec<StoryBeat>,
+    pub scene_order: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<StoryConnection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board: Option<StoryBoardCanvas>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedWorkspace {
+    pub story_structure: ImportedStoryStructure,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenplayDocument {
@@ -138,6 +224,7 @@ pub struct ScreenplayDocument {
     pub warnings: Vec<ImportWarning>,
     pub scene_notes: Metadata,
     pub read_only: bool,
+    pub workspace: ImportedWorkspace,
 }
 
 #[derive(Default)]
@@ -146,6 +233,17 @@ struct Paragraph {
     attrs: Metadata,
     runs: Vec<TextRun>,
     in_title_page: bool,
+    target: ParagraphTarget,
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum ParagraphTarget {
+    #[default]
+    Ignore,
+    Script,
+    TitlePage,
+    Beat,
+    Outline,
 }
 
 pub fn parse_file(path: &Path) -> Result<ScreenplayDocument, String> {
@@ -174,6 +272,14 @@ pub fn parse(xml: &[u8], path: &Path) -> Result<ScreenplayDocument, String> {
     let mut paragraph: Option<Paragraph> = None;
     let mut run: Option<TextRun> = None;
     let mut title_depth = 0usize;
+    let mut element_path = Vec::<String>::new();
+    let mut beats = Vec::<StoryBeat>::new();
+    let mut active_beat: Option<StoryBeat> = None;
+    let mut pending_outline: Option<StoryBeat> = None;
+    let mut connections = Vec::<StoryConnection>::new();
+    let mut board_rects = BTreeMap::<String, StoryBoardRect>::new();
+    let mut board = None::<StoryBoardCanvas>;
+    let mut in_beat_display_board = false;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -186,27 +292,136 @@ pub fn parse(xml: &[u8], path: &Path) -> Result<ScreenplayDocument, String> {
                         version = metadata.get("Version").cloned();
                     }
                     "TitlePage" => title_depth += 1,
+                    "ListItem" if is_root_container(&element_path, "ListItems") => {
+                        match attrs.get("Type").map(String::as_str) {
+                            Some(value) if value.eq_ignore_ascii_case("Beat") => {
+                                active_beat = Some(beat_from_attributes(&attrs, beats.len()));
+                            }
+                            Some(value) if value.eq_ignore_ascii_case("PeerLink") => {
+                                if let Some(connection) =
+                                    connection_from_attributes(&attrs, connections.len())
+                                {
+                                    connections.push(connection);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    "DisplayBoard" if is_root_container(&element_path, "DisplayBoards") => {
+                        in_beat_display_board = attrs
+                            .get("Type")
+                            .is_some_and(|value| value.eq_ignore_ascii_case("Beat"));
+                        if in_beat_display_board {
+                            board = board_from_attributes(&attrs);
+                        }
+                    }
+                    "Item"
+                        if in_beat_display_board
+                            && is_root_child(&element_path, "DisplayBoards", "DisplayBoard") =>
+                    {
+                        if let Some((id, rect)) = rect_from_attributes(&attrs) {
+                            board_rects.insert(id, rect);
+                        }
+                    }
                     "Paragraph" => {
+                        let original_type = attrs
+                            .get("Type")
+                            .cloned()
+                            .unwrap_or_else(|| "Unknown".into());
+                        let target = paragraph_target(
+                            &element_path,
+                            title_depth > 0,
+                            active_beat.is_some(),
+                            &original_type,
+                        );
+                        if target == ParagraphTarget::Script {
+                            flush_outline(&mut pending_outline, &mut beats);
+                        }
                         paragraph = Some(Paragraph {
-                            original_type: attrs
-                                .get("Type")
-                                .cloned()
-                                .unwrap_or_else(|| "Unknown".into()),
+                            original_type,
                             attrs,
                             runs: Vec::new(),
                             in_title_page: title_depth > 0,
+                            target,
                         });
                     }
                     "Text" if paragraph.is_some() => run = Some(text_run(attrs)),
                     _ => {}
                 }
+                element_path.push(name);
             }
             Ok(Event::Empty(tag)) => {
                 let name = String::from_utf8_lossy(tag.name().as_ref()).to_string();
-                if name == "Text" {
-                    if let Some(current) = paragraph.as_mut() {
-                        current.runs.push(text_run(attributes(&tag, &reader)?));
+                let attrs = attributes(&tag, &reader)?;
+                match name.as_str() {
+                    "Text" => {
+                        if let Some(current) = paragraph.as_mut() {
+                            current.runs.push(text_run(attrs));
+                        }
                     }
+                    "Paragraph" => {
+                        let original_type = attrs
+                            .get("Type")
+                            .cloned()
+                            .unwrap_or_else(|| "Unknown".into());
+                        let target = paragraph_target(
+                            &element_path,
+                            title_depth > 0,
+                            active_beat.is_some(),
+                            &original_type,
+                        );
+                        if target == ParagraphTarget::Script {
+                            flush_outline(&mut pending_outline, &mut beats);
+                        }
+                        finish_paragraph(
+                            Paragraph {
+                                original_type,
+                                attrs,
+                                runs: Vec::new(),
+                                in_title_page: title_depth > 0,
+                                target,
+                            },
+                            &mut title_page,
+                            &mut blocks,
+                            &mut warnings,
+                            &mut active_beat,
+                            &mut pending_outline,
+                            &mut beats,
+                        );
+                    }
+                    "ListItem" if is_root_container(&element_path, "ListItems") => {
+                        match attrs.get("Type").map(String::as_str) {
+                            Some(value) if value.eq_ignore_ascii_case("Beat") => {
+                                let beat_index = beats.len();
+                                push_beat(&mut beats, beat_from_attributes(&attrs, beat_index));
+                            }
+                            Some(value) if value.eq_ignore_ascii_case("PeerLink") => {
+                                if let Some(connection) =
+                                    connection_from_attributes(&attrs, connections.len())
+                                {
+                                    connections.push(connection);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    "DisplayBoard"
+                        if is_root_container(&element_path, "DisplayBoards")
+                            && attrs
+                                .get("Type")
+                                .is_some_and(|value| value.eq_ignore_ascii_case("Beat")) =>
+                    {
+                        board = board_from_attributes(&attrs);
+                    }
+                    "Item"
+                        if in_beat_display_board
+                            && is_root_child(&element_path, "DisplayBoards", "DisplayBoard") =>
+                    {
+                        if let Some((id, rect)) = rect_from_attributes(&attrs) {
+                            board_rects.insert(id, rect);
+                        }
+                    }
+                    _ => {}
                 }
             }
             Ok(Event::Text(text)) => {
@@ -227,20 +442,44 @@ pub fn parse(xml: &[u8], path: &Path) -> Result<ScreenplayDocument, String> {
                     );
                 }
             }
-            Ok(Event::End(tag)) => match tag.name().as_ref() {
-                b"Text" => {
-                    if let (Some(current), Some(finished)) = (paragraph.as_mut(), run.take()) {
-                        current.runs.push(finished);
+            Ok(Event::End(tag)) => {
+                match tag.name().as_ref() {
+                    b"Text" => {
+                        if let (Some(current), Some(finished)) = (paragraph.as_mut(), run.take()) {
+                            current.runs.push(finished);
+                        }
                     }
-                }
-                b"Paragraph" => {
-                    if let Some(finished) = paragraph.take() {
-                        finish_paragraph(finished, &mut title_page, &mut blocks, &mut warnings);
+                    b"Paragraph" => {
+                        if let Some(finished) = paragraph.take() {
+                            finish_paragraph(
+                                finished,
+                                &mut title_page,
+                                &mut blocks,
+                                &mut warnings,
+                                &mut active_beat,
+                                &mut pending_outline,
+                                &mut beats,
+                            );
+                        }
                     }
+                    b"ListItem" if is_root_child(&element_path, "ListItems", "ListItem") => {
+                        if let Some(beat) = active_beat.take() {
+                            push_beat(&mut beats, beat);
+                        }
+                    }
+                    b"Content" if is_screenplay_content(&element_path) => {
+                        flush_outline(&mut pending_outline, &mut beats);
+                    }
+                    b"DisplayBoard"
+                        if is_root_child(&element_path, "DisplayBoards", "DisplayBoard") =>
+                    {
+                        in_beat_display_board = false;
+                    }
+                    b"TitlePage" => title_depth = title_depth.saturating_sub(1),
+                    _ => {}
                 }
-                b"TitlePage" => title_depth = title_depth.saturating_sub(1),
-                _ => {}
-            },
+                element_path.pop();
+            }
             Ok(Event::Eof) => break,
             Err(error) => return Err(format!("This file is not valid FDX XML: {error}")),
             _ => {}
@@ -269,6 +508,24 @@ pub fn parse(xml: &[u8], path: &Path) -> Result<ScreenplayDocument, String> {
     };
     title_page.title = title.clone();
     let (scenes, characters, locations) = derive_structure(&mut blocks, &mut warnings);
+    for beat in &mut beats {
+        beat.board = board_rects.remove(&beat.id);
+    }
+    for connection in &mut connections {
+        connection.board = board_rects.remove(&connection.id);
+    }
+    let beat_ids = beats
+        .iter()
+        .map(|beat| beat.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    connections.retain(|connection| {
+        beat_ids.contains(connection.from_id.as_str())
+            && beat_ids.contains(connection.to_id.as_str())
+    });
+    let scene_order = scenes
+        .iter()
+        .filter_map(|scene| blocks.get(scene.block_start).map(|block| block.id.clone()))
+        .collect();
 
     Ok(ScreenplayDocument {
         id,
@@ -289,6 +546,19 @@ pub fn parse(xml: &[u8], path: &Path) -> Result<ScreenplayDocument, String> {
         warnings,
         scene_notes: Metadata::new(),
         read_only: true,
+        workspace: ImportedWorkspace {
+            story_structure: ImportedStoryStructure {
+                acts: vec![StoryAct {
+                    id: "act-1".into(),
+                    title: "Act I".into(),
+                }],
+                sequences: Vec::new(),
+                beats,
+                scene_order,
+                connections,
+                board,
+            },
+        },
     })
 }
 
@@ -297,13 +567,16 @@ fn finish_paragraph(
     title_page: &mut TitlePage,
     blocks: &mut Vec<ScreenplayBlock>,
     warnings: &mut Vec<ImportWarning>,
+    active_beat: &mut Option<StoryBeat>,
+    pending_outline: &mut Option<StoryBeat>,
+    beats: &mut Vec<StoryBeat>,
 ) {
     let text = paragraph
         .runs
         .iter()
         .map(|run| run.text.as_str())
         .collect::<String>();
-    if paragraph.in_title_page {
+    if paragraph.target == ParagraphTarget::TitlePage || paragraph.in_title_page {
         if paragraph.original_type.eq_ignore_ascii_case("Title") && title_page.title.is_empty() {
             title_page.title = text.trim().to_string();
         } else if matches!(
@@ -318,6 +591,59 @@ fn finish_paragraph(
             text,
             metadata: paragraph.attrs,
         });
+        return;
+    }
+
+    if paragraph.target == ParagraphTarget::Beat {
+        if let Some(beat) = active_beat.as_mut() {
+            append_paragraph(&mut beat.text, &text);
+        }
+        return;
+    }
+
+    if paragraph.target == ParagraphTarget::Outline {
+        if is_outline_heading(&paragraph.original_type) {
+            flush_outline(pending_outline, beats);
+            let id = paragraph
+                .attrs
+                .get("Id")
+                .or_else(|| paragraph.attrs.get("id"))
+                .cloned()
+                .unwrap_or_else(|| stable_id("outline-beat", &format!("{}:{}", beats.len(), text)));
+            *pending_outline = Some(StoryBeat {
+                id,
+                title: text.trim().to_string(),
+                text: String::new(),
+                color: paragraph.attrs.get("Color").cloned(),
+                board: None,
+                status: "drafted".into(),
+                moments: Vec::new(),
+                source: "fdx".into(),
+            });
+        } else {
+            let beat = pending_outline.get_or_insert_with(|| StoryBeat {
+                id: paragraph
+                    .attrs
+                    .get("Id")
+                    .or_else(|| paragraph.attrs.get("id"))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        stable_id("outline-beat", &format!("{}:{}", beats.len(), text))
+                    }),
+                title: String::new(),
+                text: String::new(),
+                color: paragraph.attrs.get("Color").cloned(),
+                board: None,
+                status: "drafted".into(),
+                moments: Vec::new(),
+                source: "fdx".into(),
+            });
+            append_paragraph(&mut beat.text, &text);
+        }
+        return;
+    }
+
+    if paragraph.target != ParagraphTarget::Script {
         return;
     }
 
@@ -357,6 +683,155 @@ fn finish_paragraph(
         original_type: paragraph.original_type,
         metadata: paragraph.attrs,
     });
+}
+
+fn paragraph_target(
+    path: &[String],
+    in_title_page: bool,
+    in_beat: bool,
+    original_type: &str,
+) -> ParagraphTarget {
+    if in_title_page {
+        ParagraphTarget::TitlePage
+    } else if in_beat && is_root_beat_content(path) {
+        ParagraphTarget::Beat
+    } else if is_screenplay_content(path) && is_outline_type(original_type) {
+        ParagraphTarget::Outline
+    } else if is_screenplay_content(path) {
+        ParagraphTarget::Script
+    } else {
+        ParagraphTarget::Ignore
+    }
+}
+
+fn is_screenplay_content(path: &[String]) -> bool {
+    matches!(path, [root, content] if root == "FinalDraft" && content == "Content")
+}
+
+fn is_root_container(path: &[String], container: &str) -> bool {
+    matches!(path, [root, section] if root == "FinalDraft" && section == container)
+}
+
+fn is_root_child(path: &[String], container: &str, child: &str) -> bool {
+    matches!(path, [root, section, item]
+        if root == "FinalDraft" && section == container && item == child)
+}
+
+fn is_root_beat_content(path: &[String]) -> bool {
+    matches!(path, [root, list_items, list_item, content]
+        if root == "FinalDraft"
+            && list_items == "ListItems"
+            && list_item == "ListItem"
+            && content == "Content")
+}
+
+fn is_outline_type(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value == "summary" || value == "outline body" || value.starts_with("outline ")
+}
+
+fn is_outline_heading(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value.starts_with("outline ") && value != "outline body"
+}
+
+fn beat_from_attributes(attrs: &Metadata, index: usize) -> StoryBeat {
+    let title = attrs.get("Title").cloned().unwrap_or_default();
+    StoryBeat {
+        id: attrs
+            .get("Id")
+            .or_else(|| attrs.get("id"))
+            .cloned()
+            .unwrap_or_else(|| stable_id("fdx-beat", &format!("{index}:{title}"))),
+        title,
+        text: String::new(),
+        color: attrs.get("Color").cloned(),
+        board: None,
+        status: "drafted".into(),
+        moments: Vec::new(),
+        source: "fdx".into(),
+    }
+}
+
+fn connection_from_attributes(attrs: &Metadata, index: usize) -> Option<StoryConnection> {
+    let from_id = attrs.get("StartPoint")?.clone();
+    let to_id = attrs.get("EndPoint")?.clone();
+    Some(StoryConnection {
+        id: attrs
+            .get("Id")
+            .or_else(|| attrs.get("id"))
+            .cloned()
+            .unwrap_or_else(|| stable_id("fdx-link", &format!("{index}:{from_id}:{to_id}"))),
+        from_id,
+        to_id,
+        color: attrs.get("Color").cloned(),
+        front_cap: attrs.get("FrontCap").cloned(),
+        end_cap: attrs.get("EndCap").cloned(),
+        board: None,
+    })
+}
+
+fn rect_from_attributes(attrs: &Metadata) -> Option<(String, StoryBoardRect)> {
+    let id = attrs.get("Id").or_else(|| attrs.get("id"))?.clone();
+    let rect = StoryBoardRect {
+        left: number_attribute(attrs, "Left")?,
+        top: number_attribute(attrs, "Top")?,
+        width: number_attribute(attrs, "Width")?,
+        height: number_attribute(attrs, "Height")?,
+    };
+    (rect.width > 0.0 && rect.height > 0.0).then_some((id, rect))
+}
+
+fn board_from_attributes(attrs: &Metadata) -> Option<StoryBoardCanvas> {
+    let width = number_attribute(attrs, "Width")?;
+    let height = number_attribute(attrs, "Height")?;
+    (width > 0.0 && height > 0.0).then(|| StoryBoardCanvas {
+        id: attrs.get("Id").or_else(|| attrs.get("id")).cloned(),
+        width,
+        height,
+        zoom_level: number_attribute(attrs, "ZoomLevel"),
+        scroll_origin: attrs.get("ScrollOrigin").cloned(),
+    })
+}
+
+fn number_attribute(attrs: &Metadata, name: &str) -> Option<f64> {
+    attrs
+        .get(name)?
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+}
+
+fn append_paragraph(body: &mut String, paragraph: &str) {
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    body.push_str(paragraph);
+}
+
+fn flush_outline(pending: &mut Option<StoryBeat>, beats: &mut Vec<StoryBeat>) {
+    if let Some(beat) = pending.take() {
+        push_beat(beats, beat);
+    }
+}
+
+fn push_beat(beats: &mut Vec<StoryBeat>, beat: StoryBeat) {
+    if let Some(existing) = beats.iter_mut().find(|existing| existing.id == beat.id) {
+        if !beat.title.is_empty() {
+            existing.title = beat.title;
+        }
+        if !beat.text.is_empty() {
+            existing.text = beat.text;
+        }
+        if beat.color.is_some() {
+            existing.color = beat.color;
+        }
+        if beat.board.is_some() {
+            existing.board = beat.board;
+        }
+        return;
+    }
+    beats.push(beat);
 }
 
 fn derive_structure(
@@ -829,6 +1304,103 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.code == "UnknownParagraphType"));
+    }
+
+    #[test]
+    fn beat_board_and_outline_content_stay_out_of_screenplay_blocks() {
+        let doc = parse(&fixture("beat-board.fdx"), Path::new("beat-board.fdx")).unwrap();
+        assert_eq!(
+            doc.blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["FADE IN:", "INT. ROOM - NIGHT", "The screenplay continues."]
+        );
+
+        let structure = &doc.workspace.story_structure;
+        assert_eq!(structure.scene_order, vec!["scene-1"]);
+        assert_eq!(structure.beats.len(), 3);
+        assert_eq!(structure.beats[0].title, "Imported outline");
+        assert_eq!(
+            structure.beats[0].text,
+            "This belongs in the outline, not on the screenplay page."
+        );
+        let first = structure
+            .beats
+            .iter()
+            .find(|beat| beat.id == "beat-a")
+            .unwrap();
+        assert_eq!(first.title, "First beat");
+        assert_eq!(first.text, "First body line.\nSecond body line.");
+        assert_eq!(first.color.as_deref(), Some("#AAAABBBBCCCC"));
+        assert_eq!(first.board.as_ref().map(|rect| rect.left), Some(60.0));
+        assert_eq!(structure.connections.len(), 1);
+        assert_eq!(structure.connections[0].from_id, "beat-a");
+        assert_eq!(structure.connections[0].to_id, "beat-b");
+        assert_eq!(
+            structure.connections[0]
+                .board
+                .as_ref()
+                .map(|rect| rect.width),
+            Some(160.0)
+        );
+        assert_eq!(
+            structure
+                .board
+                .as_ref()
+                .and_then(|board| board.id.as_deref()),
+            Some("board-1")
+        );
+        assert_eq!(
+            structure.board.as_ref().map(|board| board.width),
+            Some(2000.0)
+        );
+        assert_eq!(
+            structure.board.as_ref().and_then(|board| board.zoom_level),
+            Some(110.5)
+        );
+        assert!(!doc
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("Header text")));
+    }
+
+    #[test]
+    fn beat_board_records_are_scoped_to_root_fdx_containers() {
+        let xml = br##"<?xml version="1.0" encoding="UTF-8"?>
+<FinalDraft Version="6">
+  <Content><Paragraph Type="Action" Id="action-1"><Text>Script text.</Text></Paragraph></Content>
+  <ListItems>
+    <ListItem Id="root-beat" Title="Root beat" Type="Beat">
+      <Content>
+        <Paragraph><Text>Root body.</Text></Paragraph>
+        <Extension><ListItems><ListItem Id="nested-beat" Title="Nested beat" Type="Beat"><Content><Paragraph><Text>Ignore me.</Text></Paragraph></Content></ListItem></ListItems></Extension>
+      </Content>
+    </ListItem>
+  </ListItems>
+  <DisplayBoards><DisplayBoard Height="800" Id="root-board" Type="Beat" Width="1200"><Item Height="100" Id="root-beat" Left="20" Top="30" Width="200"/></DisplayBoard></DisplayBoards>
+  <HeaderAndFooter>
+    <ListItems><ListItem Id="header-beat" Title="Header beat" Type="Beat"><Content><Paragraph><Text>Ignore me too.</Text></Paragraph></Content></ListItem></ListItems>
+    <DisplayBoards><DisplayBoard Height="999" Id="header-board" Type="Beat" Width="999"><Item Height="50" Id="header-beat" Left="1" Top="1" Width="50"/></DisplayBoard></DisplayBoards>
+  </HeaderAndFooter>
+</FinalDraft>"##;
+
+        let doc = parse(xml, Path::new("scoped-board.fdx")).unwrap();
+        let structure = &doc.workspace.story_structure;
+        assert_eq!(structure.beats.len(), 1);
+        assert_eq!(structure.beats[0].id, "root-beat");
+        assert_eq!(structure.beats[0].text, "Root body.");
+        assert_eq!(
+            structure
+                .board
+                .as_ref()
+                .and_then(|board| board.id.as_deref()),
+            Some("root-board")
+        );
+        assert_eq!(
+            structure.beats[0].board.as_ref().map(|rect| rect.width),
+            Some(200.0)
+        );
     }
 
     #[test]

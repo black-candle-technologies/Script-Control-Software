@@ -34,10 +34,12 @@ export interface ReviewItem {
   id: string;
   kind: "comment" | "suggestion";
   authorId: string;
-  targetType: "project" | "episode" | "scene" | "block" | "treatment";
+  targetType: "project" | "episode" | "scene" | "block" | "treatment" | "draft-review";
   targetId: string;
   /** Scopes scene, block, and treatment targets inside multi-script projects. */
   documentId?: string;
+  /** Anchors Draft Review discussion to a comparison or overlapping-edit path. */
+  changePath?: string;
   text: string;
   suggestedText?: string;
   originalText?: string;
@@ -344,8 +346,10 @@ export function normalizeProjectSession(value: unknown): ProjectSession {
 }
 
 export function emptyVersionHistory(): VersionHistory {
-  return { snapshots: [], branches: [], milestones: [], activeBranchId: "main" };
+  return { snapshots: [], branches: [], milestones: [], draftReviews: [], activeBranchId: "main" };
 }
+
+const draftReviewStatuses = new Set<VersionHistory["draftReviews"][number]["status"]>(["open", "changes-requested", "approved", "applied", "closed"]);
 
 function normalizeVersionHistory(value: unknown): VersionHistory {
   if (!isRecord(value)) return emptyVersionHistory();
@@ -402,10 +406,71 @@ function normalizeVersionHistory(value: unknown): VersionHistory {
     milestoneIdsSeen.add(milestone.id);
     return [{ id: milestone.id, name: milestone.name, description: milestone.description, snapshotId: milestone.snapshotId }];
   }) : [];
+  const draftReviewIdsSeen = new Set<string>();
+  const draftReviews = Array.isArray(value.draftReviews) ? value.draftReviews.flatMap((review): VersionHistory["draftReviews"] => {
+    if (!isRecord(review)) return [];
+    const id = string(review.id).trim();
+    const title = string(review.title).trim();
+    const sourceBranchId = string(review.sourceBranchId).trim();
+    const targetBranchId = string(review.targetBranchId).trim();
+    const baseSnapshotId = string(review.baseSnapshotId).trim();
+    const sourceSnapshotId = string(review.sourceSnapshotId).trim();
+    const targetSnapshotId = string(review.targetSnapshotId).trim();
+    const authorId = string(review.authorId).trim();
+    const createdAt = string(review.createdAt).trim();
+    const updatedAt = string(review.updatedAt).trim();
+    const status = typeof review.status === "string" && draftReviewStatuses.has(review.status as VersionHistory["draftReviews"][number]["status"])
+      ? review.status as VersionHistory["draftReviews"][number]["status"]
+      : undefined;
+    if (!id || draftReviewIdsSeen.has(id) || !title || !sourceBranchId || !targetBranchId || sourceBranchId === targetBranchId
+      || !branchIds.has(sourceBranchId) || !branchIds.has(targetBranchId)
+      || !projectSnapshotIds.has(baseSnapshotId) || !projectSnapshotIds.has(sourceSnapshotId) || !projectSnapshotIds.has(targetSnapshotId)
+      || !snapshotIsAncestor(snapshots, baseSnapshotId, sourceSnapshotId) || !snapshotIsAncestor(snapshots, baseSnapshotId, targetSnapshotId)
+      || !snapshotIsAncestor(snapshots, sourceSnapshotId, branches.find((branch) => branch.id === sourceBranchId)!.headSnapshotId)
+      || !snapshotIsAncestor(snapshots, targetSnapshotId, branches.find((branch) => branch.id === targetBranchId)!.headSnapshotId)
+      || !authorId || !createdAt || !updatedAt || !status) return [];
+    const resolutions = isRecord(review.resolutions)
+      ? Object.fromEntries(Object.entries(review.resolutions).filter((entry): entry is [string, "ours" | "theirs"] => !!entry[0].trim() && (entry[1] === "ours" || entry[1] === "theirs")))
+      : {};
+    const candidateAppliedId = string(review.appliedSnapshotId).trim();
+    const appliedSnapshotId = candidateAppliedId && projectSnapshotIds.has(candidateAppliedId) ? candidateAppliedId : undefined;
+    draftReviewIdsSeen.add(id);
+    return [{
+      id,
+      title,
+      description: string(review.description).trim(),
+      sourceBranchId,
+      targetBranchId,
+      baseSnapshotId,
+      sourceSnapshotId,
+      targetSnapshotId,
+      authorId,
+      reviewerIds: [...new Set(stringArray(review.reviewerIds).map((reviewerId) => reviewerId.trim()).filter(Boolean))],
+      status: status === "applied" && !appliedSnapshotId ? "closed" : status,
+      createdAt,
+      updatedAt,
+      resolutions,
+      ...(status === "applied" && appliedSnapshotId ? { appliedSnapshotId } : {}),
+    }];
+  }) : [];
   const activeBranchId = typeof value.activeBranchId === "string" && branchIds.has(value.activeBranchId)
     ? value.activeBranchId
     : branches[0]?.id ?? "main";
-  return { snapshots, branches, milestones, activeBranchId };
+  return { snapshots, branches, milestones, draftReviews, activeBranchId };
+}
+
+function snapshotIsAncestor(snapshots: VersionHistory["snapshots"], ancestorId: string, descendantId: string): boolean {
+  const byId = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const queue = [descendantId];
+  const seen = new Set<string>();
+  while (queue.length) {
+    const id = queue.shift()!;
+    if (id === ancestorId) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    queue.push(...(byId.get(id)?.parentIds ?? []));
+  }
+  return false;
 }
 
 function normalizeSnapshotScope(value: unknown, session: ProjectSession): SnapshotScope | undefined {
@@ -619,7 +684,7 @@ const screenplayElementTypes = new Set<ScreenplayElementType>([
   "scene_heading", "action", "character", "dialogue", "parenthetical", "transition", "shot", "note",
   "general", "lyrics", "cast_list", "new_act", "end_of_act", "unknown",
 ]);
-const storyBoardViews = new Set<NonNullable<WorkspaceData["storyBoardView"]>>(["act", "sequence", "scene", "beat", "timeline"]);
+const storyBoardViews = new Set<NonNullable<WorkspaceData["storyBoardView"]>>(["board", "act", "sequence", "scene", "beat", "timeline"]);
 const treatmentTargetTypes = new Set<NonNullable<WorkspaceData["treatments"]>[number]["links"][number]["targetType"]>(["act", "sequence", "scene", "beat", "character", "object", "location"]);
 const entityKinds = new Set(["character", "location", "object"]);
 const revisionColors = new Set(["White", "Blue", "Pink", "Yellow", "Green", "Goldenrod", "Buff", "Salmon", "Cherry"]);
@@ -750,6 +815,17 @@ function normalizeTreatments(value: unknown): NonNullable<WorkspaceData["treatme
 
 function normalizeStoryStructure(value: unknown): WorkspaceData["storyStructure"] {
   if (!isRecord(value) || !Array.isArray(value.acts) || !Array.isArray(value.sequences) || !Array.isArray(value.beats)) return undefined;
+  const finite = (candidate: unknown) => typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
+  const rect = (candidate: unknown) => {
+    if (!isRecord(candidate)) return undefined;
+    const left = finite(candidate.left);
+    const top = finite(candidate.top);
+    const width = finite(candidate.width);
+    const height = finite(candidate.height);
+    return left !== undefined && top !== undefined && width !== undefined && width > 0 && height !== undefined && height > 0
+      ? { left, top, width, height }
+      : undefined;
+  };
   const acts = value.acts.flatMap((act) => isRecord(act) && typeof act.id === "string" && act.id && typeof act.title === "string"
     ? [{ id: act.id, title: act.title }]
     : []);
@@ -768,11 +844,50 @@ function normalizeStoryStructure(value: unknown): WorkspaceData["storyStructure"
       text: beat.text,
       status: beat.status as "idea" | "drafted" | "complete",
       moments: Array.isArray(beat.moments) ? beat.moments.flatMap((moment) => isRecord(moment) && typeof moment.id === "string" && moment.id && typeof moment.text === "string" ? [{ id: moment.id, text: moment.text }] : []) : [],
+      ...(typeof beat.title === "string" ? { title: beat.title } : {}),
+      ...(typeof beat.color === "string" ? { color: beat.color } : {}),
+      ...(rect(beat.board) ? { board: rect(beat.board) } : {}),
       ...(typeof beat.sceneId === "string" ? { sceneId: beat.sceneId } : {}),
       ...(typeof beat.sequenceId === "string" ? { sequenceId: beat.sequenceId } : {}),
+      ...(beat.source === "scs" || beat.source === "fdx" ? { source: beat.source as "scs" | "fdx" } : {}),
     }]
     : []);
-  return { acts, sequences, beats, sceneOrder: stringArray(value.sceneOrder) };
+  const connectionIds = new Set<string>();
+  const connections = Array.isArray(value.connections) ? value.connections.flatMap((connection) => {
+    if (!isRecord(connection)
+      || typeof connection.id !== "string" || !connection.id || connectionIds.has(connection.id)
+      || typeof connection.fromId !== "string" || !connection.fromId
+      || typeof connection.toId !== "string" || !connection.toId) return [];
+    connectionIds.add(connection.id);
+    return [{
+      id: connection.id,
+      fromId: connection.fromId,
+      toId: connection.toId,
+      ...(typeof connection.color === "string" ? { color: connection.color } : {}),
+      ...(typeof connection.frontCap === "string" ? { frontCap: connection.frontCap } : {}),
+      ...(typeof connection.endCap === "string" ? { endCap: connection.endCap } : {}),
+      ...(rect(connection.board) ? { board: rect(connection.board) } : {}),
+    }];
+  }) : [];
+  const rawBoard = isRecord(value.board) ? value.board : undefined;
+  const boardWidth = finite(rawBoard?.width);
+  const boardHeight = finite(rawBoard?.height);
+  const zoomLevel = finite(rawBoard?.zoomLevel);
+  const board = boardWidth !== undefined && boardWidth > 0 && boardHeight !== undefined && boardHeight > 0 ? {
+    ...(typeof rawBoard?.id === "string" && rawBoard.id ? { id: rawBoard.id } : {}),
+    width: boardWidth,
+    height: boardHeight,
+    ...(zoomLevel !== undefined ? { zoomLevel } : {}),
+    ...(typeof rawBoard?.scrollOrigin === "string" ? { scrollOrigin: rawBoard.scrollOrigin } : {}),
+  } : undefined;
+  return {
+    acts,
+    sequences,
+    beats,
+    sceneOrder: stringArray(value.sceneOrder),
+    ...(connections.length ? { connections } : {}),
+    ...(board ? { board } : {}),
+  };
 }
 
 function normalizeEntityStatuses(value: unknown): WorkspaceData["entityStatuses"] {
@@ -1139,7 +1254,7 @@ function normalizeCollaborators(value: unknown, fallback: Collaborator[]): Colla
   return collaborators;
 }
 
-const reviewTargetTypes = new Set<ReviewItem["targetType"]>(["project", "episode", "scene", "block", "treatment"]);
+const reviewTargetTypes = new Set<ReviewItem["targetType"]>(["project", "episode", "scene", "block", "treatment", "draft-review"]);
 const reviewStatuses = new Set<ReviewItem["status"]>(["open", "resolved", "accepted", "rejected"]);
 
 function normalizeReviews(value: unknown): ReviewItem[] {
@@ -1170,6 +1285,7 @@ function normalizeReviews(value: unknown): ReviewItem[] {
       status,
       createdAt,
       ...(typeof item.documentId === "string" && item.documentId.trim() ? { documentId: item.documentId.trim() } : {}),
+      ...(targetType === "draft-review" && typeof item.changePath === "string" && item.changePath.trim() ? { changePath: item.changePath.trim() } : {}),
       ...(typeof item.originalText === "string" ? { originalText: item.originalText } : {}),
       ...(typeof item.suggestedText === "string" ? { suggestedText: item.suggestedText } : {}),
     }];
@@ -1276,7 +1392,15 @@ function repairCollaborationReferences(session: ProjectSession): void {
     : sceneOwners.get(sceneId)?.length === 1 ? sceneOwners.get(sceneId)![0] : undefined;
   const room = session.workspace.writerRoom;
   const activeDocumentId = room.activeSceneId ? sceneDocument(room.activeSceneId, room.activeDocumentId) : undefined;
-  session.workspace.reviews = session.workspace.reviews.map((review) => collaborators.has(review.authorId) ? review : { ...review, authorId: ownerId });
+  session.versionHistory.draftReviews = session.versionHistory.draftReviews.map((review) => ({
+    ...review,
+    authorId: collaborators.has(review.authorId) ? review.authorId : ownerId,
+    reviewerIds: [...new Set(review.reviewerIds.filter((reviewerId) => collaborators.has(reviewerId)))],
+  }));
+  const draftReviewIds = new Set(session.versionHistory.draftReviews.map((review) => review.id));
+  session.workspace.reviews = session.workspace.reviews
+    .filter((review) => review.targetType !== "draft-review" || draftReviewIds.has(review.targetId))
+    .map((review) => collaborators.has(review.authorId) ? review : { ...review, authorId: ownerId });
   session.workspace.approvals = session.workspace.approvals.filter((approval) => versionIds.has(approval.versionId) && approvers.has(approval.reviewerId));
   session.workspace.writerRoom = {
     ...room,

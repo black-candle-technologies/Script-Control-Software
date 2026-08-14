@@ -41,6 +41,7 @@ export interface ReviewTarget {
   targetType: ReviewItem["targetType"];
   targetId: string;
   documentId?: string;
+  changePath?: string;
 }
 
 export interface NewComment extends ReviewTarget {
@@ -291,7 +292,14 @@ function validatedReview(input: NewComment): NewComment {
   required(input.targetId, "Review target id");
   required(input.text, "Review text");
   required(input.createdAt, "Review timestamp");
-  return { ...input, id: input.id.trim(), targetId: input.targetId.trim(), text: input.text.trim() };
+  const { changePath: _changePath, ...review } = input;
+  return {
+    ...review,
+    id: input.id.trim(),
+    targetId: input.targetId.trim(),
+    text: input.text.trim(),
+    ...(input.targetType === "draft-review" && input.changePath?.trim() ? { changePath: input.changePath.trim() } : {}),
+  };
 }
 
 function replaceReview(workspace: ProjectWorkspace, review: ReviewItem): ProjectWorkspace {

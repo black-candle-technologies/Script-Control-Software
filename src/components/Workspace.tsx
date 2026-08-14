@@ -14,7 +14,6 @@ import {
   addMilestone,
   buildCharacterSides,
   buildSceneSides,
-  buildStructure,
   compareSnapshots,
   compareDrafts,
   compileBreakdown,
@@ -24,6 +23,7 @@ import {
   createProjectSnapshot,
   createVersionHistory,
   dialogueOnly,
+  draftReviewPreview,
   countWords,
   detectObjects,
   deriveCharacters,
@@ -41,10 +41,14 @@ import {
   markChangedBlocks,
   materializeFountainSource,
   mergeSnapshots,
+  markDraftReviewApplied,
   mergeCollaboratorSessions,
   reconcileImportedDocument,
+  openDraftReview,
+  refreshDraftReview,
   relinkDetachedFdxDocument,
   resolveStoryStructure,
+  applyStorySceneOrder,
   restoreProjectSnapshot,
   restoreLocalDocumentState,
   restoreLocalWorkspaceState,
@@ -54,6 +58,7 @@ import {
   revisionExportMetadata,
   revisionReportMarkdown,
   saveSnapshot,
+  setDraftReviewResolution,
   screenplayTextFingerprint,
   setSceneOmitted,
   summarizeRevision,
@@ -63,6 +68,7 @@ import {
   type ScreenplayElementType,
   type AnalysisCsvSection,
   type CoverageHook,
+  type DraftReviewStatus,
   type CharacterProfile,
   type LocationProfile,
   type MergeConflict,
@@ -77,9 +83,11 @@ import {
   type SnapshotComparison,
   type SnapshotDiffMode,
   type SnapshotScope,
+  type StoryStructure,
   type WorkspaceReferenceKind,
   syncSeriesDocuments,
   versionHistoryForPortableStorage,
+  updateDraftReviewStatus,
   workspaceForPortableStorage,
 } from "../domain/index.ts";
 import { saveSession } from "../storage.ts";
@@ -99,6 +107,7 @@ import {
   type FdxFileInfo,
 } from "../services/fdxService.ts";
 import { gitSyncCommit, gitSyncInit, gitSyncPull, gitSyncPush, gitSyncStatus, type GitSyncStatus } from "../services/syncService.ts";
+import { chooseAndImportTreatment, saveTreatmentExport, type TreatmentFileFormat } from "../services/treatmentService.ts";
 
 interface WorkspaceProps {
   initialSession: ProjectSession;
@@ -379,8 +388,19 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   })) : deriveLocations(doc.blocks), [doc]);
   const objects = useMemo(() => detectObjects(doc.blocks), [doc.blocks]);
   const workspace = doc.workspace ?? emptyWorkspace();
-  const structure = useMemo(() => buildStructure(doc.blocks), [doc.blocks]);
   const customStructure = useMemo(() => resolveStoryStructure(doc.blocks, workspace.storyStructure), [doc.blocks, workspace.storyStructure]);
+  const structure = useMemo<StoryStructure>(() => ({
+    acts: customStructure.acts.map((act) => ({
+      id: act.id,
+      title: act.title,
+      sequences: customStructure.sequences
+        .filter((sequence) => sequence.actId === act.id)
+        .map((sequence) => ({ id: sequence.id, title: sequence.title, sceneIds: [...sequence.sceneIds] })),
+    })),
+    beats: customStructure.beats.flatMap((beat) => beat.sceneId
+      ? [{ id: beat.id, text: beat.text, sceneId: beat.sceneId, status: beat.status }]
+      : []),
+  }), [customStructure]);
   const breakdown = useMemo(() => compileBreakdown(doc.blocks), [doc.blocks]);
   const activeBranchSnapshots = useMemo(() => versionHistory.snapshots.filter((snapshot) => snapshot.branchId === versionHistory.activeBranchId), [versionHistory]);
   const recentSnapshots = activeBranchSnapshots.slice(-2);
@@ -562,11 +582,53 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     const content = format === "md" ? markdown : format === "csv" ? analysisToCsv(analysis, section) : analysisToJson(analysis);
     download(content, format, format === "json" ? "application/json" : "text/plain");
   };
-  const exportTreatment = (format: "md" | "pdf") => {
+  const exportTreatment = async (format: TreatmentFileFormat) => {
     const treatment = workspace.treatments?.find((item) => item.id === workspace.activeTreatmentId) ?? workspace.treatments?.[0];
     const markdown = treatment?.markdown || workspace.treatment || "# Untitled Treatment\n";
-    if (format === "pdf") return printContent(treatment?.title || "Treatment", markdown);
-    download(markdown, "md", "text/markdown");
+    setBusy(true);
+    setOperationMessage(null);
+    try {
+      const result = await saveTreatmentExport({ title: treatment?.title || "Treatment", markdown }, format);
+      if (!result) return;
+      setOperationMessage(result.warnings.length
+        ? `Treatment exported to ${result.path} with ${result.warnings.length} conversion note${result.warnings.length === 1 ? "" : "s"}: ${result.warnings.map((warning) => warning.message).join(" ")}`
+        : `Treatment exported to ${result.path}.`);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const importTreatment = async () => {
+    setBusy(true);
+    setOperationMessage(null);
+    const documentId = doc.id;
+    try {
+      const imported = await chooseAndImportTreatment();
+      if (!imported) return;
+      const id = `treatment-${crypto.randomUUID()}`;
+      setSession((current) => ({
+        ...current,
+        documents: current.documents.map((document) => {
+          if (document.id !== documentId) return document;
+          const currentWorkspace = document.workspace ?? emptyWorkspace();
+          const existing = currentWorkspace.treatments?.length
+            ? currentWorkspace.treatments
+            : currentWorkspace.treatment.trim()
+              ? [{ id: "treatment-main", title: "Treatment", markdown: currentWorkspace.treatment, links: [] }]
+              : [];
+          const treatments = [...existing, { id, title: imported.title, markdown: imported.markdown, links: [] }];
+          return { ...document, workspace: { ...currentWorkspace, treatments, activeTreatmentId: id, treatment: treatments[0]?.markdown ?? "" } };
+        }),
+      }));
+      setOperationMessage(imported.warnings.length
+        ? `Imported ${imported.fileName} with ${imported.warnings.length} conversion note${imported.warnings.length === 1 ? "" : "s"}: ${imported.warnings.map((warning) => warning.message).join(" ")}`
+        : `Imported ${imported.fileName} as a new treatment.`);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const addEpisode = async () => {
@@ -809,6 +871,127 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     installProjectSession(next);
     cancelDraftCombine();
     setOperationMessage(result.clean ? `Combined ${source.name} without conflicts.` : `Combined ${source.name} with ${result.conflicts.length} explicit conflict choice${result.conflicts.length === 1 ? "" : "s"}.`);
+  };
+
+  const openDraftReviewRequest = (title: string, description: string, sourceBranchId: string, targetBranchId: string, reviewerIds: string[]) => {
+    if (!canEdit || hasUnsavedSource) {
+      if (hasUnsavedSource) setOperationMessage("Save or return to Formatted mode before opening a Draft Review.");
+      return;
+    }
+    try {
+      const current = materializeSourceSession(session);
+      if (reviewerIds.some((reviewerId) => !hasPermission(current.workspace, reviewerId, "approve"))) {
+        throw new Error("Every selected Draft Review reviewer must have approval permission.");
+      }
+      let history = current.versionHistory;
+      const active = history.branches.find((branch) => branch.id === history.activeBranchId);
+      const activeHead = history.snapshots.find((snapshot) => snapshot.id === active?.headSnapshotId);
+      if (active && (!activeHead || versionableFingerprint(current) !== versionableFingerprint(activeHead.session))) {
+        history = saveSnapshot(history, projectSnapshot(current, "Auto-save before Draft Review", "Working changes preserved before opening the review."), active.id);
+      }
+      history = openDraftReview(history, {
+        id: `draft-review-${crypto.randomUUID()}`,
+        title,
+        description,
+        sourceBranchId,
+        targetBranchId,
+        authorId: current.workspace.currentUserId,
+        reviewerIds,
+        createdAt: new Date().toISOString(),
+      });
+      setSession({ ...current, versionHistory: history });
+      setOperationMessage(`Opened Draft Review “${title.trim()}”.`);
+    } catch (error) {
+      setOperationMessage(error instanceof Error ? error.message : "The Draft Review could not be opened.");
+    }
+  };
+
+  const refreshDraftReviewRequest = (reviewId: string) => {
+    if (!canEdit) {
+      setOperationMessage("The current collaboration role cannot refresh Draft Reviews.");
+      return;
+    }
+    try {
+      const active = versionHistory.branches.find((branch) => branch.id === versionHistory.activeBranchId);
+      const activeHead = versionHistory.snapshots.find((snapshot) => snapshot.id === active?.headSnapshotId);
+      if (activeHead && versionableFingerprint(session) !== versionableFingerprint(activeHead.session)) {
+        setOperationMessage("Save a Draft Version before refreshing this review so no working changes are missed.");
+        return;
+      }
+      const history = refreshDraftReview(versionHistory, reviewId, new Date().toISOString());
+      setSession((current) => ({ ...current, versionHistory: history }));
+      setOperationMessage("Refreshed the Draft Review from both current branch heads.");
+    } catch (error) {
+      setOperationMessage(error instanceof Error ? error.message : "The Draft Review could not be refreshed.");
+    }
+  };
+
+  const changeDraftReviewStatus = (reviewId: string, status: Exclude<DraftReviewStatus, "applied">) => {
+    try {
+      const review = versionHistory.draftReviews.find((item) => item.id === reviewId);
+      if (!review) throw new Error(`Draft Review '${reviewId}' does not exist.`);
+      const actorId = session.workspace.currentUserId;
+      if (status === "approved" || status === "changes-requested") {
+        if (!hasPermission(session.workspace, actorId, "approve") || (review.reviewerIds.length > 0 && !review.reviewerIds.includes(actorId))) {
+          throw new Error("Only an assigned Draft Review approver can make that decision.");
+        }
+      } else if (status === "open" && review.status === "changes-requested"
+        && hasPermission(session.workspace, actorId, "approve")
+        && (review.reviewerIds.length === 0 || review.reviewerIds.includes(actorId))) {
+        // The reviewer who requested changes may return the review to discussion.
+      } else if (review.authorId !== actorId && !hasPermission(session.workspace, actorId, "manage-reviews")) {
+        throw new Error("Only the review author or a review manager can change this Draft Review status.");
+      }
+      const history = updateDraftReviewStatus(versionHistory, reviewId, status, new Date().toISOString());
+      setSession((current) => ({ ...current, versionHistory: history }));
+      setOperationMessage(`Draft Review marked ${status.replace(/-/g, " ")}.`);
+    } catch (error) {
+      setOperationMessage(error instanceof Error ? error.message : "The Draft Review status could not be changed.");
+    }
+  };
+
+  const resolveDraftReview = (reviewId: string, path: string, resolution: "ours" | "theirs" | null) => {
+    if (!hasPermission(session.workspace, session.workspace.currentUserId, "resolve-conflicts")) {
+      setOperationMessage("The current collaboration role cannot resolve overlapping edits.");
+      return;
+    }
+    try {
+      const history = setDraftReviewResolution(versionHistory, reviewId, path, resolution, new Date().toISOString());
+      setSession((current) => ({ ...current, versionHistory: history }));
+    } catch (error) {
+      setOperationMessage(error instanceof Error ? error.message : "The overlapping edit could not be resolved.");
+    }
+  };
+
+  const applyDraftReview = (reviewId: string) => {
+    if (!canEdit || !hasPermission(session.workspace, session.workspace.currentUserId, "resolve-conflicts") || hasUnsavedSource) return;
+    try {
+      const preview = draftReviewPreview(versionHistory, reviewId);
+      if (!preview.readyToApply) throw new Error("Approve the current review and resolve every overlapping edit before applying it.");
+      const active = versionHistory.branches.find((branch) => branch.id === versionHistory.activeBranchId);
+      const activeHead = versionHistory.snapshots.find((snapshot) => snapshot.id === active?.headSnapshotId);
+      if (activeHead && versionableFingerprint(session) !== versionableFingerprint(activeHead.session)) {
+        throw new Error("Save a Draft Version before applying this review so no working changes are overwritten.");
+      }
+      let history = { ...versionHistory, activeBranchId: preview.review.targetBranchId };
+      const mergedSession = sessionWithHistory(preview.mergeResult.merged, session, history);
+      const combined = createProjectSnapshot({ ...mergedSession, versionHistory: history }, {
+        id: `draft-${Date.now()}-${crypto.randomUUID()}`,
+        name: `Applied ${preview.review.title}`,
+        description: `Draft Review from ${preview.review.sourceBranchId} into ${preview.review.targetBranchId}.`,
+        createdAt: new Date().toISOString(),
+        parentIds: [preview.review.targetSnapshotId, preview.review.sourceSnapshotId],
+        branchId: preview.review.targetBranchId,
+        scope: { kind: "project" },
+      });
+      history = saveSnapshot(history, combined, preview.review.targetBranchId);
+      history = markDraftReviewApplied(history, reviewId, combined.id, new Date().toISOString());
+      installProjectSession({ ...mergedSession, versionHistory: history });
+      cancelDraftCombine();
+      setOperationMessage(`Applied Draft Review “${preview.review.title}” to ${history.branches.find((branch) => branch.id === preview.review.targetBranchId)?.name ?? "the target draft"}.`);
+    } catch (error) {
+      setOperationMessage(error instanceof Error ? error.message : "The Draft Review could not be applied.");
+    }
   };
 
   const startRevision = (label: string, color: RevisionColor) => {
@@ -1378,6 +1561,11 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     activeScene,
     workspace,
     onWorkspace: (patch: Partial<typeof workspace>) => setDoc({ ...doc, workspace: { ...workspace, ...patch } }),
+    onApplyStoryStructure: (nextStructure: typeof customStructure) => {
+      const blocks = applyStorySceneOrder(doc.blocks, nextStructure.sceneOrder);
+      setDoc({ ...doc, blocks, scenes: undefined, characters: undefined, locations: undefined, workspace: { ...workspace, storyStructure: nextStructure } });
+      setOperationMessage("Applied the visual board scene order to the screenplay.");
+    },
     onJumpToScene: (sceneId: string) => {
       setMode("write");
       jumpToScene(sceneId);
@@ -1398,7 +1586,13 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     onPreviewCombineDrafts: previewDraftCombine,
     onCombineDrafts: combineDrafts,
     onCancelCombineDrafts: cancelDraftCombine,
+    onOpenDraftReview: openDraftReviewRequest,
+    onRefreshDraftReview: refreshDraftReviewRequest,
+    onUpdateDraftReviewStatus: changeDraftReviewStatus,
+    onResolveDraftReview: resolveDraftReview,
+    onApplyDraftReview: applyDraftReview,
     onExportBreakdown: exportBreakdown,
+    onImportTreatment: importTreatment,
     onExportTreatment: exportTreatment,
     projectWorkspace: session.workspace,
     seriesReport,
@@ -1842,8 +2036,16 @@ function materializeSourceDraft(
 }
 
 function versionableFingerprint(session: ProjectSession): string {
-  const { versionHistory: _history, versions: _legacy, projectPath: _path, updatedAt: _updated, ...content } = session;
-  return JSON.stringify({ ...content, documents: documentsForPortableStorage(content.documents), workspace: workspaceForPortableStorage(content.workspace) });
+  const { versionHistory: _history, versions: _legacy, projectPath: _path, updatedAt: _updated, activeDocumentId: _activeDocumentId, ...content } = session;
+  // Collaboration, review, layout, and sync state is project-global and is
+  // deliberately preserved by sessionWithHistory when changing draft branches.
+  // It must not make an otherwise clean branch look edited or force comments
+  // into a screenplay version before a Draft Review can be applied.
+  return JSON.stringify({
+    ...content,
+    documents: documentsForPortableStorage(content.documents),
+    workspace: { series: content.workspace.series },
+  });
 }
 
 function portableFingerprint(session: ProjectSession): string {

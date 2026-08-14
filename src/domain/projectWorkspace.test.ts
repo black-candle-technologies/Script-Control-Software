@@ -12,7 +12,7 @@ import {
   syncSeriesDocuments,
   workspaceForPortableStorage,
 } from "./projectWorkspace.ts";
-import { deriveScenes, emptyDocument, screenplayTextFingerprint, type ScreenplayDocument } from "./screenplay.ts";
+import { deriveScenes, emptyDocument, emptyWorkspace, screenplayTextFingerprint, type ScreenplayDocument } from "./screenplay.ts";
 import { parseFountain, toFountain } from "./fountain.ts";
 import { getWorkspaceLayout } from "./workspaceLayouts.ts";
 
@@ -35,6 +35,7 @@ test("normalization migrates an older bundle and rejects malformed documents", (
   assert.equal(session.schemaVersion, 4);
   assert.match(session.documents[0].id!, /^document-/);
   assert.equal(session.workspace.collaborators[0].role, "owner");
+  assert.deepEqual(session.versionHistory.draftReviews, []);
   assert.throws(() => normalizeProjectSession({ documents: [{ titlePage: {}, blocks: [{ type: "action" }] }] }), /block 1/i);
 });
 
@@ -292,6 +293,54 @@ test("detached FDX relinking preserves local edits and exposes two-sided conflic
   assert.equal(updated.disposition, "updated");
   assert.equal(updated.session.documents[0].blocks[1].text, "External action.");
   assert.equal(updated.session.documents[0].source?.lastImportedFingerprint, screenplayTextFingerprint(updated.session.documents[0]));
+});
+
+test("normalization preserves portable FDX beat board metadata", () => {
+  const document = emptyDocument("Beat board");
+  document.workspace!.storyStructure = {
+    acts: [{ id: "act-1", title: "Act I" }],
+    sequences: [],
+    sceneOrder: [],
+    beats: [{ id: "beat-a", title: "Arrival", text: "The team arrives.", color: "#AAAABBBBCCCC", board: { left: 40, top: 60, width: 240, height: 160 }, status: "drafted", moments: [], source: "fdx" }],
+    connections: [{ id: "link-a", fromId: "beat-a", toId: "beat-a", color: "#111122223333", frontCap: "None", endCap: "Arrow", board: { left: 100, top: 80, width: 40, height: 20 } }],
+    board: { id: "board-1", width: 2000, height: 1000, zoomLevel: 110.5, scrollOrigin: "20,40" },
+  };
+
+  const structure = normalizeProjectSession({ documents: [document] }).documents[0].workspace!.storyStructure!;
+  assert.equal(structure.beats[0].title, "Arrival");
+  assert.deepEqual(structure.beats[0].board, { left: 40, top: 60, width: 240, height: 160 });
+  assert.equal(structure.connections?.[0].endCap, "Arrow");
+  assert.deepEqual(structure.connections?.[0].board, { left: 100, top: 80, width: 40, height: 20 });
+  assert.deepEqual(structure.board, { id: "board-1", width: 2000, height: 1000, zoomLevel: 110.5, scrollOrigin: "20,40" });
+});
+
+test("FDX re-import replaces external beats by stable id and keeps SCS beats", () => {
+  const previous = parseFountain("INT. ROOM - DAY\n\nOriginal.\n");
+  previous.id = "linked";
+  previous.workspace = { ...emptyWorkspace(), storyStructure: {
+    acts: [{ id: "act-1", title: "Act I" }],
+    sequences: [],
+    sceneOrder: [previous.blocks[0].id],
+    beats: [
+      { id: "local", title: "Local", text: "Keep me", status: "idea", moments: [], source: "scs" },
+      { id: "external", title: "Old", text: "Old body", status: "drafted", moments: [], source: "fdx" },
+      { id: "removed", title: "Removed", text: "Gone upstream", status: "drafted", moments: [], source: "fdx" },
+    ],
+    connections: [{ id: "old-link", fromId: "external", toId: "removed" }],
+  } };
+  const session = createProjectSession(previous);
+  const imported = parseFountain("INT. ROOM - DAY\n\nExternal edit.\n");
+  imported.workspace = { ...emptyWorkspace(), storyStructure: {
+    acts: [{ id: "act-1", title: "Act I" }],
+    sequences: [],
+    sceneOrder: [imported.blocks[0].id],
+    beats: [{ id: "external", title: "Updated", text: "Updated body", status: "drafted", moments: [], source: "fdx" }],
+    connections: [],
+  } };
+
+  const structure = reconcileImportedDocument(session, "linked", imported).documents[0].workspace!.storyStructure!;
+  assert.deepEqual(structure.beats.map((beat) => [beat.id, beat.title]), [["local", "Local"], ["external", "Updated"]]);
+  assert.deepEqual(structure.connections, []);
 });
 
 test("legacy per-document comments surface in the project review workflow", () => {

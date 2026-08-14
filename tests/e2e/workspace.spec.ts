@@ -32,16 +32,95 @@ test("sample screenplay survives source mode and exposes the mode workspaces", a
   await expect(page.locator("summary.insp-card-title", { hasText: "E2E COMPASS" })).toBeVisible();
 });
 
-test("outline scenes can be removed from a sequence", async ({ page }) => {
+test("sequences stay compact and scenes can be assigned, cleared, and removed", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
   await page.getByRole("button", { name: "Outline", exact: true }).click();
   await page.getByRole("button", { name: "Sequence", exact: true }).click();
 
-  const assignedScenes = page.locator('.insp-card input[type="checkbox"]:checked');
-  const initialCount = await assignedScenes.count();
-  expect(initialCount).toBeGreaterThan(0);
-  await assignedScenes.first().click();
-  await expect(assignedScenes).toHaveCount(initialCount - 1);
+  await expect(page.getByText("No sequences yet. Add one when the story needs it.")).toBeVisible();
+  await page.getByRole("button", { name: "Add Sequence" }).click();
+  const sequence = page.locator("details.compact-sequence").first();
+  await sequence.locator("summary").click();
+  const sceneMenu = sequence.getByRole("combobox", { name: /Add scene to/ });
+  await sceneMenu.selectOption({ index: 1 });
+  await expect(sequence.locator(".compact-scene-list > div")).toHaveCount(1);
+  await sequence.getByRole("button", { name: /^Remove .* from/ }).click();
+  await expect(sequence.locator(".compact-scene-list > div")).toHaveCount(0);
+
+  await sceneMenu.selectOption({ index: 1 });
+  await sequence.getByRole("button", { name: "Clear All Scenes" }).click();
+  await expect(sequence.locator(".compact-scene-list > div")).toHaveCount(0);
+  await page.getByRole("button", { name: "Delete All Sequences" }).click();
+  await page.getByRole("button", { name: "Confirm Delete All" }).click();
+  await expect(page.locator("details.compact-sequence")).toHaveCount(0);
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  await expect(page.locator(".nav-sequence")).toHaveCount(0);
+  await expect(page.getByText("Unassigned scenes", { exact: true })).toBeVisible();
+});
+
+test("sequence controls apply grouped scene order and keep imported scene jumps aligned", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("THE LONG WAY HOME");
+  await page.evaluate(() => {
+    const key = "scs.project-session.v3";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    const blocks = session.documents[0].blocks;
+    const starts = blocks.flatMap((block: { type: string }, index: number) => block.type === "scene_heading" ? [index] : []);
+    session.documents[0].scenes = starts.map((blockStart: number, index: number) => ({
+      id: blocks[blockStart].id,
+      sceneNumber: String(index + 1),
+      heading: blocks[blockStart].text,
+      blockStart,
+      blockEnd: (starts[index + 1] ?? blocks.length) - 1,
+      characterIds: [],
+      metadata: {},
+    }));
+    localStorage.setItem(key, JSON.stringify(session));
+  });
+  await page.reload();
+  await page.locator(".launcher-recent").click();
+
+  await page.getByRole("button", { name: "Outline", exact: true }).click();
+  await page.getByRole("button", { name: "Sequence", exact: true }).click();
+  await page.getByRole("button", { name: "Add Sequence" }).click();
+  await page.getByRole("button", { name: "Add Sequence" }).click();
+  const sequences = page.locator("details.compact-sequence");
+  await sequences.nth(0).locator("summary").click();
+  await sequences.nth(1).locator("summary").click();
+  await sequences.nth(0).getByRole("combobox", { name: /Add scene to/ }).selectOption({ label: "1. INT. GREYHOUND BUS - NIGHT" });
+  await sequences.nth(1).getByRole("combobox", { name: /Add scene to/ }).selectOption({ label: "2. EXT. REST STOP - PARKING LOT - NIGHT" });
+  await sequences.nth(1).getByRole("button", { name: "Move Sequence 2 earlier" }).click();
+
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  const headings = page.locator("textarea.blk-scene_heading");
+  await expect(headings.first()).toHaveValue("EXT. REST STOP - PARKING LOT - NIGHT");
+  await expect(page.locator(".nav-sequence-label").first()).toHaveText("Sequence 2");
+  await page.getByRole("button", { name: /INT\. GREYHOUND BUS - NIGHT/ }).first().click();
+  await expect(headings.nth(1)).toBeFocused();
+});
+
+test("visual board scene drops apply whole-scene order to the screenplay", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Outline", exact: true }).click();
+  await page.getByRole("button", { name: "Visual Board" }).click();
+  await page.getByRole("button", { name: "Add Sequence" }).click();
+
+  const firstScene = page.getByRole("button", { name: "Scene 1: INT. GREYHOUND BUS - NIGHT" });
+  await firstScene.dragTo(page.getByRole("article"));
+  await expect(page.getByRole("status")).toContainText("Applied the visual board scene order");
+
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  await expect(page.locator("textarea.blk-scene_heading").first()).toHaveValue("EXT. REST STOP - PARKING LOT - NIGHT");
+  await expect(page.locator("textarea.blk-scene_heading").last()).toHaveValue("INT. GREYHOUND BUS - NIGHT");
+});
+
+test("treatments expose import and all portable export formats", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Treatment", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Import" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Export Markdown" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Export Word" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Export PDF" })).toBeVisible();
 });
 
 test("breakdown aggregates entities, uses readable labels, and opens character details", async ({ page }) => {
@@ -457,6 +536,95 @@ test("an episode-scoped version restores only the active television script", asy
   await expect(page.locator("textarea.blk").first()).toHaveValue("EPISODE CHECKPOINT TEXT.");
   await episodes.getByRole("button", { name: "Episode 2", exact: true }).click();
   await expect(page.locator("textarea.blk").first()).toHaveValue("SECOND EPISODE CHANGED LATER.");
+});
+
+test("a Draft Review gates conflicts, keeps comments, and applies into a non-active target", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Drafts", exact: true }).click();
+  await page.getByPlaceholder(/Draft \d+ name/).fill("Review baseline");
+  await page.getByRole("button", { name: "Save Draft Version" }).click();
+
+  await page.getByPlaceholder("Alternate draft name").fill("Storm Rewrite");
+  await page.getByRole("button", { name: "Create Alternate Draft" }).click();
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  await page.locator("textarea.blk-action").first().fill("The alternate storm rattles every window.");
+  await page.getByRole("button", { name: "Drafts", exact: true }).click();
+  await page.getByPlaceholder(/Draft \d+ name/).fill("Storm rewrite ready");
+  await page.getByRole("button", { name: "Save Draft Version" }).click();
+
+  await page.getByLabel("Working draft").selectOption({ label: "Main Draft" });
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  await page.locator("textarea.blk-action").first().fill("The main draft keeps the room completely still.");
+  await page.getByRole("button", { name: "Drafts", exact: true }).click();
+  await page.getByPlaceholder(/Draft \d+ name/).fill("Main draft changed");
+  await page.getByRole("button", { name: "Save Draft Version" }).click();
+  await page.getByLabel("Working draft").selectOption({ label: "Storm Rewrite" });
+
+  await page.getByLabel("Draft Review title").fill("Storm choice");
+  await page.getByLabel("Review target draft").selectOption({ label: "Main Draft" });
+  await expect(page.getByLabel("Review source draft").locator("option:checked")).toHaveText("Storm Rewrite");
+  await page.getByRole("button", { name: "Open Draft Review" }).click();
+  const review = page.locator("details.draft-review", { hasText: "Storm choice" });
+  await review.locator("summary").first().click();
+
+  await review.getByLabel("Comment on Storm choice").fill("Keep the storm, but preserve this discussion with the applied draft.");
+  await review.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(review).toContainText("Keep the storm, but preserve this discussion with the applied draft.");
+
+  await expect(review.getByRole("button", { name: "Approve", exact: true })).toBeDisabled();
+  const conflictChoice = review.getByRole("combobox", { name: /^Resolve / }).first();
+  await conflictChoice.selectOption("theirs");
+  await expect(review.getByRole("button", { name: "Approve", exact: true })).toBeEnabled();
+  await review.getByRole("button", { name: "Approve", exact: true }).click();
+  await review.getByRole("button", { name: "Apply Draft", exact: true }).click();
+
+  await expect(page.getByLabel("Working draft").locator("option:checked")).toHaveText("Main Draft");
+  await expect(review).toContainText("applied");
+  await expect(review).toContainText("No assigned reviewers");
+  await expect(review).not.toContainText("This review is out of date");
+  await expect(review).toContainText("Keep the storm, but preserve this discussion with the applied draft.");
+  await page.getByRole("button", { name: "Team", exact: true }).click();
+  await expect(page.getByText(/Draft Review · Storm choice · Storm Rewrite → Main Draft/)).toBeVisible();
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  await expect(page.locator("textarea.blk-action").first()).toHaveValue("The alternate storm rattles every window.");
+});
+
+test("an assigned approver without edit permission can comment and decide a Draft Review", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Team", exact: true }).click();
+  await page.getByPlaceholder("Collaborator name").fill("Dana Reviewer");
+  await page.locator('input[placeholder="Collaborator name"] + .btn-row select').selectOption("director");
+  await page.getByRole("button", { name: "Add Collaborator" }).click();
+
+  await page.getByRole("button", { name: "Drafts", exact: true }).click();
+  await page.getByPlaceholder(/Draft \d+ name/).fill("Review baseline");
+  await page.getByRole("button", { name: "Save Draft Version" }).click();
+  await page.getByPlaceholder("Alternate draft name").fill("Director Review Draft");
+  await page.getByRole("button", { name: "Create Alternate Draft" }).click();
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  await page.locator("textarea.blk-action").first().fill("A clean alternate change for review.");
+  await page.getByRole("button", { name: "Drafts", exact: true }).click();
+  await page.getByPlaceholder(/Draft \d+ name/).fill("Alternate ready");
+  await page.getByRole("button", { name: "Save Draft Version" }).click();
+  await page.getByLabel("Draft Review title").fill("Director decision");
+  await page.getByLabel("Review target draft").selectOption({ label: "Main Draft" });
+  await page.getByText(/Choose reviewers/).click();
+  await page.getByRole("checkbox", { name: /Dana Reviewer/ }).check();
+  await page.getByRole("button", { name: "Open Draft Review" }).click();
+
+  await page.getByRole("button", { name: "Team", exact: true }).click();
+  await page.getByLabel("Acting as").selectOption({ label: "Dana Reviewer · Director" });
+  await page.getByRole("button", { name: "Drafts", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Save Draft Version" })).toBeDisabled();
+  const review = page.locator("details.draft-review", { hasText: "Director decision" });
+  await review.locator("summary").first().click();
+  await expect(review.getByLabel("Comment on Director decision")).toBeEditable();
+  await review.getByLabel("Comment on Director decision").fill("Approved by the assigned director.");
+  await review.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(review).toContainText("Approved by the assigned director.");
+  await expect(review.getByRole("button", { name: "Approve", exact: true })).toBeEnabled();
+  await review.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(review).toContainText("approved");
 });
 
 test("edits survive local recovery and reopen from the launcher", async ({ page }) => {

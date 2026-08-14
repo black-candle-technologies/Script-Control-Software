@@ -1476,6 +1476,64 @@ details.insp-card > summary { cursor: pointer; }
 
 .board-view-switch { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 
+.compact-sequence { padding: 0; }
+.compact-sequence > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  list-style-position: inside;
+}
+.compact-sequence > summary span { margin-left: auto; font-size: 11.5px; font-weight: 500; color: var(--text-3); }
+.compact-sequence[open] { padding: 0 0.8rem 0.75rem; }
+.compact-sequence[open] > summary { margin: 0 -0.8rem; border-bottom: 1px solid var(--line); }
+.compact-scene-list { display: grid; gap: 0.2rem; max-height: 13rem; overflow-y: auto; }
+.compact-scene-list > div { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.25rem 0; border-bottom: 1px solid var(--line); }
+.compact-scene-list > div > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+
+.story-board { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); align-items: start; gap: 0.8rem; width: 100%; }
+.story-board-act, .story-board-unassigned {
+  min-width: 0;
+  padding: 0.7rem;
+  background: var(--panel2);
+  border: 2px solid var(--line-strong);
+  box-shadow: var(--bevel-up-1);
+}
+.story-board-act > header { display: flex; align-items: center; gap: 0.5rem; padding-bottom: 0.55rem; border-bottom: 2px solid var(--line); }
+.story-board-act > header input, .story-board-sequence > input {
+  min-width: 0;
+  width: 100%;
+  color: var(--text-1);
+  background: transparent;
+  border: 0;
+  font: 700 13px/1.4 var(--font-ui);
+}
+.story-board-act > header span { flex: none; font-size: 10.5px; color: var(--text-3); }
+.story-board-lane { display: grid; gap: 0.65rem; padding: 0.7rem 0 0 0.8rem; border-left: 2px solid var(--accent-line); }
+.story-board-sequence { position: relative; display: grid; gap: 0.45rem; padding: 0.6rem; background: var(--bg-raised); box-shadow: var(--bevel-up-1); cursor: grab; }
+.story-board-sequence::before { content: ""; position: absolute; left: -0.85rem; top: 1rem; width: 0.75rem; border-top: 2px solid var(--accent-line); }
+.story-board-sequence:active, .story-board-scene:active, .story-board-beat:active { cursor: grabbing; }
+.story-board-scenes { display: grid; gap: 0.35rem; padding-left: 0.7rem; border-left: 2px solid var(--line-strong); }
+.story-board-scene { position: relative; display: grid; gap: 0.3rem; padding: 0.4rem 0.5rem; color: var(--text-2); background: var(--field); box-shadow: var(--bevel-in-1); cursor: grab; text-align: left; }
+.story-board-scenes .story-board-scene::before { content: ""; position: absolute; left: -0.75rem; top: 0.9rem; width: 0.65rem; border-top: 2px solid var(--line-strong); }
+.story-board-beat { position: relative; margin-left: 0.65rem; padding: 0.3rem 0.45rem; color: var(--text-2); background: var(--accent-soft); border-left: 2px solid var(--accent); font-size: 11.5px; cursor: grab; }
+.story-board-beat::before { content: ""; position: absolute; left: -0.65rem; top: 0.75rem; width: 0.55rem; border-top: 2px solid var(--accent); }
+.story-board-reorder { display: inline-flex; justify-content: flex-end; gap: 0.2rem; margin-left: auto; }
+.story-board-beat > .story-board-reorder { float: right; }
+.story-board-reorder .link-btn { min-width: 1.5rem; padding: 0.05rem 0.25rem; text-align: center; }
+.story-board-empty { display: block; padding: 0.55rem; color: var(--text-3); font-size: 11.5px; text-align: center; border: 1px dashed var(--line-strong); }
+.story-board-unassigned { display: grid; gap: 0.35rem; }
+.story-board-unassigned > strong { margin-bottom: 0.2rem; }
+.story-board-connections { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem 0.8rem; padding: 0.6rem 0.7rem; background: var(--panel2); border: 1px solid var(--line-strong); }
+.story-board-connections > span { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text-2); font-size: 11.5px; }
+.story-board-connections i { display: inline-block; width: 1.5rem; height: 2px; background: var(--accent); }
+.btn-danger { color: var(--danger, #b84a4a); }
+
+@media (max-width: 760px) {
+  .story-board { grid-template-columns: 1fr; }
+}
+
 .story-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -1519,6 +1577,25 @@ details.insp-card > summary { cursor: pointer; }
 }
 
 /* Draft versions */
+.draft-review-create { gap: 0.65rem; }
+.draft-review-route { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: 0.55rem; }
+.draft-review-route > span { padding-bottom: 0.45rem; color: var(--text-3); }
+.draft-review-list { display: grid; gap: 0.6rem; width: 100%; }
+.draft-review { padding: 0; }
+.draft-review > summary { display: flex; align-items: center; gap: 0.7rem; padding: 0.7rem 0.8rem; cursor: pointer; }
+.draft-review > summary > span:first-child { display: grid; gap: 0.1rem; min-width: 0; }
+.draft-review > summary small { color: var(--text-3); font-weight: 400; }
+.draft-review[open] { padding: 0 0.8rem 0.8rem; }
+.draft-review[open] > summary { margin: 0 -0.8rem; border-bottom: 1px solid var(--line); }
+.draft-review-status { margin-left: auto; padding: 0.12rem 0.45rem; color: var(--text-2); background: var(--field); font-size: 10.5px; font-weight: 650; text-transform: capitalize; box-shadow: var(--bevel-in-1); }
+.draft-review-status.status-approved, .draft-review-status.status-applied { color: var(--success, #43815b); background: color-mix(in srgb, var(--success, #43815b) 12%, var(--field)); }
+.draft-review-status.status-changes-requested { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--field)); }
+.draft-review-warning { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.55rem 0.65rem; color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--field)); font-size: 12px; }
+.draft-review-comment { display: grid; gap: 0.25rem; padding: 0.5rem 0; border-top: 1px solid var(--line); }
+.draft-review-comment > div { display: flex; justify-content: space-between; gap: 0.5rem; font-size: 11.5px; }
+.draft-review-comment span { color: var(--text-3); }
+.draft-review-comment p { margin: 0; color: var(--text-2); white-space: pre-wrap; }
+
 .version-list { display: flex; flex-direction: column; gap: 0.45rem; width: 100%; }
 .version-row {
   display: grid;

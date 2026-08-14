@@ -85,6 +85,36 @@ test("FDX export preserves safe imported metadata, original types, scene numbers
   assert.doesNotMatch(xml, /SCS-only/);
 });
 
+test("FDX export writes outline beats, layout, and flow lines outside screenplay content", () => {
+  const outlined = parseFountain("INT. ROOM - NIGHT\n\nThe screenplay stays clean.\n");
+  outlined.workspace = {
+    ...emptyWorkspace(),
+    storyStructure: {
+      acts: [{ id: "act-1", title: "Act I" }],
+      sequences: [],
+      sceneOrder: [outlined.blocks[0].id],
+      beats: [
+        { id: "beat-a", title: "First & beat", text: "Body <one>\nBody two", color: "#AABBCC", board: { left: 60, top: 80, width: 240, height: 180 }, status: "drafted", moments: [], source: "fdx" },
+        { id: "beat-b", title: "Second beat", text: "", color: "#DDDDEEEEFFFF", board: { left: 420, top: 300, width: 220, height: 160 }, status: "idea", moments: [], source: "scs" },
+      ],
+      connections: [{ id: "link-a-b", fromId: "beat-a", toId: "beat-b", color: "#112233", frontCap: "None", endCap: "Arrow", board: { left: 280, top: 180, width: 160, height: 80 } }],
+      board: { id: "board-1", width: 2000, height: 1000, zoomLevel: 110.5, scrollOrigin: "20,40" },
+    },
+  };
+
+  const { xml, warnings } = toFdxWithWarnings(outlined);
+  assert.deepEqual(warnings, []);
+  assert.match(xml, /<FinalDraft DocumentType="Script" Template="No" Version="3">/);
+  const screenplayContent = xml.match(/<Content>([\s\S]*?)<\/Content>/)?.[1] ?? "";
+  assert.doesNotMatch(screenplayContent, /First &amp; beat|Body &lt;one&gt;/);
+  assert.match(xml, /<ListItem Color="#AAAABBBBCCCC" Id="beat-a" Title="First &amp; beat" Type="Beat">/);
+  assert.match(xml, /<Paragraph><Text>Body &lt;one&gt;<\/Text><\/Paragraph>/);
+  assert.match(xml, /<ListItem Color="#111122223333" EndPoint="beat-b" Id="link-a-b" StartPoint="beat-a" Type="PeerLink" EndCap="Arrow" FrontCap="None"\/>/);
+  assert.match(xml, /<DisplayBoard Height="1000" Id="board-1" ScrollOrigin="20,40" Type="Beat" Width="2000" ZoomLevel="110.5">/);
+  assert.match(xml, /<Item Height="180" Id="beat-a" Left="60" Top="80" Width="240"\/>/);
+  assert.match(xml, /<Item Height="80" Id="link-a-b" Left="280" Top="180" Width="160"\/>/);
+});
+
 test("FDX export warns and stays valid when stale styles or unsafe metadata cannot be preserved", () => {
   const edited: ScreenplayDocument = {
     titlePage: { title: "", author: "", blocks: [] },

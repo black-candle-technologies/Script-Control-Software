@@ -225,14 +225,97 @@ export function toFdxWithWarnings(doc: ScreenplayDocument): FdxExportResult {
   if (!rootMetadata.has("DocumentType")) rootMetadata.set("DocumentType", "Script");
   if (!rootMetadata.has("Template")) rootMetadata.set("Template", "No");
   if (!rootMetadata.has("Version")) rootMetadata.set("Version", doc.source?.fdxVersion ?? "1");
+  const fdxVersion = Number.parseFloat(rootMetadata.get("Version") ?? "0");
+  if ((doc.workspace?.storyStructure?.beats.length ?? 0) > 0
+    && (!Number.isFinite(fdxVersion) || fdxVersion < 3)) rootMetadata.set("Version", "3");
   const paragraphs = doc.blocks.map((block, index) => paragraphXml(block, index, warn)).join("\n");
   const titlePage = titlePageXml(doc, warn);
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<FinalDraft${attributes(rootMetadata, warn, "FinalDraft")}>\n${titlePage}  <Content>\n${paragraphs}\n  </Content>\n</FinalDraft>\n`;
+  const beatBoard = beatBoardXml(doc, warn);
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<FinalDraft${attributes(rootMetadata, warn, "FinalDraft")}>\n${titlePage}  <Content>\n${paragraphs}\n  </Content>\n${beatBoard}</FinalDraft>\n`;
   return { xml, warnings };
 }
 
 export function toFdx(doc: ScreenplayDocument): string {
   return toFdxWithWarnings(doc).xml;
+}
+
+function beatBoardXml(doc: ScreenplayDocument, warn: (message: string) => void): string {
+  const structure = doc.workspace?.storyStructure;
+  const beats = structure?.beats ?? [];
+  if (!beats.length) return "";
+  const beatIds = new Set(beats.map((beat) => beat.id));
+  const rects = beats.map((beat, index) => {
+    const board = beat.board;
+    return board && [board.left, board.top, board.width, board.height].every(Number.isFinite) && board.width > 0 && board.height > 0
+      ? board
+      : { left: 40 + (index % 4) * 280, top: 40 + Math.floor(index / 4) * 190, width: 240, height: 150 };
+  });
+  const beatItems = beats.map((beat, index) => {
+    const hasExplicitTitle = beat.title !== undefined;
+    const legacyLines = beat.text.split(/\r?\n/);
+    const title = hasExplicitTitle ? beat.title!.trim() || "Untitled Beat" : legacyLines.shift()?.trim() || `Beat ${index + 1}`;
+    const body = hasExplicitTitle ? beat.text : legacyLines.join("\n");
+    const metadata = new Map([
+      ["Color", fdxColor(beat.color, warn, `Beat ${index + 1}`)],
+      ["Id", beat.id],
+      ["Title", title],
+      ["Type", "Beat"],
+    ]);
+    const paragraphs = body
+      ? body.split(/\r?\n/).map((line, lineIndex) => `        <Paragraph><Text>${xmlText(line, warn, `Beat ${index + 1}, line ${lineIndex + 1}`)}</Text></Paragraph>`).join("\n")
+      : "";
+    return paragraphs
+      ? `    <ListItem${attributes(metadata, warn, `Beat ${index + 1}`)}>\n      <Content>\n${paragraphs}\n      </Content>\n    </ListItem>`
+      : `    <ListItem${attributes(metadata, warn, `Beat ${index + 1}`)}><Content/></ListItem>`;
+  });
+  const exportedConnections = (structure?.connections ?? []).flatMap((connection, index) => {
+    if (!beatIds.has(connection.fromId) || !beatIds.has(connection.toId)) {
+      warn(`Board connection ${index + 1}: only connections between exported beats can be written to FDX.`);
+      return [];
+    }
+    const metadataEntries: [string, string][] = [
+      ["Color", fdxColor(connection.color, warn, `Board connection ${index + 1}`)],
+      ["EndPoint", connection.toId],
+      ["Id", connection.id],
+      ["StartPoint", connection.fromId],
+      ["Type", "PeerLink"],
+    ];
+    if (connection.endCap) metadataEntries.push(["EndCap", connection.endCap]);
+    if (connection.frontCap) metadataEntries.push(["FrontCap", connection.frontCap]);
+    const metadata = new Map(metadataEntries);
+    return [{ connection, xml: `    <ListItem${attributes(metadata, warn, `Board connection ${index + 1}`)}/>` }];
+  });
+  const requestedBoard = structure?.board;
+  const contentWidth = Math.max(1200, ...rects.map((rect) => rect.left + rect.width + 80));
+  const contentHeight = Math.max(800, ...rects.map((rect) => rect.top + rect.height + 80));
+  const boardMetadata = new Map([
+    ["Height", String(requestedBoard?.height && Number.isFinite(requestedBoard.height) ? Math.max(requestedBoard.height, contentHeight) : contentHeight)],
+    ["Id", requestedBoard?.id || "scs-beat-board"],
+    ["ScrollOrigin", requestedBoard?.scrollOrigin || "0,0"],
+    ["Type", "Beat"],
+    ["Width", String(requestedBoard?.width && Number.isFinite(requestedBoard.width) ? Math.max(requestedBoard.width, contentWidth) : contentWidth)],
+    ["ZoomLevel", String(requestedBoard?.zoomLevel && Number.isFinite(requestedBoard.zoomLevel) ? requestedBoard.zoomLevel : 100)],
+  ]);
+  const beatBoardItems = beats.map((beat, index) => {
+    const rect = rects[index];
+    return `      <Item Height="${rect.height}" Id="${xmlText(beat.id, warn, `Beat ${index + 1} board id`)}" Left="${rect.left}" Top="${rect.top}" Width="${rect.width}"/>`;
+  });
+  const connectionBoardItems = exportedConnections.flatMap(({ connection }, index) => {
+    const rect = connection.board;
+    if (!rect || ![rect.left, rect.top, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0) return [];
+    return [`      <Item Height="${rect.height}" Id="${xmlText(connection.id, warn, `Board connection ${index + 1} board id`)}" Left="${rect.left}" Top="${rect.top}" Width="${rect.width}"/>`];
+  });
+  return `  <ListItems>\n${[...beatItems, ...exportedConnections.map(({ xml }) => xml)].join("\n")}\n  </ListItems>\n  <DisplayBoards>\n    <DisplayBoard${attributes(boardMetadata, warn, "Beat board")}>\n${[...beatBoardItems, ...connectionBoardItems].join("\n")}\n    </DisplayBoard>\n  </DisplayBoards>\n`;
+}
+
+function fdxColor(value: string | undefined, warn: (message: string) => void, context: string): string {
+  if (!value) return "#FFFFFFFFFFFF";
+  const twelve = /^#([0-9a-f]{12})$/i.exec(value);
+  if (twelve) return `#${twelve[1].toUpperCase()}`;
+  const six = /^#([0-9a-f]{6})$/i.exec(value);
+  if (six) return `#${six[1].match(/../g)!.map((pair) => pair + pair).join("").toUpperCase()}`;
+  warn(`${context}: '${value}' is not a valid board color and was exported as white.`);
+  return "#FFFFFFFFFFFF";
 }
 
 function paragraphXml(block: ScreenplayBlock, index: number, warn: (message: string) => void): string {
