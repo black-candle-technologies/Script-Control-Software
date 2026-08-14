@@ -64,6 +64,91 @@ test("screenplay typing shortcuts preserve the current line", async ({ page }) =
   await expect(heading).toHaveValue("INT. TEST ROOM - DAY");
 });
 
+test("scene headings tab through prefixes, prior locations, separators, and times", async ({ page }) => {
+  await page.getByRole("button", { name: "New Feature Screenplay" }).click();
+
+  const firstHeading = page.locator("textarea.blk").first();
+  await firstHeading.fill("INT. KITCHEN - DAWN");
+  await firstHeading.press("End");
+  await firstHeading.press("Enter");
+  const secondHeading = page.locator("textarea.blk").nth(1);
+  await secondHeading.press("Enter");
+  await secondHeading.fill("EXT. ROOF - DUSK");
+  await secondHeading.press("End");
+  await secondHeading.press("Enter");
+  const nextHeading = page.locator("textarea.blk").nth(2);
+  await nextHeading.press("Enter");
+  await expect(nextHeading).toHaveClass(/blk-scene_heading/);
+
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT.");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("EXT.");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("I/E.");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT.");
+
+  await nextHeading.press("Space");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT. KITCHEN");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT. ROOF");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT. KITCHEN");
+  await nextHeading.press("Space");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT. KITCHEN - ");
+
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT. KITCHEN - DAY");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT. KITCHEN - NIGHT");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT. KITCHEN - CONTINUOUS");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT. KITCHEN - DAWN");
+  await nextHeading.press("Tab");
+  await expect(nextHeading).toHaveValue("INT. KITCHEN - DUSK");
+});
+
+test("dialogue enter flow and parenthetical tabbing follow screenplay context", async ({ page }) => {
+  await page.getByRole("button", { name: "New Feature Screenplay" }).click();
+
+  const heading = page.locator("textarea.blk").first();
+  await heading.fill("INT. TEST ROOM - DAY");
+  await heading.press("End");
+  await heading.press("Enter");
+
+  const firstCharacter = page.locator("textarea.blk").nth(1);
+  await firstCharacter.press("Tab");
+  await firstCharacter.fill("MARA");
+  await firstCharacter.press("Enter");
+  const firstDialogue = page.locator("textarea.blk").nth(2);
+  await firstDialogue.fill("Hello.");
+  await firstDialogue.press("Enter");
+  const secondCharacter = page.locator("textarea.blk").nth(3);
+  await expect(secondCharacter).toHaveClass(/blk-action/);
+
+  await secondCharacter.press("Tab");
+  await secondCharacter.fill("DELL");
+  await secondCharacter.press("Enter");
+  const secondDialogue = page.locator("textarea.blk").nth(4);
+  await secondDialogue.fill("Hi.");
+  await secondDialogue.press("Enter");
+  const continuingCharacter = page.locator("textarea.blk").nth(5);
+  await expect(continuingCharacter).toHaveClass(/blk-character/);
+
+  await continuingCharacter.press("Enter");
+  await expect(continuingCharacter).toHaveClass(/blk-dialogue/);
+  await continuingCharacter.press("Tab");
+  await expect(continuingCharacter).toHaveClass(/blk-parenthetical/);
+  await expect(continuingCharacter).toHaveValue("()");
+  await expect(continuingCharacter).toBeFocused();
+  await expect(continuingCharacter).toHaveJSProperty("selectionStart", 1);
+  await expect(continuingCharacter).toHaveJSProperty("selectionEnd", 1);
+});
+
 test("opening an FDX immediately still protects the in-memory project", async ({ page }) => {
   await page.getByRole("button", { name: "New Feature Screenplay" }).click();
   await page.locator("textarea.blk").first().fill("Unsaved in-memory scene.");

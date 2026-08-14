@@ -8,9 +8,9 @@ The Write workspace renders US-Letter paper pages with real screenplay geometry:
 
 ## Editing
 
-- Enter follows screenplay flow; mid-block Enter splits; Enter on an empty block steps its element forward.
+- Enter follows screenplay flow; mid-block Enter splits. A single dialogue turn returns to action, while an uninterrupted exchange of two or more turns continues with a character cue. Repeated Enter on a blank action starts a scene heading.
 - Backspace/Delete merge across block boundaries.
-- Tab/Shift+Tab cycle types; Ctrl+1–8 select directly.
+- Tab/Shift+Tab cycle types; Ctrl+1–8 select directly. In scene headings, Tab completes the INT./EXT./I/E. prefix, previous locations, separator, and time of day. Tab on dialogue inserts a parenthetical with the caret inside `()`.
 - Ctrl/Cmd+Z and Ctrl/Cmd+Y provide bounded structural undo/redo (also on the toolbar).
 - Headings, cues, and transitions uppercase while typing; `.heading` and `@name` force types.
 - Existing characters, locations, and scene headings are suggested inline.

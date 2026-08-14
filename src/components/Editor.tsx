@@ -9,8 +9,11 @@ import {
   isTransitionText,
   newBlock,
   paginateBlocks,
+  sceneHeadingCompletion,
+  typeAfterDialogueEnter,
   type ScreenplayBlock,
   type ScreenplayElementType,
+  type SceneHeadingCompletionStage,
   type ProductionPage,
   type TitlePage,
 } from "../domain/index.ts";
@@ -38,6 +41,15 @@ export interface EditorHistory {
   redo: ScreenplayBlock[][];
 }
 
+interface TabCompletionSession {
+  blockId: string;
+  stage: SceneHeadingCompletionStage;
+  base: string;
+  candidates: string[];
+  index: number;
+  renderedText: string;
+}
+
 function resize(el: HTMLTextAreaElement) {
   el.style.height = "0";
   el.style.height = `${el.scrollHeight}px`;
@@ -59,6 +71,7 @@ export default function Editor({
   const refs = useRef(new Map<string, HTMLTextAreaElement>());
   const pendingFocus = useRef<{ id: string; pos: number } | null>(null);
   const tabbedFromActionBlockId = useRef<string | null>(null);
+  const tabCompletion = useRef<TabCompletionSession | null>(null);
   const lastFocusNonce = useRef(0);
   const ownHistories = useRef(new Map<string, EditorHistory>());
   const histories = historyStore ?? ownHistories;
@@ -114,6 +127,7 @@ export default function Editor({
     setActiveId(null);
     pendingFocus.current = null;
     tabbedFromActionBlockId.current = null;
+    tabCompletion.current = null;
   }, [documentId]);
 
   useLayoutEffect(() => {
@@ -121,6 +135,14 @@ export default function Editor({
     const block = blocks.find((item) => item.id === tabbedFromActionBlockId.current);
     if (!block || block.type !== "character" || block.text !== "") {
       tabbedFromActionBlockId.current = null;
+    }
+  }, [blocks]);
+
+  useLayoutEffect(() => {
+    if (!tabCompletion.current) return;
+    const block = blocks.find((item) => item.id === tabCompletion.current?.blockId);
+    if (!block || block.type !== "scene_heading" || block.text !== tabCompletion.current.renderedText) {
+      tabCompletion.current = null;
     }
   }, [blocks]);
 
@@ -158,6 +180,7 @@ export default function Editor({
   const handleChange = (index: number, block: ScreenplayBlock, el: HTMLTextAreaElement) => {
     if (readOnly) return;
     if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
+    if (tabCompletion.current?.blockId === block.id) tabCompletion.current = null;
     let value = el.value;
     let type = block.type;
     const singleLine = !value.includes("\n");
@@ -192,6 +215,10 @@ export default function Editor({
     const { selectionStart, selectionEnd } = el;
     const collapsed = selectionStart === selectionEnd;
 
+    if (e.key !== "Tab" && tabCompletion.current?.blockId === block.id) {
+      tabCompletion.current = null;
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
       undo();
@@ -213,6 +240,38 @@ export default function Editor({
 
     if (e.key === "Tab") {
       e.preventDefault();
+      if (block.type === "scene_heading") {
+        const current = tabCompletion.current;
+        let completion = current && current.blockId === block.id && current.renderedText === block.text && current.candidates.length > 1
+          ? current
+          : null;
+        if (!completion) {
+          const available = sceneHeadingCompletion(blocks, block.id, block.text);
+          if (!available || available.candidates.length === 0) return;
+          completion = {
+            blockId: block.id,
+            ...available,
+            index: e.shiftKey ? available.candidates.length - 1 : 0,
+            renderedText: "",
+          };
+        } else {
+          const direction = e.shiftKey ? -1 : 1;
+          completion.index = (completion.index + direction + completion.candidates.length) % completion.candidates.length;
+        }
+        const text = completion.base + completion.candidates[completion.index];
+        completion.renderedText = text;
+        tabCompletion.current = completion;
+        pendingFocus.current = { id: block.id, pos: text.length };
+        update(index, { text });
+        return;
+      }
+      if (block.type === "dialogue" && !e.shiftKey) {
+        const text = `(${block.text})`;
+        tabCompletion.current = null;
+        pendingFocus.current = { id: block.id, pos: text.length - 1 };
+        update(index, { type: "parenthetical", text });
+        return;
+      }
       const i = ELEMENT_TYPES.indexOf(block.type);
       const n = ELEMENT_TYPES.length;
       const type = ELEMENT_TYPES[(i + (e.shiftKey ? -1 : 1) + n) % n];
@@ -237,7 +296,7 @@ export default function Editor({
           update(index, { type: "scene_heading" });
           return;
         }
-        const to = enterCreates[block.type];
+        const to = block.type === "dialogue" ? typeAfterDialogueEnter(blocks, index) : enterCreates[block.type];
         if (to !== block.type) {
           update(index, { type: to });
           return;
@@ -246,7 +305,10 @@ export default function Editor({
       const before = block.text.slice(0, selectionStart);
       const after = block.text.slice(selectionEnd);
       // Splitting mid-text keeps the type; Enter at the end flows to the next element.
-      const created = newBlock(after ? block.type : enterCreates[block.type], after);
+      const createdType = after
+        ? block.type
+        : block.type === "dialogue" ? typeAfterDialogueEnter(blocks, index) : enterCreates[block.type];
+      const created = newBlock(createdType, after);
       next[index] = { ...block, text: before };
       next.splice(index + 1, 0, created);
       pendingFocus.current = { id: created.id, pos: 0 };
@@ -352,7 +414,10 @@ export default function Editor({
               }
             }}
             onFocus={() => { setActiveId(block.id); onActiveBlock(block.id); }}
-            onBlur={() => { if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null; }}
+            onBlur={() => {
+              if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
+              if (tabCompletion.current?.blockId === block.id) tabCompletion.current = null;
+            }}
             onChange={(e) => handleChange(index, block, e.currentTarget)}
             onKeyDown={(e) => handleKeyDown(e, index, block)}
           />
