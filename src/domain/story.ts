@@ -4,6 +4,7 @@ export function resolveStoryStructure(blocks: ScreenplayBlock[], saved?: CustomS
   const scenes = deriveScenes(blocks);
   if (!saved) return defaultStructure(blocks);
   const sceneIds = new Set(scenes.map((scene) => scene.id));
+  const knownSceneIds = new Set(saved.sceneOrder);
   const acts = saved.acts.length ? saved.acts.map((act) => ({ ...act })) : [{ id: "act-1", title: "Act I" }];
   const actIds = new Set(acts.map((act) => act.id));
   const assigned = new Set<string>();
@@ -14,7 +15,7 @@ export function resolveStoryStructure(blocks: ScreenplayBlock[], saved?: CustomS
       sceneIds: sequence.sceneIds.filter((id) => sceneIds.has(id) && !assigned.has(id) && Boolean(assigned.add(id))),
     }));
   if (!sequences.length) sequences.push({ id: "sequence-1", actId: acts[0].id, title: "Sequence 1", sceneIds: [] });
-  sequences[0].sceneIds.push(...scenes.map((scene) => scene.id).filter((id) => !assigned.has(id)));
+  sequences[0].sceneIds.push(...scenes.map((scene) => scene.id).filter((id) => !knownSceneIds.has(id) && !assigned.has(id)));
   const sequenceIds = new Set(sequences.map((sequence) => sequence.id));
   return {
     acts,

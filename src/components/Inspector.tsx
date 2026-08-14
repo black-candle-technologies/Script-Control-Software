@@ -25,6 +25,7 @@ import {
   type ProjectSession,
   type ProjectWorkspace,
   type ProductionExportKind,
+  type ProductionCategory,
   type ProductionPage,
   type ProductionReports,
   type RevisionColor,
@@ -55,6 +56,8 @@ interface InspectorProps {
   workspace: WorkspaceData;
   onWorkspace: (patch: Partial<WorkspaceData>) => void;
   onJumpToScene: (sceneId: string) => void;
+  entityFocusRequest: { kind: "character" | "location"; id: string; nonce: number } | null;
+  onOpenEntityBreakdown: (kind: "character" | "location", entityId: string) => void;
   versionHistory: VersionHistory;
   versionComparison: SnapshotComparison | null;
   mergeConflicts: MergeConflict[];
@@ -181,12 +184,12 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
     ...customStructure,
     sequences: customStructure.sequences.map((sequence) => sequence.id === id ? { ...sequence, ...patch } : sequence),
   });
-  const assignScene = (sequenceId: string, sceneId: string) => save({
+  const toggleSceneAssignment = (sequenceId: string, sceneId: string) => save({
     ...customStructure,
     sequences: customStructure.sequences.map((sequence) => ({
       ...sequence,
-      sceneIds: sequence.id === sequenceId
-        ? [...sequence.sceneIds.filter((id) => id !== sceneId), sceneId]
+      sceneIds: sequence.id === sequenceId && !sequence.sceneIds.includes(sceneId)
+        ? [...sequence.sceneIds, sceneId]
         : sequence.sceneIds.filter((id) => id !== sceneId),
     })),
   });
@@ -224,7 +227,7 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
         <select className="element-select" aria-label="Parent act" value={sequence.actId} onChange={(event) => updateSequence(sequence.id, { actId: event.target.value })}>
           {customStructure.acts.map((act) => <option key={act.id} value={act.id}>{act.title}</option>)}
         </select>
-        {scenes.map((scene) => <label className="check-row" key={scene.id}><input type="radio" name={`scene-${scene.id}`} checked={sequence.sceneIds.includes(scene.id)} onChange={() => assignScene(sequence.id, scene.id)} /> {scene.heading}</label>)}
+        {scenes.map((scene) => <label className="check-row" key={scene.id}><input type="checkbox" checked={sequence.sceneIds.includes(scene.id)} onChange={() => toggleSceneAssignment(sequence.id, scene.id)} /> {scene.heading}</label>)}
         <button className="link-btn" disabled={customStructure.sequences.length === 1} onClick={() => save({ ...customStructure, sequences: customStructure.sequences.filter((item) => item.id !== sequence.id) })}>Remove</button>
       </div>)}
     </>}
@@ -351,20 +354,38 @@ function EntityNote({ entityId, workspace, onWorkspace }: Pick<InspectorProps, "
   return <textarea className="insp-notes-input" value={notes[entityId] ?? ""} placeholder="Profile and continuity notes…" onChange={(event) => onWorkspace({ entityNotes: { ...notes, [entityId]: event.target.value } })} />;
 }
 
-function CastTab({ analysis, workspace, onWorkspace }: InspectorProps) {
+function EntityDetails({ entityId, focused, defaultOpen, summary, children }: {
+  entityId: string;
+  focused: boolean;
+  defaultOpen: boolean;
+  summary: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen || focused);
+  return <details className="insp-card" data-entity-id={entityId} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary className="insp-card-title" autoFocus={focused}>{summary}</summary>
+    {children}
+  </details>;
+}
+
+function CastTab({ analysis, workspace, onWorkspace, entityFocusRequest }: InspectorProps) {
   const characters = analysis.entities.characters;
+  const scenesById = new Map(analysis.scenes.map((scene) => [scene.id, scene]));
   if (!characters.length) return <Hint>No character cues detected.</Hint>;
-  return <div className="insp-stack"><Hint>Character sheets are derived from cues and dialogue; corrections remain editable project metadata.</Hint>{characters.map((character) => <details className="insp-card" key={character.id} open={characters.length <= 3 && character.status !== "rejected"}>
-    <summary className="insp-card-title">{character.name} <small>· {character.status}</small></summary>
-    <div className="insp-card-meta">{character.sceneCount} scenes · {character.cueCount} cues · {character.dialogueWords} dialogue words · first/last {character.firstScene}/{character.lastScene}</div>
+  return <div className="insp-stack"><Hint>Character sheets are derived from cues and dialogue; corrections remain editable project metadata.</Hint>{characters.map((character) => <EntityDetails key={character.id} entityId={character.id} focused={entityFocusRequest?.kind === "character" && entityFocusRequest.id === character.id} defaultOpen={characters.length <= 3 && character.status !== "rejected"} summary={<>{character.name} <small>· {character.status}</small></>}>
+    <div className="insp-card-meta">{character.sceneCount} scenes · {character.cueCount} cues · {character.dialogueCount} dialogue blocks · {character.dialogueWords} dialogue words · first/last {character.firstScene}/{character.lastScene}</div>
     {character.firstDescription && <p className="insp-card-desc">{character.firstDescription}</p>}
     {!!character.aliases.length && <p className="insp-card-desc">Aliases: {character.aliases.join(", ")}</p>}
     {!!character.coAppearances.length && <p className="insp-card-desc">Co-appears: {character.coAppearances.map((item) => `${item.character} (${item.count})`).join(", ")}</p>}
     {!!character.absenceGaps.length && <p className="insp-card-desc">Continuity gaps: {character.absenceGaps.map((gap) => `${gap.scenesAbsent} scenes after ${gap.afterScene}`).join(", ")}</p>}
     <EntityNote entityId={character.id} workspace={workspace} onWorkspace={onWorkspace} />
     <EntityControls kind="character" entity={character} peers={characters} workspace={workspace} onWorkspace={onWorkspace} />
-    <details><summary className="link-btn">Dialogue ({character.dialogueLines.length})</summary>{character.dialogueLines.map((line) => <p key={line.blockId} className="insp-card-desc"><strong>Scene {line.sceneNumber}:</strong> {line.text}</p>)}</details>
-  </details>)}</div>;
+    <h4>Scenes and dialogue</h4>
+    {character.appearances.map((appearance) => <div className="entity-scene-breakdown" key={appearance.sceneId}>
+      <div className="insp-card-meta"><strong>Scene {appearance.sceneNumber} · {scenesById.get(appearance.sceneId)?.heading ?? "Untitled scene"}</strong> · {appearance.cueCount} cues · {appearance.dialogueCount} dialogue blocks · {appearance.dialogueWords} words</div>
+      {character.dialogueLines.filter((line) => line.sceneId === appearance.sceneId).map((line) => <p key={line.blockId} className="insp-card-desc">{line.text}</p>)}
+    </div>)}
+  </EntityDetails>)}</div>;
 }
 
 function PropsTab({ analysis, workspace, onWorkspace }: InspectorProps) {
@@ -390,17 +411,17 @@ function PropsTab({ analysis, workspace, onWorkspace }: InspectorProps) {
   </details>)}</div>;
 }
 
-function PlacesTab({ analysis, workspace, onWorkspace }: InspectorProps) {
+function PlacesTab({ analysis, workspace, onWorkspace, entityFocusRequest }: InspectorProps) {
   const locations = analysis.entities.locations;
   if (!locations.length) return <Hint>No locations detected.</Hint>;
-  return <div className="insp-stack"><Hint>Location sheets normalize repeated headings while preserving aliases and usage details.</Hint>{locations.map((location) => <details className="insp-card" key={location.id} open={locations.length <= 3 && location.status !== "rejected"}>
-    <summary className="insp-card-title">{location.name} <small>· {location.status}</small></summary>
-    <div className="insp-card-meta">{location.interiorExterior.join(" / ") || "-"} · {location.timesOfDay.join(" / ") || "time unspecified"} · scenes {location.sceneNumbers.join(", ")}</div>
+  return <div className="insp-stack"><Hint>Location sheets normalize repeated headings while preserving aliases and usage details.</Hint>{locations.map((location) => <EntityDetails key={location.id} entityId={location.id} focused={entityFocusRequest?.kind === "location" && entityFocusRequest.id === location.id} defaultOpen={locations.length <= 3 && location.status !== "rejected"} summary={<>{location.name} <small>· {location.status}</small></>}>
+    <div className="insp-card-meta">{location.sceneCount} scenes · {location.interiorExterior.join(" / ") || "-"} · {location.timesOfDay.join(" / ") || "time unspecified"} · scenes {location.sceneNumbers.join(", ")}</div>
     {!!location.aliases.length && <p className="insp-card-desc">Aliases: {location.aliases.join(", ")}</p>}
     <EntityNote entityId={location.id} workspace={workspace} onWorkspace={onWorkspace} />
     <EntityControls kind="location" entity={location} peers={locations} workspace={workspace} onWorkspace={onWorkspace} />
-    <details><summary className="link-btn">Appearances ({location.appearances.length})</summary>{location.appearances.map((entry) => <p key={entry.sceneId} className="insp-card-desc">Scene {entry.sceneNumber}: {entry.heading}</p>)}</details>
-  </details>)}</div>;
+    <h4>Scene appearances</h4>
+    {location.appearances.map((entry) => <p key={entry.sceneId} className="insp-card-desc"><strong>Scene {entry.sceneNumber}:</strong> {entry.heading}</p>)}
+  </EntityDetails>)}</div>;
 }
 
 function DraftsTab({ versionHistory, versionComparison, mergeConflicts, mergePreviewReady, mergePreviewSourceId, onSaveVersion, onRestoreVersion, onCompareVersions, onCreateAlternateDraft, onSwitchAlternateDraft, onSelectCombineDraftSource, onPreviewCombineDrafts, onCombineDrafts, onCancelCombineDrafts, collaborationSession, projectWorkspace, activeDocumentId }: InspectorProps) {
@@ -470,7 +491,24 @@ function DraftsTab({ versionHistory, versionComparison, mergeConflicts, mergePre
   </div>;
 }
 
-function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown }: InspectorProps) {
+const PRODUCTION_CATEGORY_LABELS: Record<ProductionCategory, string> = {
+  cast: "Cast",
+  locations: "Locations",
+  props: "Props",
+  vehicles: "Vehicles",
+  animals: "Animals",
+  weapons: "Weapons",
+  stunts: "Stunts",
+  vfx: "Visual effects",
+  sfx: "Sound effects",
+  wardrobe: "Wardrobe",
+  makeup: "Makeup",
+  nightScenes: "Night scenes",
+  crowdScenes: "Crowd scenes",
+  highComplexityScenes: "High-complexity scenes",
+};
+
+function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown, onOpenEntityBreakdown }: InspectorProps) {
   const [csvSection, setCsvSection] = useState<AnalysisCsvSection>("all");
   const threads = workspace.plotThreads ?? [];
   const updateThread = (id: string, patch: Partial<(typeof threads)[number]>) => onWorkspace({ plotThreads: threads.map((thread) => thread.id === id ? { ...thread, ...patch } : thread) });
@@ -481,7 +519,7 @@ function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown }: I
     updateThread(id, { [field]: values.includes(targetId) ? values.filter((value) => value !== targetId) : [...values, targetId] });
   };
   const resolvedBeatIds = workspace.resolvedBeatIds ?? [];
-  const productionEntries = Object.entries(analysis.production) as [string, (typeof analysis.production)[keyof typeof analysis.production]][];
+  const productionEntries = Object.entries(analysis.production) as [ProductionCategory, (typeof analysis.production)[ProductionCategory]][];
   const facts: [string, string | number][] = [
     ["Scenes", analysis.scenes.length], ["Pages", `~${analysis.pageEstimate}`], ["Runtime", `~${analysis.episode.runtimeMinutes} min`], ["Words", analysis.wordCount],
     ["Dialogue", `${analysis.dialogueWords} words (${Math.round(analysis.dialogueDensity * 100)}%)`], ["Characters", analysis.entities.characters.filter((item) => item.status !== "rejected" && item.status !== "merged").length],
@@ -507,7 +545,15 @@ function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown }: I
     {!!analysis.characterArcs.length && <details><summary className="insp-card-title">Character arcs</summary>{analysis.characterArcs.map((arc) => <p className="insp-card-desc" key={arc.character}><strong>{arc.character}:</strong> {arc.summary}</p>)}</details>}
     {!!analysis.pacingWarnings.length && <><h4>Pacing checks</h4><ul className="insp-list">{analysis.pacingWarnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{warning.message}</li>)}</ul></>}
     <h4>Production reports</h4>
-    {productionEntries.map(([category, rows]) => <details className="insp-card" key={category}><summary className="insp-card-title">{category} ({rows.length})</summary>{rows.map((row, index) => <p className="insp-card-desc" key={`${row.sceneId}-${row.item}-${index}`}><strong>Scene {row.sceneNumber} · {row.item}:</strong> {row.evidence}</p>)}</details>)}
+    {productionEntries.map(([category, rows]) => <details className="insp-card" key={category}><summary className="insp-card-title">{PRODUCTION_CATEGORY_LABELS[category]} ({rows.length})</summary>{rows.map((row, index) => {
+      const entityKind = category === "cast" ? "character" : category === "locations" ? "location" : null;
+      return <p className="insp-card-desc" key={`${row.sceneId}-${row.item}-${index}`}>
+        {entityKind && row.entityId
+          ? <button className="link-btn" data-entity-id={row.entityId} onClick={() => onOpenEntityBreakdown(entityKind, row.entityId!)}>{row.item}</button>
+          : <strong>Scene {row.sceneNumber} · {row.item}</strong>}
+        {": "}{row.evidence}
+      </p>;
+    })}</details>)}
     <h4>Detailed scenes</h4>
     {analysis.scenes.map((scene) => <details className="insp-card" key={scene.id}><summary className="insp-card-title">Scene {scene.sceneNumber ?? scene.number} · {scene.heading}</summary><div className="insp-card-meta">~{scene.estimatedPages} pages · {scene.dialogueWords} dialogue words · complexity {scene.complexityScore}/5</div><p className="insp-card-desc">Cast: {scene.characters.join(", ") || "-"}<br />Objects: {scene.objects.join(", ") || "-"}</p></details>)}
     <h4>Export</h4>

@@ -32,6 +32,51 @@ test("sample screenplay survives source mode and exposes the mode workspaces", a
   await expect(page.locator("summary.insp-card-title", { hasText: "E2E COMPASS" })).toBeVisible();
 });
 
+test("outline scenes can be removed from a sequence", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Outline", exact: true }).click();
+  await page.getByRole("button", { name: "Sequence", exact: true }).click();
+
+  const assignedScenes = page.locator('.insp-card input[type="checkbox"]:checked');
+  const initialCount = await assignedScenes.count();
+  expect(initialCount).toBeGreaterThan(0);
+  await assignedScenes.first().click();
+  await expect(assignedScenes).toHaveCount(initialCount - 1);
+});
+
+test("breakdown aggregates entities, uses readable labels, and opens character details", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Breakdown", exact: true }).click();
+
+  await expect(page.getByText(/^Night scenes \(\d+\)$/)).toBeVisible();
+  await expect(page.getByText(/^Crowd scenes \(\d+\)$/)).toBeVisible();
+  await expect(page.getByText(/^High-complexity scenes \(\d+\)$/)).toBeVisible();
+  await expect(page.getByText(/nightScenes|crowdScenes|highComplexityScenes/)).toHaveCount(0);
+
+  await page.getByText(/^Cast \(\d+\)$/).click();
+  const characterLink = page.locator("details.insp-card", { has: page.getByText(/^Cast \(\d+\)$/) }).getByRole("button").first();
+  const characterName = (await characterLink.textContent())?.trim();
+  const characterId = await characterLink.getAttribute("data-entity-id");
+  expect(characterName).toBeTruthy();
+  expect(characterId).toBeTruthy();
+  await characterLink.click();
+
+  await expect(page.getByRole("heading", { name: "Reference" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Cast" })).toHaveAttribute("aria-selected", "true");
+  const focusedCard = page.locator(`details.insp-card[data-entity-id="${characterId}"][open]`);
+  await expect(focusedCard).toBeVisible();
+  await expect(focusedCard.getByText("Scenes and dialogue")).toBeVisible();
+
+  await page.getByRole("button", { name: "Breakdown", exact: true }).click();
+  await page.getByText(/^Locations \(\d+\)$/).click();
+  const locationLink = page.locator("details.insp-card", { has: page.getByText(/^Locations \(\d+\)$/) }).getByRole("button").first();
+  const locationId = await locationLink.getAttribute("data-entity-id");
+  expect(locationId).toBeTruthy();
+  await locationLink.click();
+  await expect(page.getByRole("tab", { name: "Places" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(`details.insp-card[data-entity-id="${locationId}"][open]`).getByText("Scene appearances")).toBeVisible();
+});
+
 test("screenplay typing shortcuts preserve the current line", async ({ page }) => {
   await page.getByRole("button", { name: "New Feature Screenplay" }).click();
 

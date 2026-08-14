@@ -20,7 +20,26 @@ test("new scenes enter the first valid sequence without duplicating assignments"
   const doc = parseFountain("INT. A - DAY\n\nA.\n\nINT. B - DAY\n\nB.\n");
   const structure = resolveStoryStructure(doc.blocks);
   structure.sequences.push({ id: "extra", actId: structure.acts[0].id, title: "Extra", sceneIds: [structure.sceneOrder[0]] });
-  const resolved = resolveStoryStructure(doc.blocks, structure);
+  const resolved = resolveStoryStructure([
+    ...doc.blocks,
+    { id: "scene-c", type: "scene_heading", text: "INT. C - DAY" },
+    { id: "action-c", type: "action", text: "C." },
+  ], structure);
   const assigned = resolved.sequences.flatMap((sequence) => sequence.sceneIds);
-  assert.equal(new Set(assigned).size, 2);
+  assert.equal(new Set(assigned).size, 3);
+  assert.equal(assigned.filter((id) => id === "scene-c").length, 1);
+});
+
+test("known scenes can remain intentionally unassigned", () => {
+  const doc = parseFountain("INT. A - DAY\n\nA.\n\nINT. B - DAY\n\nB.\n");
+  const structure = resolveStoryStructure(doc.blocks);
+  const removedSceneId = structure.sceneOrder[0];
+  structure.sequences = structure.sequences.map((sequence) => ({
+    ...sequence,
+    sceneIds: sequence.sceneIds.filter((id) => id !== removedSceneId),
+  }));
+
+  const resolved = resolveStoryStructure(doc.blocks, structure);
+  assert.ok(resolved.sceneOrder.includes(removedSceneId));
+  assert.ok(resolved.sequences.every((sequence) => !sequence.sceneIds.includes(removedSceneId)));
 });

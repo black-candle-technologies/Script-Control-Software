@@ -195,6 +195,14 @@ test("compiler supplies structure, coverage, warnings, revisions, and every prod
   assert.deepEqual(Object.keys(report.production), categories);
   assert.ok(report.production.animals.length > 0);
   assert.ok(report.production.highComplexityScenes.length > 0);
+  assert.equal(report.production.cast.filter((row) => row.item === "MARA").length, 1);
+  assert.match(report.production.cast.find((row) => row.item === "MARA")?.evidence ?? "", /3 scene\(s\), 3 cue\(s\), 3 dialogue block\(s\)/);
+  assert.equal(new Set(report.production.cast.map((row) => row.item)).size, report.production.cast.length);
+  assert.equal(new Set(report.production.locations.map((row) => row.item)).size, report.production.locations.length);
+  assert.ok(report.production.props.every((row) => !["GUN", "CAR", "UNIFORM"].includes(row.item)));
+  assert.ok(report.production.weapons.some((row) => row.item === "GUN"));
+  assert.ok(report.production.vehicles.some((row) => row.item === "CAR"));
+  assert.ok(report.production.wardrobe.some((row) => row.item === "UNIFORM"));
   const markdown = analysisToMarkdown(report);
   for (const heading of ["Overview", "Scenes", "Characters", "Character Arcs", "Locations", "Objects and Props", "Acts", "Sequences", "Beats", "Plot Threads", "Treatment Coverage", "Unresolved Beats", "Pacing Warnings", "Revision", "Production"]) {
     assert.match(markdown, new RegExp(`## ${heading}`));
@@ -217,6 +225,20 @@ test("compiler supplies structure, coverage, warnings, revisions, and every prod
   assert.match(analysisToCsv(report, "revision"), /^from,to,total,added/m);
   assert.match(analysisToCsv(report, "production"), /^category,scene,heading,item,evidence/m);
   assert.equal(JSON.parse(analysisToJson(report)).title, "Signal Fire");
+});
+
+test("production props are unique per scene even when repeated across action blocks", () => {
+  const repeated = structuredClone(document);
+  repeated.blocks.splice(3, 0,
+    block("a1-phone-2", "action", "The phone rings."),
+    block("a1-phone-3", "action", "Mara pockets the phone."),
+  );
+
+  const report = compileAnalysis(repeated);
+  const garagePhones = report.production.props.filter((row) => row.sceneNumber === 1 && row.item === "PHONE");
+  assert.equal(garagePhones.length, 1);
+  assert.match(garagePhones[0].evidence, /phone rings/i);
+  assert.match(garagePhones[0].evidence, /pockets the phone/i);
 });
 
 test("compiler uses the editable project hierarchy when supplied", () => {

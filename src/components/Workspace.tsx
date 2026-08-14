@@ -201,6 +201,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const [referenceTarget, setReferenceTarget] = useState("");
   const [referenceModeTab, setReferenceModeTab] = useState<PanelTab>("Cast");
   const [breakdownModeTab, setBreakdownModeTab] = useState<PanelTab>("Breakdown");
+  const [entityFocusRequest, setEntityFocusRequest] = useState<{ kind: "character" | "location"; id: string; nonce: number } | null>(null);
   const [editorMode, setEditorMode] = useState<"formatted" | "source">("formatted");
   const [sourceText, setSourceText] = useState("");
   const [savedAt, setSavedAt] = useState<string | null>(null);
@@ -220,6 +221,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const [gitStatus, setGitStatus] = useState<GitSyncStatus>();
   const [sharedConflict, setSharedConflict] = useState<{ base?: ProjectSession; theirs: ProjectSession; conflicts: MergeConflict[] } | null>(null);
   const focusNonce = useRef(0);
+  const entityFocusNonce = useRef(0);
   const editorHistoryRef = useRef<{ undo: () => void; redo: () => void } | null>(null);
   const editorHistoryStore = useRef(new Map<string, EditorHistory>());
   const paneDragRef = useRef<{ pointerId: number; pane: "nav" | "insp"; startX: number; startWidth: number; scroll: EditorScrollSnapshot } | null>(null);
@@ -1359,6 +1361,12 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     if (targetId) setFocusRequest({ id: targetId, nonce: ++focusNonce.current });
   };
 
+  const openEntityBreakdown = (kind: "character" | "location", entityId: string) => {
+    setEntityFocusRequest({ kind, id: entityId, nonce: ++entityFocusNonce.current });
+    setReferenceModeTab(kind === "character" ? "Cast" : "Places");
+    setMode("reference");
+  };
+
   const panelProps = {
     scenes,
     characters,
@@ -1374,6 +1382,8 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       setMode("write");
       jumpToScene(sceneId);
     },
+    entityFocusRequest,
+    onOpenEntityBreakdown: openEntityBreakdown,
     versionHistory,
     versionComparison,
     mergeConflicts,

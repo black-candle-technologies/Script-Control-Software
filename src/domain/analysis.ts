@@ -225,6 +225,7 @@ export interface ProductionRow {
   item: string;
   evidence: string;
   blockId?: string;
+  entityId?: string;
 }
 
 export type ProductionReport = Record<ProductionCategory, ProductionRow[]>;
@@ -875,22 +876,44 @@ function evidence(text: string) {
 function buildProduction(blocks: ScreenplayBlock[], scenes: SceneAnalysisRow[], entities: AnalysisEntities) {
   const report = emptyProduction();
   const sceneByNumber = new Map(scenes.map((scene) => [scene.number, scene]));
-  const add = (category: ProductionCategory, sceneNumber: number, item: string, detail: string, blockId?: string) => {
+  const add = (category: ProductionCategory, sceneNumber: number, item: string, detail: string, blockId?: string, entityId?: string) => {
     const scene = sceneByNumber.get(sceneNumber);
-    if (scene) report[category].push({ category, sceneNumber, sceneId: scene.id, heading: scene.heading, item: item.toUpperCase(), evidence: detail, blockId });
+    if (scene) report[category].push({ category, sceneNumber, sceneId: scene.id, heading: scene.heading, item: item.toUpperCase(), evidence: detail, blockId, entityId });
   };
   for (const character of entities.characters.filter((item) => item.status !== "rejected" && item.status !== "merged")) {
-    character.appearances.forEach((appearance) => add("cast", appearance.sceneNumber, character.name, `${appearance.cueCount} cue(s), ${appearance.dialogueCount} dialogue block(s)`));
+    const firstAppearance = character.appearances[0];
+    if (firstAppearance) add(
+      "cast",
+      firstAppearance.sceneNumber,
+      character.name,
+      `${character.sceneCount} scene(s), ${character.cueCount} cue(s), ${character.dialogueCount} dialogue block(s)`,
+      undefined,
+      character.id,
+    );
   }
   for (const location of entities.locations.filter((item) => item.status !== "rejected" && item.status !== "merged")) {
-    location.appearances.forEach((appearance) => add("locations", appearance.sceneNumber, location.name, appearance.heading));
+    const firstAppearance = location.appearances[0];
+    if (firstAppearance) add(
+      "locations",
+      firstAppearance.sceneNumber,
+      location.name,
+      `${location.sceneCount} scene(s): ${location.sceneNumbers.join(", ")}`,
+      undefined,
+      location.id,
+    );
   }
   for (const object of entities.objects.filter((item) => item.status !== "rejected" && item.status !== "merged")) {
+    const category = object.productionCategory as ProductionCategory;
+    const occurrencesByScene = new Map<number, ObjectContinuityEntry[]>();
     for (const occurrence of object.continuity) {
-      add("props", occurrence.sceneNumber, object.name, occurrence.excerpt, occurrence.blockId);
-      if (["vehicles", "animals", "weapons", "wardrobe"].includes(object.productionCategory)) {
-        add(object.productionCategory as ProductionCategory, occurrence.sceneNumber, object.name, occurrence.excerpt, occurrence.blockId);
-      }
+      const occurrences = occurrencesByScene.get(occurrence.sceneNumber) ?? [];
+      occurrences.push(occurrence);
+      occurrencesByScene.set(occurrence.sceneNumber, occurrences);
+    }
+    for (const [sceneNumber, occurrences] of occurrencesByScene) {
+      if (category !== "props" && !["vehicles", "animals", "weapons", "wardrobe"].includes(category)) continue;
+      const excerpts = unique(occurrences.map((occurrence) => occurrence.excerpt));
+      add(category, sceneNumber, object.name, excerpts.join(" "), occurrences[0]?.blockId, object.id);
     }
   }
   scenes.forEach((scene) => {
@@ -903,7 +926,7 @@ function buildProduction(blocks: ScreenplayBlock[], scenes: SceneAnalysisRow[], 
     }
   });
   for (const category of Object.keys(report) as ProductionCategory[]) {
-    report[category] = [...new Map(report[category].map((row) => [`${row.sceneId}\0${row.blockId ?? ""}\0${row.item}`, row])).values()]
+    report[category] = [...new Map(report[category].map((row) => [`${row.sceneId}\0${row.item}`, row])).values()]
       .sort((a, b) => a.sceneNumber - b.sceneNumber || a.item.localeCompare(b.item));
   }
   const complexity = new Map<number, number>();
