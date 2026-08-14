@@ -217,7 +217,7 @@ export function productionReports(document: ScreenplayDocument, eighthsPerDay = 
       used = 0;
     }
     used += strip.eighths;
-    return { ...strip, day, line: `${strip.sceneNumber} ${strip.heading} — ${strip.characters.join(", ") || "No cast"} — ${strip.eighths}/8` };
+    return { ...strip, day, line: `${strip.sceneNumber} ${strip.heading} | ${strip.characters.join(", ") || "No cast"} | ${strip.eighths}/8` };
   });
   const cast = new Map<string, Map<number, string[]>>();
   for (const row of oneLineSchedule) {

@@ -1,7 +1,7 @@
 /**
  * Sample project content for the writing workspace.
  *
- * The screenplay itself lives in samples/sample.fountain — one file shared by
+ * The screenplay itself lives in samples/sample.fountain: one file shared by
  * the frontend (via Vite `?raw`) and the Rust `get_sample_screenplay` command
  * (via `include_str!`), so the two can never drift apart.
  *

@@ -1,5 +1,5 @@
 /**
- * SCS project launcher — a restrained start surface. One brand column, one
+ * SCS project launcher: a restrained start surface. One brand column, one
  * action list, straight into the screenplay. The launcher is deliberately not
  * a dashboard: opening a project is the whole job.
  */
@@ -75,7 +75,7 @@ export default function Launcher({ appInfo, savedTitle, onOpen, onOpenFdx, onOpe
           {savedTitle ? (
             <button className="launcher-recent" onClick={() => onOpen("saved")}>
               <span className="launcher-recent-title">{savedTitle}</span>
-              <span className="launcher-recent-meta">Continue writing — autosaved locally</span>
+              <span className="launcher-recent-meta">Continue writing | autosaved locally</span>
               <Icon name="chevron-right" size={14} />
             </button>
           ) : (
@@ -85,7 +85,7 @@ export default function Launcher({ appInfo, savedTitle, onOpen, onOpenFdx, onOpe
 
         <section className="launcher-section" aria-label="Sample">
           <button className="launcher-sample" onClick={() => onOpen("sample")}>
-            Open the sample project — <em>“The Long Way Home”</em>
+            Open the sample project: <em>“The Long Way Home”</em>
           </button>
         </section>
       </main>

@@ -1,17 +1,17 @@
 /* ==========================================================================
-   SCS interface — bevelled design system
+   SCS interface - bevelled design system
 
    One style, two palettes. Every surface is raised or sunk by a hard 2px
    bevel; dark graphite and light stone are the same UI with different
    variables, so nothing needs a second rule to work in both. Set the palette
    with data-theme="dark|light" on <html> (useTheme does it and remembers).
 
-   The chrome changes with the theme. The screenplay page does not — a script
+   The chrome changes with the theme. The screenplay page does not: a script
    is printed on white paper, and it stays white in both palettes.
    ========================================================================== */
 
 :root {
-  /* Geometry — hard edges, no radius. A control is read by its bevel. */
+  /* Geometry: hard edges, no radius. A control is read by its bevel. */
   --radius-s: 0px;
   --radius-m: 0px;
   --radius-l: 0px;
@@ -24,7 +24,7 @@
   --font-mono: Consolas, "Cascadia Mono", ui-monospace, monospace;
   --font-screenplay: "Courier Prime", "Courier New", Courier, monospace;
 
-  /* Paper — the screenplay page, identical in both palettes */
+  /* Paper: the screenplay page, identical in both palettes */
   --paper: #f7f4ed;
   --paper-edge: #e5e0d3;
   --paper-text: #211f1b;
@@ -40,7 +40,7 @@
   --paper-chip-text: #454239;
   --paper-highlight: rgba(143, 83, 16, 0.10);
 
-  /* Production revision colors — industry standard, never themed */
+  /* Production revision colors: industry standard, never themed */
   --rev-blue: #3778c2;
   --rev-pink: #d96891;
   --rev-yellow: #d4aa00;
@@ -56,7 +56,7 @@
   --bevel-up-1: inset 1px 1px 0 var(--edge-l), inset -1px -1px 0 var(--edge-d);
   --bevel-in-1: inset 1px 1px 0 var(--edge-d), inset -1px -1px 0 var(--edge-l);
 
-  /* Selection is a lightened, outlined face — not a flood of accent. The
+  /* Selection is a lightened, outlined face, not a flood of accent. The
      accent stays for values and for the one primary action per view. */
   --bevel-frost: inset 0 0 0 1px var(--frost-edge), var(--bevel-up);
   --frost-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0));
@@ -178,7 +178,7 @@ input[type="checkbox"], input[type="radio"], input[type="range"], progress {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 
-/* Held for one frame while the palette is swapped — see src/theme.ts. */
+/* Held for one frame while the palette is swapped; see src/theme.ts. */
 :root.theme-swap, :root.theme-swap *, :root.theme-swap *::before, :root.theme-swap *::after {
   transition: none !important;
 }
@@ -599,7 +599,7 @@ button.chip:hover { color: var(--text-1); background: var(--raise); }
 }
 .save-chip.saved { color: var(--ok); }
 
-/* Episode strip — television projects */
+/* Episode strip: television projects */
 .episode-strip {
   display: flex;
   align-items: center;
@@ -750,6 +750,21 @@ button.chip:hover { color: var(--text-1); background: var(--raise); }
 .notice-details summary { cursor: pointer; color: var(--warn); }
 .notice-details ul { margin: 0.4rem 0 0.1rem; padding-left: 1.2rem; }
 .notice-details li { margin: 0.15rem 0; font-size: 12px; }
+.warning-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.warning-link:hover,
+.warning-link:focus-visible {
+  color: var(--text-1);
+  text-decoration: underline;
+  outline: none;
+}
 
 /* ==========================================================================
    Write workspace
@@ -801,6 +816,8 @@ button.chip:hover { color: var(--text-1); background: var(--raise); }
   flex: none;
   position: relative;
   z-index: 5;
+  touch-action: none;
+  user-select: none;
 }
 .pane-resize:hover, .pane-resize:focus-visible { background: var(--accent-line); outline: none; }
 
@@ -1094,7 +1111,7 @@ button.chip:hover { color: var(--text-1); background: var(--raise); }
 .reference-transition { text-align: right; text-transform: uppercase; }
 
 /* ==========================================================================
-   Screenplay canvas — the paper
+   Screenplay canvas: the paper
    ========================================================================== */
 
 .canvas {
@@ -1234,11 +1251,11 @@ button.chip:hover { color: var(--text-1); background: var(--raise); }
 .suggestions-character { margin-left: 211px; }
 .suggestions-scene_heading { margin-left: 0; }
 .editor-suggestions button {
-  border: 1px solid var(--paper-chip-line);
+  border: 2px solid var(--paper-chip-line);
   background: var(--paper-chip-bg);
   color: var(--paper-chip-text);
   padding: 0.2rem 0.4rem;
-  font: 11px var(--font-ui);
+  font: 700 11px var(--font-ui);
   cursor: pointer;
 }
 .editor-suggestions button:hover,

@@ -1,5 +1,5 @@
 /**
- * Contextual inspector — the right-hand panel of the Write workspace.
+ * Contextual inspector: the right-hand panel of the Write workspace.
  * It follows the caret: current element, current scene, that scene's
  * development metadata, beats, and notes. Nothing global lives here; the
  * heavier workspaces have their own modes.
@@ -61,7 +61,7 @@ export default function ContextInspector({
               type="button"
               className={`element-chip ${activeBlock?.type === type ? "active" : ""}`}
               disabled={!activeBlock || !canEdit || sourceMode}
-              title={`${elementLabels[type]} — Ctrl+${index + 1}`}
+              title={`${elementLabels[type]} | Ctrl+${index + 1}`}
               onClick={() => onSetType(type)}
             >
               {elementLabels[type]}
@@ -77,10 +77,10 @@ export default function ContextInspector({
             <span className="kicker">Scene {activeScene.sceneNumber ?? activeScene.number}</span>
             <h3 className="insp-scene-heading">{activeScene.heading || "Untitled scene"}</h3>
             <dl className="insp-facts">
-              <div><dt>Set</dt><dd>{heading.intExt || "—"}</dd></div>
-              <div><dt>Location</dt><dd>{heading.location || "—"}</dd></div>
-              <div><dt>Time</dt><dd>{heading.timeOfDay || "—"}</dd></div>
-              <div><dt>Cast</dt><dd>{activeScene.characters.join(", ") || "—"}</dd></div>
+              <div><dt>Set</dt><dd>{heading.intExt || "-"}</dd></div>
+              <div><dt>Location</dt><dd>{heading.location || "-"}</dd></div>
+              <div><dt>Time</dt><dd>{heading.timeOfDay || "-"}</dd></div>
+              <div><dt>Cast</dt><dd>{activeScene.characters.join(", ") || "-"}</dd></div>
             </dl>
 
             <label className="insp-field">
@@ -124,7 +124,7 @@ export default function ContextInspector({
           </section>
         </fieldset>
       ) : (
-        <p className="insp-hint insp-empty">No scene yet. Start with a scene heading — INT. or EXT.</p>
+        <p className="insp-hint insp-empty">No scene yet. Start with a scene heading: INT. or EXT.</p>
       )}
     </div>
   );

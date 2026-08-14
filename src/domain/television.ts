@@ -6,7 +6,7 @@ import { deriveCharacters, deriveLocations } from "./screenplay.ts";
  * Television is a first-class concern in SCS, not an afterthought bolted onto a
  * feature-film tool. These types sketch the shape of a series workspace so the
  * rest of the architecture can leave room for it. None of this has behaviour in
- * Phase 0 — it is a drafted model only.
+ * Phase 0: it is a drafted model only.
  *
  * See also: docs/DOMAIN_MODELS.md.
  */
@@ -14,7 +14,7 @@ import { deriveCharacters, deriveLocations } from "./screenplay.ts";
 export interface Show {
   id: string;
   title: string;
-  /** The shared show bible — world, rules, tone and canon. Placeholder for now. */
+  /** The shared show bible: world, rules, tone and canon. Placeholder for now. */
   bible: ShowBible;
   seasons: Season[];
   /** Characters that recur across episodes and seasons. */

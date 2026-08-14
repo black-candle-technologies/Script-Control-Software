@@ -126,7 +126,7 @@ test("production reports emit strips, sequential one-lines, and DOOD-like cast d
   assert.equal(reports.sceneStrips[0].sceneNumber, "10A");
   assert.equal(reports.sceneStrips[3].omitted, true);
   assert.deepEqual(reports.oneLineSchedule.map((row) => row.day), [1, 2, 3]);
-  assert.match(reports.oneLineSchedule[0].line, /^10A INT\. HOUSE - DAY — MARA — 1\/8$/);
+  assert.match(reports.oneLineSchedule[0].line, /^10A INT\. HOUSE - DAY \| MARA \| 1\/8$/);
   assert.equal(reports.castDays.some((cast) => cast.character === "ELI"), false);
   assert.deepEqual(reports.castDays.find((cast) => cast.character === "MARA")?.days.map((day) => day.status), ["SW", "W", "WF"]);
   assert.deepEqual(reports.castDays.find((cast) => cast.character === "JUNE")?.days, [{ day: 2, status: "SWF", sceneNumbers: ["2"] }]);

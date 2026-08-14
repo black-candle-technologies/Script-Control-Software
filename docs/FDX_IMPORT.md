@@ -4,6 +4,8 @@ Rust parses local FDX XML into typed blocks, styled text runs, scenes, cast, loc
 
 Imported documents are editable. Unchanged styled runs retain style and revision attributes; if edited paragraph text no longer matches its imported runs, `toFdxWithWarnings` reports the plain-text fallback. Invalid XML characters are replaced and unsafe attribute names are omitted with warnings so the result remains valid XML. SCS workspace data and scene notes stay outside the FDX payload. The linked source is watched; external changes require an explicit re-import that preserves SCS metadata.
 
+Import warnings with a source paragraph are clickable and focus the affected screenplay block.
+
 ## Linked-file and companion workflow
 
 Choose the **Companion** workspace to use SCS beside Final Draft or another application registered for `.fdx` files. Choose a watch folder, optionally include subfolders, and link any discovered screenplay. SCS scans that explicit folder every five seconds without following symbolic links. It never rewrites a watched FDX automatically.

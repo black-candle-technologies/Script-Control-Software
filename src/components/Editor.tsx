@@ -186,11 +186,12 @@ export default function Editor({
   const suggestionsFor = (block: ScreenplayBlock): SuggestionSet | null => {
     const cycle = tabCompletion.current;
     if (cycle?.blockId === block.id && cycle.kind === block.type && cycle.renderedText === block.text) {
+      if (cycle.stage === "separator") return null;
       return { kind: cycle.kind, stage: cycle.stage, base: cycle.base, candidates: cycle.candidates };
     }
     if (block.type === "scene_heading") {
       const completion = sceneHeadingCompletion(blocks, block.id, block.text);
-      return completion ? { kind: "scene_heading", ...completion } : null;
+      return completion && completion.stage !== "separator" ? { kind: "scene_heading", ...completion } : null;
     }
     if (block.type === "character") {
       const typed = block.text.trim().toUpperCase();
@@ -283,10 +284,11 @@ export default function Editor({
 
     const suggestions = suggestionsFor(block);
     const selected = menuSelection?.blockId === block.id ? menuSelection.index : null;
-    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && suggestions?.candidates.length) {
+    if (["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"].includes(e.key) && suggestions?.candidates.length) {
       e.preventDefault();
-      const direction = e.key === "ArrowDown" ? 1 : -1;
-      const start = e.key === "ArrowDown" ? 0 : suggestions.candidates.length - 1;
+      const forward = e.key === "ArrowDown" || e.key === "ArrowRight";
+      const direction = forward ? 1 : -1;
+      const start = forward ? 0 : suggestions.candidates.length - 1;
       setMenuSelection({
         blockId: block.id,
         index: selected === null
@@ -310,7 +312,7 @@ export default function Editor({
       return;
     }
 
-    // Ctrl/Cmd+1..8 — set the element type directly.
+    // Ctrl/Cmd+1..8: set the element type directly.
     if ((e.ctrlKey || e.metaKey) && e.key >= "1" && e.key <= "8") {
       e.preventDefault();
       if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
@@ -341,7 +343,7 @@ export default function Editor({
         }
         const text = completion.base + completion.candidates[completion.index];
         completion.renderedText = text;
-        tabCompletion.current = completion;
+        tabCompletion.current = completion.stage === "separator" ? null : completion;
         pendingFocus.current = { id: block.id, pos: text.length };
         update(index, { text });
         return;

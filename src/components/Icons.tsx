@@ -1,5 +1,5 @@
 /**
- * SCS icon set — one consistent family of 16px stroke icons drawn inline so no
+ * SCS icon set: one consistent family of 16px stroke icons drawn inline so no
  * icon dependency is needed. All icons inherit currentColor and pair with text
  * labels; none is expected to communicate alone.
  */

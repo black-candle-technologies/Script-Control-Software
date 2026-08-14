@@ -323,7 +323,7 @@ function xmlText(value: string, warn: (message: string) => void, context: string
 
 export function breakdownMarkdown(title: string, breakdown: Breakdown): string {
   const categories = Object.entries(breakdown.categories).filter(([, count]) => count).map(([name, count]) => `- ${name}: ${count}`).join("\n") || "- None detected";
-  return `# ${title} — Breakdown\n\n- Scenes: ${breakdown.scenes}\n- Estimated pages: ${breakdown.pages}\n- Words: ${breakdown.words}\n- Dialogue words: ${breakdown.dialogueWords}\n- Characters: ${breakdown.characters}\n- Locations: ${breakdown.locations}\n- Night scenes: ${breakdown.nightScenes}\n\n## Production categories\n\n${categories}\n`;
+  return `# ${title}: Breakdown\n\n- Scenes: ${breakdown.scenes}\n- Estimated pages: ${breakdown.pages}\n- Words: ${breakdown.words}\n- Dialogue words: ${breakdown.dialogueWords}\n- Characters: ${breakdown.characters}\n- Locations: ${breakdown.locations}\n- Night scenes: ${breakdown.nightScenes}\n\n## Production categories\n\n${categories}\n`;
 }
 
 export function breakdownCsv(breakdown: Breakdown): string {

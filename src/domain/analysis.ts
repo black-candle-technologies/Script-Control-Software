@@ -1231,8 +1231,8 @@ export function analysisToCsv(analysis: ScriptAnalysis, section: AnalysisCsvSect
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
-const markdownCell = (value: unknown) => String(value ?? "—").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
-const markdownList = (values: readonly unknown[]) => values.length ? values.map(markdownCell).join(", ") : "—";
+const markdownCell = (value: unknown) => String(value ?? "-").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+const markdownList = (values: readonly unknown[]) => values.length ? values.map(markdownCell).join(", ") : "-";
 
 function markdownTable(headers: string[], rows: unknown[][], empty = "No entries."): string {
   if (!rows.length) return empty;
@@ -1241,8 +1241,8 @@ function markdownTable(headers: string[], rows: unknown[][], empty = "No entries
 
 export function analysisToMarkdown(analysis: ScriptAnalysis): string {
   const sections = [
-    `# ${analysis.title} — Analysis`,
-    `## Overview\n\n${analysis.episode.summary}\n\n- Estimated pages / runtime: ${analysis.pageEstimate}\n- Words: ${analysis.wordCount} (${analysis.dialogueWords} dialogue)\n- Dialogue density: ${analysis.dialogueDensity}\n- Acts / sequences / beats: ${analysis.episode.actCount} / ${analysis.episode.sequenceCount} / ${analysis.episode.beatCount}\n- Characters / locations: ${analysis.episode.characterCount} / ${analysis.episode.locationCount}\n- First / last scene: ${analysis.episode.firstScene ?? "—"} / ${analysis.episode.lastScene ?? "—"}`,
+    `# ${analysis.title}: Analysis`,
+    `## Overview\n\n${analysis.episode.summary}\n\n- Estimated pages / runtime: ${analysis.pageEstimate}\n- Words: ${analysis.wordCount} (${analysis.dialogueWords} dialogue)\n- Dialogue density: ${analysis.dialogueDensity}\n- Acts / sequences / beats: ${analysis.episode.actCount} / ${analysis.episode.sequenceCount} / ${analysis.episode.beatCount}\n- Characters / locations: ${analysis.episode.characterCount} / ${analysis.episode.locationCount}\n- First / last scene: ${analysis.episode.firstScene ?? "-"} / ${analysis.episode.lastScene ?? "-"}`,
     `## Scenes\n\n${markdownTable(
       ["#", "Production #", "ID", "Heading", "INT/EXT", "Location", "Time", "Blocks", "Words", "Dialogue words", "Density", "Eighths", "Pages", "Complexity", "Characters", "Objects"],
       analysis.scenes.map((scene) => [scene.number, scene.sceneNumber, scene.id, scene.heading, scene.interiorExterior, scene.location, scene.timeOfDay, `${scene.blockStart}-${scene.blockEnd} (${scene.blockCount})`, scene.wordCount, scene.dialogueWords, scene.dialogueDensity, scene.estimatedEighths, scene.estimatedPages, scene.complexityScore, markdownList(scene.characters), markdownList(scene.objects)]),

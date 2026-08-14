@@ -4,7 +4,7 @@
  * A future SCS compiler will scan the screenplay and surface the entities moving
  * through the story: characters, props/objects, locations and recurring motifs.
  * Recognition is deterministic (no AI required) and always keeps the writer in
- * control — every detection is a *candidate* until confirmed.
+ * control: every detection is a *candidate* until confirmed.
  *
  * Phase 0 models the shapes only; no recognition logic exists yet.
  * See also: docs/DOMAIN_MODELS.md.

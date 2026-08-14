@@ -1,5 +1,5 @@
 /**
- * Scene navigator — the structural spine of the Write workspace.
+ * Scene navigator: the structural spine of the Write workspace.
  * Shows the real hierarchy (Act → Sequence → Scene → Beat) instead of a flat
  * list, keeps the default row restrained, and reveals beats for the active
  * scene only.

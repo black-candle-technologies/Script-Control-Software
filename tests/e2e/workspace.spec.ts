@@ -141,12 +141,19 @@ test("scene heading menus support mouse and arrow selection with staged advancem
   menu = page.getByRole("listbox", { name: "Scene heading suggestions" });
   await menu.getByRole("option", { name: "KITCHEN" }).click();
   await expect(nextHeading).toHaveValue("EXT. KITCHEN ");
-  await menu.getByRole("option", { name: "-", exact: true }).click();
+  await expect(menu).toHaveCount(0);
+  await nextHeading.press("Tab");
   await expect(nextHeading).toHaveValue("EXT. KITCHEN - ");
+  menu = page.getByRole("listbox", { name: "Scene heading suggestions" });
+  await expect(menu.getByRole("option")).toHaveText(["DAY", "NIGHT", "CONTINUOUS", "DAWN"]);
 
-  await nextHeading.press("ArrowDown");
-  await nextHeading.press("ArrowDown");
+  await nextHeading.press("ArrowRight");
+  await expect(menu.getByRole("option", { name: "DAY" })).toHaveAttribute("aria-selected", "true");
+  await nextHeading.press("ArrowRight");
   await expect(menu.getByRole("option", { name: "NIGHT" })).toHaveAttribute("aria-selected", "true");
+  await nextHeading.press("ArrowLeft");
+  await expect(menu.getByRole("option", { name: "DAY" })).toHaveAttribute("aria-selected", "true");
+  await nextHeading.press("ArrowRight");
   await nextHeading.press("Enter");
   await expect(nextHeading).toHaveValue("EXT. KITCHEN - NIGHT");
   await expect(page.locator("textarea.blk-action").first()).toBeFocused();
@@ -233,7 +240,10 @@ test("character suggestions support arrows, Enter, Tab selection, and Tab cyclin
   await expect(character).toHaveValue("DELL");
 
   await character.fill("");
-  await character.press("ArrowDown");
+  await character.press("ArrowLeft");
+  await expect(menu.getByRole("option", { name: "DELL" })).toHaveAttribute("aria-selected", "true");
+  await character.press("ArrowRight");
+  await expect(menu.getByRole("option", { name: "MARA" })).toHaveAttribute("aria-selected", "true");
   await character.press("Tab");
   await expect(character).toHaveValue("MARA");
 
@@ -323,6 +333,37 @@ test("edits survive local recovery and reopen from the launcher", async ({ page 
   await expect(page.locator("textarea.blk-action").first()).toHaveValue("Recovered across a full reload.");
 });
 
+test("import warnings jump to the affected screenplay block", async ({ page }) => {
+  await page.getByRole("button", { name: "New Feature Screenplay" }).click();
+  const heading = page.locator("textarea.blk").first();
+  await heading.fill("INT. TEST ROOM - DAY");
+  await heading.press("End");
+  await heading.press("Enter");
+  const action = page.locator("textarea.blk-action").first();
+  await action.fill("Warning target line.");
+
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("Warning target line.");
+  await page.evaluate(() => {
+    const key = "scs.project-session.v3";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    session.documents[0].warnings = [{
+      code: "ImportedStyle",
+      message: "Imported formatting was preserved.",
+      blockIndex: 1,
+      severity: "warning",
+      dataPreserved: true,
+    }];
+    localStorage.setItem(key, JSON.stringify(session));
+  });
+
+  await page.reload();
+  await page.locator(".launcher-recent").click();
+  await page.getByText("1 import warning: source data was preserved where possible").click();
+  await page.getByRole("button", { name: "ImportedStyle: Imported formatting was preserved." }).click();
+  await expect(action).toBeFocused();
+  await expect(action).toHaveValue("Warning target line.");
+});
+
 test("panels collapse, reopen, and focus mode strips the chrome", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
 
@@ -342,6 +383,35 @@ test("panels collapse, reopen, and focus mode strips the chrome", async ({ page 
   await expect(page.locator(".page").first()).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator(".titlebar")).toBeVisible();
+});
+
+test("resizing either side panel preserves the script scroll position", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  const editor = page.locator(".editor-scroll");
+
+  for (const resize of [
+    { label: "Resize scene navigator", key: "ArrowRight", delta: 36 },
+    { label: "Resize inspector", key: "ArrowLeft", delta: -36 },
+  ]) {
+    const handle = page.getByRole("separator", { name: resize.label });
+    await handle.focus();
+    const before = await editor.evaluate((element) => {
+      element.scrollTop = Math.min(360, element.scrollHeight - element.clientHeight);
+      return element.scrollTop;
+    });
+    expect(before).toBeGreaterThan(0);
+
+    await handle.press(resize.key);
+    await expect.poll(() => editor.evaluate((element) => element.scrollTop)).toBe(before);
+
+    const box = await handle.boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + box!.width / 2 + resize.delta, box!.y + box!.height / 2, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(() => editor.evaluate((element) => element.scrollTop)).toBe(before);
+  }
 });
 
 test("the scene navigator jumps to the selected scene", async ({ page }) => {

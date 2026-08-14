@@ -2,7 +2,7 @@ import type { CoverageHook, EntityOverride } from "./analysis.ts";
 import type { PageLock, RevisionSet } from "./revisionProduction.ts";
 
 /**
- * The screenplay document model — the heart of the writing workspace.
+ * The screenplay document model: the heart of the writing workspace.
  *
  * A screenplay is a flat list of typed blocks (scene headings, action,
  * character cues, dialogue, ...). Scenes, characters and locations are always
@@ -242,7 +242,7 @@ export const elementLabels: Record<ScreenplayElementType, string> = {
 };
 
 /**
- * What Enter creates after each element — the classic screenwriting flow:
+ * What Enter creates after each element: the classic screenwriting flow:
  * heading → action, character → dialogue, dialogue → character (for quick
  * back-and-forth), transition → new scene.
  */
@@ -587,7 +587,7 @@ const LINE_WIDTH: Record<ScreenplayElementType, number> = {
 
 /**
  * Rough page estimate: sum wrapped lines plus inter-block spacing at ~55 lines
- * per page. Not pagination — just an honest ballpark for the status bar.
+ * per page. Not pagination, just an honest ballpark for the status bar.
  */
 export function estimatePages(blocks: ScreenplayBlock[]): number {
   let lines = 0;

@@ -23,7 +23,7 @@ Configurable actions also include the inspector toggle and previous/next episode
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo (also on the writing toolbar) |
 | `Backspace` at start | Merge into the previous block |
 | `Delete` at end | Merge the next block in |
-| `↑` / `↓` | Select the previous/next visible scene-heading or character suggestion; otherwise move the caret across blocks at a block edge |
+| Arrow keys | Left/Up select the previous visible suggestion and Right/Down select the next; without suggestions, Up/Down move the caret across blocks at a block edge |
 
 ## Typing recognition
 

@@ -12,7 +12,7 @@
 
 export type ProjectKind = "feature" | "show";
 
-/** Portable project metadata — the contents of `scs.project.json`. */
+/** Portable project metadata: the contents of `scs.project.json`. */
 export interface ProjectMeta {
   /** Schema version of the project file, so the format can evolve safely. */
   formatVersion: number;

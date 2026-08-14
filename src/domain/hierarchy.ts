@@ -31,7 +31,7 @@ export const coreStructure: HierarchyLevel[] = [
   {
     id: "act",
     label: "Act",
-    description: "A major dramatic movement of the story — the broadest structural unit.",
+    description: "A major dramatic movement of the story, the broadest structural unit.",
     scope: "shared",
   },
   {
@@ -43,7 +43,7 @@ export const coreStructure: HierarchyLevel[] = [
   {
     id: "scene",
     label: "Scene",
-    description: "A continuous unit of action in one place and time — the spine of the script.",
+    description: "A continuous unit of action in one place and time, the spine of the script.",
     scope: "shared",
   },
   {
@@ -59,7 +59,7 @@ export const featureHierarchy: HierarchyLevel[] = [
   {
     id: "project",
     label: "Project",
-    description: "The feature film as a whole — a single screenplay and its development workspace.",
+    description: "The feature film as a whole: a single screenplay and its development workspace.",
     scope: "feature",
   },
   ...coreStructure,

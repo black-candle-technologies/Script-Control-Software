@@ -163,6 +163,12 @@ interface UiPrefs {
   zoom: number;
 }
 
+interface EditorScrollSnapshot {
+  element: HTMLElement | null;
+  top: number;
+  left: number;
+}
+
 const PREFS_KEY = "scs.ui.v1";
 const DEFAULT_PREFS: UiPrefs = { navOpen: true, inspOpen: true, navWidth: 264, inspWidth: 320, zoom: 1 };
 
@@ -215,7 +221,8 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const focusNonce = useRef(0);
   const editorHistoryRef = useRef<{ undo: () => void; redo: () => void } | null>(null);
   const editorHistoryStore = useRef(new Map<string, EditorHistory>());
-  const paneDragRef = useRef<{ pointerId: number; pane: "nav" | "insp"; startX: number; startWidth: number } | null>(null);
+  const paneDragRef = useRef<{ pointerId: number; pane: "nav" | "insp"; startX: number; startWidth: number; scroll: EditorScrollSnapshot } | null>(null);
+  const scrollRestoreFrame = useRef<number | null>(null);
   const sessionRef = useRef(session);
   const sourceRecoveryRef = useRef({ mode: editorMode, sourceText, document: doc });
   sourceRecoveryRef.current = { mode: editorMode, sourceText, document: doc };
@@ -228,6 +235,23 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const isTelevision = session.projectType === "television" || episodeDocs.length > 1;
 
   const setPref = <K extends keyof UiPrefs>(key: K, value: UiPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
+  const captureEditorScroll = (): EditorScrollSnapshot => {
+    const element = globalThis.document.querySelector<HTMLElement>(".editor-scroll");
+    return { element, top: element?.scrollTop ?? 0, left: element?.scrollLeft ?? 0 };
+  };
+  const restoreEditorScroll = (snapshot: EditorScrollSnapshot) => {
+    if (!snapshot.element) return;
+    if (scrollRestoreFrame.current !== null) window.cancelAnimationFrame(scrollRestoreFrame.current);
+    scrollRestoreFrame.current = window.requestAnimationFrame(() => {
+      scrollRestoreFrame.current = null;
+      if (!snapshot.element?.isConnected) return;
+      snapshot.element.scrollTop = snapshot.top;
+      snapshot.element.scrollLeft = snapshot.left;
+    });
+  };
+  useEffect(() => () => {
+    if (scrollRestoreFrame.current !== null) window.cancelAnimationFrame(scrollRestoreFrame.current);
+  }, []);
   useEffect(() => {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
@@ -420,6 +444,20 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const jumpToScene = (sceneId: string) => {
     const imported = doc.scenes?.find((scene) => scene.id === sceneId);
     setFocusRequest({ id: imported ? doc.blocks[imported.blockStart].id : sceneId, nonce: ++focusNonce.current });
+  };
+
+  const jumpToImportWarning = (blockIndex: number) => {
+    let targetDocument = doc;
+    if (editorMode === "source") {
+      const reconciled = reconcileImportedDocument(session, doc.id!, parseFountain(sourceText));
+      targetDocument = reconciled.documents.find((document) => document.id === doc.id) ?? doc;
+      setSession(reconciled);
+      setEditorMode("formatted");
+      setSourceText("");
+    }
+    const target = targetDocument.blocks[blockIndex];
+    if (!target) return;
+    setFocusRequest({ id: target.id, nonce: ++focusNonce.current });
   };
 
   const setSceneNumber = (sceneId: string, number: string) => {
@@ -1401,7 +1439,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       return <InformationReferencePanel label={label} subtitle="Series plot threads" body="Persistent A/B/C story coverage across every episode." items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId)} />;
     }
     if (kind === "timeline") {
-      const items: ReferenceItem[] = session.workspace.series.continuity.filter((record) => record.kind === "timeline").slice().sort((left, right) => (left.timelineOrder ?? Number.MAX_SAFE_INTEGER) - (right.timelineOrder ?? Number.MAX_SAFE_INTEGER) || (left.timelineDate ?? "").localeCompare(right.timelineDate ?? "")).map((record) => ({ id: record.id, title: `${record.timelineOrder ?? "—"} · ${record.title}`, meta: record.timelineDate || "Relative story order", detail: record.detail, documentId: record.episodeIds[0] }));
+      const items: ReferenceItem[] = session.workspace.series.continuity.filter((record) => record.kind === "timeline").slice().sort((left, right) => (left.timelineOrder ?? Number.MAX_SAFE_INTEGER) - (right.timelineOrder ?? Number.MAX_SAFE_INTEGER) || (left.timelineDate ?? "").localeCompare(right.timelineDate ?? "")).map((record) => ({ id: record.id, title: `${record.timelineOrder ?? "-"} · ${record.title}`, meta: record.timelineDate || "Relative story order", detail: record.detail, documentId: record.episodeIds[0] }));
       return <InformationReferencePanel label={label} subtitle="Timeline continuity" body="Story chronology and dated continuity records." items={items} onOpen={(item) => item.documentId && openCollaborationTarget(item.documentId)} />;
     }
     if (kind === "character" || kind === "object" || kind === "location") {
@@ -1436,21 +1474,35 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   };
 
   const startPaneResize = (event: ReactPointerEvent<HTMLDivElement>, pane: "nav" | "insp") => {
-    paneDragRef.current = { pointerId: event.pointerId, pane, startX: event.clientX, startWidth: pane === "nav" ? prefs.navWidth : prefs.inspWidth };
+    paneDragRef.current = { pointerId: event.pointerId, pane, startX: event.clientX, startWidth: pane === "nav" ? prefs.navWidth : prefs.inspWidth, scroll: captureEditorScroll() };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   };
   const movePaneResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = paneDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
     const delta = event.clientX - drag.startX;
     if (drag.pane === "nav") setPref("navWidth", clamp(drag.startWidth + delta, 200, 460));
     else setPref("inspWidth", clamp(drag.startWidth - delta, 260, 560));
+    restoreEditorScroll(drag.scroll);
   };
   const stopPaneResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (paneDragRef.current?.pointerId !== event.pointerId) return;
+    restoreEditorScroll(paneDragRef.current.scroll);
     paneDragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const resizePaneWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>, pane: "nav" | "insp") => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const scroll = captureEditorScroll();
+    if (pane === "nav") {
+      setPref("navWidth", clamp(prefs.navWidth + (event.key === "ArrowLeft" ? -16 : 16), 200, 460));
+    } else {
+      setPref("inspWidth", clamp(prefs.inspWidth + (event.key === "ArrowRight" ? -16 : 16), 260, 560));
+    }
+    restoreEditorScroll(scroll);
   };
 
   const projectMenu: MenuEntry[] = [
@@ -1484,7 +1536,11 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     {doc.source?.type === "fdx" && <div className="notice notice-linked">{doc.source.path ? "Linked FDX · edits stay in SCS until exported." : "Imported FDX · choose its watch folder on this computer to relink companion updates."} <span>{doc.source.fileName}</span></div>}
     {externalChanged && <div className="notice notice-warning" role="alert">{externalConflict ? "Both SCS and the linked FDX changed. Choose which script text to keep; SCS snapshots the current draft first." : "The linked FDX changed outside SCS."} <button className="btn" disabled={!canEdit} onClick={reloadLinkedFdx}>{externalConflict ? "Use external FDX" : "Re-import and preserve metadata"}</button>{externalConflict && <button className="btn btn-ghost" disabled={!canEdit} onClick={keepLocalAfterConflict}>Keep SCS draft</button>}</div>}
     {operationMessage && <div className="notice notice-status" role="status"><span>{operationMessage}</span><button className="notice-dismiss" aria-label="Dismiss message" onClick={() => setOperationMessage(null)}><Icon name="close" size={12} /></button></div>}
-    {!!doc.warnings?.length && <details className="notice notice-details"><summary>{doc.warnings.length} import warning{doc.warnings.length === 1 ? "" : "s"} — source data was preserved where possible</summary><ul>{doc.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><strong>{warning.code}</strong>: {warning.message}</li>)}</ul></details>}
+    {!!doc.warnings?.length && <details className="notice notice-details"><summary>{doc.warnings.length} import warning{doc.warnings.length === 1 ? "" : "s"}: source data was preserved where possible</summary><ul>{doc.warnings.map((warning, index) => {
+      const canJump = warning.blockIndex !== undefined && Boolean(doc.blocks[warning.blockIndex]);
+      const content = <><strong>{warning.code}</strong>: {warning.message}</>;
+      return <li key={`${warning.code}-${index}`}>{canJump ? <button type="button" className="warning-link" onClick={() => jumpToImportWarning(warning.blockIndex!)}>{content}</button> : content}</li>;
+    })}</ul></details>}
   </>;
 
   const writeView = (
@@ -1492,7 +1548,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       <div className="write-toolbar" role="toolbar" aria-label="Writing tools">
         <button className="tool-btn icon-only" aria-label={prefs.navOpen ? "Hide scene navigator" : "Show scene navigator"} aria-pressed={prefs.navOpen} title="Scene navigator" onClick={() => setPref("navOpen", !prefs.navOpen)}><Icon name="panel-left" /></button>
         <select className="input element-select" aria-label="Current element" value={activeBlock?.type ?? "action"} disabled={!activeBlock || editorMode === "source" || doc.readOnly || !canEdit} onChange={(event) => setActiveType(event.target.value as ScreenplayElementType)}>
-          {ELEMENT_TYPES.map((type, index) => <option key={type} value={type}>{elementLabels[type]} — Ctrl+{index + 1}</option>)}
+          {ELEMENT_TYPES.map((type, index) => <option key={type} value={type}>{elementLabels[type]} | Ctrl+{index + 1}</option>)}
         </select>
         <div className="tool-group">
           <button className="tool-btn icon-only" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={doc.readOnly || !canEdit || editorMode === "source"} onClick={() => editorHistoryRef.current?.undo()}><Icon name="undo" /></button>
@@ -1536,7 +1592,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
           </aside>
           <div className="pane-resize" role="separator" aria-orientation="vertical" aria-label="Resize scene navigator" tabIndex={0}
             onPointerDown={(event) => startPaneResize(event, "nav")} onPointerMove={movePaneResize} onPointerUp={stopPaneResize} onPointerCancel={stopPaneResize}
-            onKeyDown={(event) => { if (event.key === "ArrowLeft") setPref("navWidth", clamp(prefs.navWidth - 16, 200, 460)); if (event.key === "ArrowRight") setPref("navWidth", clamp(prefs.navWidth + 16, 200, 460)); }} />
+            onKeyDown={(event) => resizePaneWithKeyboard(event, "nav")} />
         </>}
         <div className="canvas" style={{ "--canvas-zoom": prefs.zoom } as React.CSSProperties}>
           <fieldset className="canvas-fieldset" disabled={!canEdit}>
@@ -1548,7 +1604,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
         {prefs.inspOpen && !focusMode && <>
           <div className="pane-resize" role="separator" aria-orientation="vertical" aria-label="Resize inspector" tabIndex={0}
             onPointerDown={(event) => startPaneResize(event, "insp")} onPointerMove={movePaneResize} onPointerUp={stopPaneResize} onPointerCancel={stopPaneResize}
-            onKeyDown={(event) => { if (event.key === "ArrowRight") setPref("inspWidth", clamp(prefs.inspWidth - 16, 260, 560)); if (event.key === "ArrowLeft") setPref("inspWidth", clamp(prefs.inspWidth + 16, 260, 560)); }} />
+            onKeyDown={(event) => resizePaneWithKeyboard(event, "insp")} />
           <aside className="pane pane-insp" style={{ width: prefs.inspWidth }} aria-label="Inspector">
             <div className="pane-tabs" role="tablist" aria-label="Inspector panels">
               <button role="tab" aria-selected={inspectorTab === "context"} className={inspectorTab === "context" ? "active" : ""} onClick={() => setInspectorTab("context")}>Inspector</button>
@@ -1669,12 +1725,12 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       <button className="tool-btn icon-only" aria-label="Previous scene" disabled={!previousScene} onClick={() => previousScene && jumpToScene(previousScene.id)}><Icon name="back" size={12} /></button>
       <span className="focus-pill-scene">{activeScene ? `${activeScene.sceneNumber ?? activeScene.number} · ${activeScene.heading}` : "No scene"}</span>
       <button className="tool-btn icon-only" aria-label="Next scene" disabled={!nextScene} onClick={() => nextScene && jumpToScene(nextScene.id)}><Icon name="chevron-right" size={12} /></button>
-      <span className="focus-pill-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span>
+      <span className="focus-pill-element">{activeBlock ? elementLabels[activeBlock.type] : "-"}</span>
       <button className="tool-btn" onClick={() => setFocusMode(false)}>Exit Focus · Esc</button>
     </div>}
 
     <footer className="statusbar">
-      <span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "—"}</span>
+      <span className="status-element">{activeBlock ? elementLabels[activeBlock.type] : "-"}</span>
       <span>{scenes.length} scene{scenes.length === 1 ? "" : "s"}</span>
       <span>~{pages} page{pages === 1 ? "" : "s"}</span>
       <span>{words} words</span>

@@ -21,7 +21,7 @@ export const workspacePanels: WorkspacePanel[] = [
   {
     id: "beat-board",
     title: "Beat Board",
-    summary: "Hierarchical beats inside scenes, sequences and acts — not a flat board.",
+    summary: "Hierarchical beats inside scenes, sequences and acts, not a flat board.",
     status: "active",
   },
   {
