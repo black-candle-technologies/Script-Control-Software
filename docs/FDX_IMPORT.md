@@ -17,6 +17,8 @@ On re-import, SCS reuses matching block and scene identities and preserves proje
 - **Use external FDX** first creates a protected SCS draft version, then imports the external script text.
 - **Keep SCS draft** creates a protected version and acknowledges the current external timestamp without replacing SCS text.
 
+Portable projects retain the last imported screenplay fingerprint while omitting machine-local paths. When a matching watch-folder file is selected again, SCS compares the retained baseline with both copies before relinking: local-only edits remain untouched, external-only edits can be imported, and two-sided edits enter the conflict workflow. Switching an imported document through Fountain Source without editing it does not re-parse the screenplay, so FDX runs, paragraph attributes, scene numbers, and extended title-page data remain intact. Actual Fountain edits preserve the external baseline and retain opaque imported metadata on matching paragraphs where it is still valid.
+
 Exports remain deliberate. After reconciling changes, export a new FDX when it is time to hand the SCS draft back to the external editor.
 
 Watch-folder access is local and user-authorized. Missing or unreadable folders report an error; non-FDX files and symbolic links are ignored. A shared Dropbox, OneDrive, or network folder can be watched, but SCS does not provide provider identity or locking at the FDX layer.

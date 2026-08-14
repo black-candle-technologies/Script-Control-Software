@@ -3,15 +3,17 @@ import test from "node:test";
 import {
   createProjectSession,
   documentsForPortableStorage,
+  materializeFountainSource,
   normalizeProjectSession,
   reconcileImportedDocument,
+  relinkDetachedFdxDocument,
   restoreLocalDocumentState,
   restoreLocalWorkspaceState,
   syncSeriesDocuments,
   workspaceForPortableStorage,
 } from "./projectWorkspace.ts";
-import { deriveScenes, emptyDocument } from "./screenplay.ts";
-import { parseFountain } from "./fountain.ts";
+import { deriveScenes, emptyDocument, screenplayTextFingerprint, type ScreenplayDocument } from "./screenplay.ts";
+import { parseFountain, toFountain } from "./fountain.ts";
 import { getWorkspaceLayout } from "./workspaceLayouts.ts";
 
 test("a project session gives every document stable shared-series metadata", () => {
@@ -204,6 +206,92 @@ test("session-level re-import remaps series, review, and writer-room scene targe
   assert.equal(reconciled.workspace.reviews[0].targetId, nextSceneId);
   assert.equal(reconciled.workspace.writerRoom.activeSceneId, nextSceneId);
   assert.equal(reconciled.workspace.writerRoom.tasks[0].sceneId, nextSceneId);
+});
+
+test("Fountain source materialization preserves imported metadata and the external baseline", () => {
+  const document = parseFountain("Title: Metadata\nAuthor: Writer\n\nINT. ROOM - DAY\n\nOriginal action.\n");
+  document.id = "linked";
+  document.titlePage.blocks = [{ type: "Contact", text: "writer@example.test", metadata: { Align: "Center" } }];
+  document.blocks[1] = {
+    ...document.blocks[1],
+    originalType: "Action",
+    metadata: { Id: "action-1", Alignment: "Left" },
+    textRuns: [{ text: "Original action.", bold: true, italic: false, underline: false, strikeout: false, metadata: { Style: "Bold" } }],
+  };
+  const baseline = screenplayTextFingerprint(document);
+  document.source = {
+    type: "fdx",
+    path: "C:/Writer/metadata.fdx",
+    fileName: "metadata.fdx",
+    lastImportedAt: "now",
+    lastImportedFingerprint: baseline,
+  };
+  const session = createProjectSession(document);
+  const fountain = toFountain(document);
+
+  const unchanged = materializeFountainSource(session, "linked", fountain);
+  assert.strictEqual(unchanged, session);
+  assert.deepEqual(unchanged.documents[0].titlePage.blocks, document.titlePage.blocks);
+  assert.deepEqual(unchanged.documents[0].blocks[1].textRuns, document.blocks[1].textRuns);
+
+  const edited = materializeFountainSource(session, "linked", fountain.replace("Original action.", "Locally rewritten action."));
+  const editedDocument = edited.documents[0];
+  assert.equal(editedDocument.blocks[1].text, "Locally rewritten action.");
+  assert.equal(editedDocument.blocks[1].originalType, "Action");
+  assert.deepEqual(editedDocument.blocks[1].metadata, document.blocks[1].metadata);
+  assert.equal(editedDocument.blocks[1].textRuns, undefined);
+  assert.deepEqual(editedDocument.titlePage.blocks, document.titlePage.blocks);
+  assert.equal(editedDocument.source?.lastImportedFingerprint, baseline);
+
+  const external = parseFountain("Title: Metadata\nAuthor: Writer\n\nINT. ROOM - DAY\n\nExternally rewritten action.\n");
+  external.source = { ...document.source, lastImportedAt: "later" };
+  const reimported = reconcileImportedDocument(edited, "linked", external).documents[0];
+  assert.equal(reimported.blocks[1].text, "Externally rewritten action.");
+  assert.equal(reimported.source?.lastImportedFingerprint, screenplayTextFingerprint(reimported));
+});
+
+test("detached FDX relinking preserves local edits and exposes two-sided conflicts", () => {
+  const fdxDocument = (text: string, path: string): ScreenplayDocument => {
+    const document = parseFountain(`INT. ROOM - DAY\n\n${text}\n`);
+    document.id = "linked";
+    document.source = {
+      type: "fdx",
+      path,
+      fileName: "shared.fdx",
+      lastImportedAt: "now",
+      lastImportedModifiedAt: path ? 200 : undefined,
+      lastImportedFingerprint: screenplayTextFingerprint(document),
+    };
+    return document;
+  };
+
+  const detached = fdxDocument("Original action.", "");
+  const baseline = detached.source!.lastImportedFingerprint!;
+  const localSession = createProjectSession(detached);
+  localSession.documents[0].blocks[1].text = "Local action.";
+  const unchangedExternal = fdxDocument("Original action.", "C:/Watch/shared.fdx");
+  unchangedExternal.source!.lastImportedFingerprint = baseline;
+  const relinked = relinkDetachedFdxDocument(localSession, "linked", unchangedExternal);
+  assert.equal(relinked.disposition, "relinked");
+  assert.equal(relinked.localChanged, true);
+  assert.equal(relinked.externalChanged, false);
+  assert.equal(relinked.session.documents[0].blocks[1].text, "Local action.");
+  assert.equal(relinked.session.documents[0].source?.path, "C:/Watch/shared.fdx");
+  assert.equal(relinked.session.documents[0].source?.lastImportedFingerprint, baseline);
+
+  const changedExternal = fdxDocument("External action.", "C:/Watch/shared.fdx");
+  const conflict = relinkDetachedFdxDocument(localSession, "linked", changedExternal);
+  assert.equal(conflict.disposition, "conflict");
+  assert.equal(conflict.localChanged, true);
+  assert.equal(conflict.externalChanged, true);
+  assert.equal(conflict.session.documents[0].blocks[1].text, "Local action.");
+  assert.equal(conflict.session.documents[0].source?.path, "C:/Watch/shared.fdx");
+
+  const cleanSession = createProjectSession(fdxDocument("Original action.", ""));
+  const updated = relinkDetachedFdxDocument(cleanSession, "linked", changedExternal);
+  assert.equal(updated.disposition, "updated");
+  assert.equal(updated.session.documents[0].blocks[1].text, "External action.");
+  assert.equal(updated.session.documents[0].source?.lastImportedFingerprint, screenplayTextFingerprint(updated.session.documents[0]));
 });
 
 test("legacy per-document comments surface in the project review workflow", () => {

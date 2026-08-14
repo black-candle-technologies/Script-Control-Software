@@ -39,10 +39,11 @@ import {
   moveScene,
   lockPages,
   markChangedBlocks,
+  materializeFountainSource,
   mergeSnapshots,
   mergeCollaboratorSessions,
-  parseFountain,
   reconcileImportedDocument,
+  relinkDetachedFdxDocument,
   resolveStoryStructure,
   restoreProjectSnapshot,
   restoreLocalDocumentState,
@@ -449,7 +450,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const jumpToImportWarning = (blockIndex: number) => {
     let targetDocument = doc;
     if (editorMode === "source") {
-      const reconciled = reconcileImportedDocument(session, doc.id!, parseFountain(sourceText));
+      const reconciled = materializeFountainSource(session, doc.id!, sourceText);
       targetDocument = reconciled.documents.find((document) => document.id === doc.id) ?? doc;
       setSession(reconciled);
       setEditorMode("formatted");
@@ -495,9 +496,9 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       setEditorMode("source");
       return;
     }
-    const parsed = parseFountain(sourceText);
-    setSession((current) => reconcileImportedDocument(current, doc.id!, parsed));
+    setSession((current) => materializeFountainSource(current, doc.id!, sourceText));
     setEditorMode("formatted");
+    setSourceText("");
   };
 
   const saveNow = async () => {
@@ -1006,28 +1007,42 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
         });
         setOperationMessage(`Re-imported ${file.fileName}; SCS development metadata was preserved.`);
       } else {
-        setSession((latest) => {
-          const current = materializeSourceDraft(latest, sourceRecoveryRef.current);
-          const nowLinked = current.documents.find((document) => document.source?.type === "fdx" && document.source.path === file.path);
-          if (nowLinked) {
-            const next = reconcileImportedDocument(current, nowLinked.id!, imported);
-            linkedBaselines.current.set(nowLinked.id!, screenplayTextFingerprint(next.documents.find((document) => document.id === nowLinked.id)!));
-            return next;
-          }
+        const current = materializeSourceDraft(sessionRef.current, sourceRecoveryRef.current);
+        const nowLinked = current.documents.find((document) => document.source?.type === "fdx" && document.source.path === file.path);
+        if (nowLinked) {
+          const next = reconcileImportedDocument(current, nowLinked.id!, imported);
+          const reconciled = next.documents.find((document) => document.id === nowLinked.id)!;
+          linkedBaselines.current.set(nowLinked.id!, screenplayTextFingerprint(reconciled));
+          setSession(next);
+          setOperationMessage(`Re-imported ${file.fileName}; SCS development metadata was preserved.`);
+        } else {
           const detached = current.documents.filter((document) => document.source?.type === "fdx" && !document.source.path && document.source.fileName === file.fileName);
           if (detached.length === 1) {
-            const next = reconcileImportedDocument(current, detached[0].id!, imported);
-            const reconciled = next.documents.find((document) => document.id === detached[0].id)!;
-            linkedBaselines.current.set(detached[0].id!, screenplayTextFingerprint(reconciled));
-            return { ...next, activeDocumentId: detached[0].id! };
+            const result = relinkDetachedFdxDocument(current, detached[0].id!, imported);
+            const reconciled = result.session.documents.find((document) => document.id === detached[0].id)!;
+            linkedBaselines.current.set(detached[0].id!, reconciled.source?.lastImportedFingerprint ?? screenplayTextFingerprint(reconciled));
+            setSession(result.session);
+            if (result.disposition === "conflict") {
+              setEditorMode("formatted");
+              setSourceText("");
+              setExternalConflict(true);
+              setExternalChanged(true);
+              setExternalModifiedAt(file.modifiedAt);
+              setOperationMessage("Both copies changed. Review the conflict banner before replacing script text.");
+              return;
+            }
+            setOperationMessage(result.disposition === "updated"
+              ? `Re-imported ${file.fileName}; SCS development metadata was preserved.`
+              : `Relinked ${file.fileName} without replacing the SCS draft.`);
+          } else {
+            const documents = [...current.documents, imported];
+            const projectWorkspace = structuredClone(current.workspace);
+            syncSeriesDocuments(projectWorkspace.series, documents);
+            linkedBaselines.current.set(imported.id!, imported.source?.lastImportedFingerprint ?? screenplayTextFingerprint(imported));
+            setSession({ ...current, projectType: documents.length > 1 ? "television" : current.projectType, documents, workspace: projectWorkspace, activeDocumentId: imported.id! });
+            setOperationMessage(`Linked ${file.fileName} to this project.`);
           }
-          const documents = [...current.documents, imported];
-          const projectWorkspace = structuredClone(current.workspace);
-          syncSeriesDocuments(projectWorkspace.series, documents);
-          linkedBaselines.current.set(imported.id!, imported.source?.lastImportedFingerprint ?? screenplayTextFingerprint(imported));
-          return { ...current, projectType: documents.length > 1 ? "television" : current.projectType, documents, workspace: projectWorkspace, activeDocumentId: imported.id! };
-        });
-        setOperationMessage(`Linked ${file.fileName} to this project.`);
+        }
       }
       setEditorMode("formatted");
       setSourceText("");
@@ -1813,7 +1828,7 @@ function materializeSourceDraft(
   source: { mode: "formatted" | "source"; sourceText: string; document: ScreenplayDocument },
 ): ProjectSession {
   if (source.mode !== "source" || !source.document.id) return session;
-  return reconcileImportedDocument(session, source.document.id, parseFountain(source.sourceText));
+  return materializeFountainSource(session, source.document.id, source.sourceText);
 }
 
 function versionableFingerprint(session: ProjectSession): string {

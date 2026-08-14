@@ -425,6 +425,67 @@ test("edits survive local recovery and reopen from the launcher", async ({ page 
   await expect(page.locator("textarea.blk-action").first()).toHaveValue("Recovered across a full reload.");
 });
 
+test("a no-op Fountain source toggle preserves imported FDX metadata", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("THE LONG WAY HOME");
+  await page.evaluate(() => {
+    const key = "scs.project-session.v3";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    const document = session.documents[0];
+    document.source = {
+      type: "fdx",
+      path: "C:/Writer/sample.fdx",
+      fileName: "sample.fdx",
+      lastImportedAt: "2026-08-14T00:00:00.000Z",
+      lastImportedFingerprint: "external-baseline",
+    };
+    document.titlePage.blocks = [{ type: "Contact", text: "writer@example.test", metadata: { Align: "Center" } }];
+    document.blocks[0].originalType = "Scene Heading";
+    document.blocks[0].metadata = { Id: "scene-1", Number: "1A" };
+    document.blocks[0].textRuns = [{
+      text: document.blocks[0].text,
+      bold: true,
+      italic: false,
+      underline: false,
+      strikeout: false,
+      metadata: { Style: "Bold" },
+    }];
+    localStorage.setItem(key, JSON.stringify(session));
+  });
+
+  await page.reload();
+  await page.locator(".launcher-recent").click();
+  await page.getByRole("tab", { name: "Fountain Source" }).click();
+  await page.getByRole("tab", { name: "Formatted" }).click();
+  await page.waitForTimeout(1_000);
+
+  const preserved = await page.evaluate(() => {
+    const session = JSON.parse(localStorage.getItem("scs.project-session.v3")!);
+    const document = session.documents[0];
+    return {
+      baseline: document.source.lastImportedFingerprint,
+      titleBlocks: document.titlePage.blocks,
+      originalType: document.blocks[0].originalType,
+      metadata: document.blocks[0].metadata,
+      textRuns: document.blocks[0].textRuns,
+    };
+  });
+  expect(preserved).toEqual({
+    baseline: "external-baseline",
+    titleBlocks: [{ type: "Contact", text: "writer@example.test", metadata: { Align: "Center" } }],
+    originalType: "Scene Heading",
+    metadata: { Id: "scene-1", Number: "1A" },
+    textRuns: [{
+      text: "INT. GREYHOUND BUS - NIGHT",
+      bold: true,
+      italic: false,
+      underline: false,
+      strikeout: false,
+      metadata: { Style: "Bold" },
+    }],
+  });
+});
+
 test("import warnings jump to the affected screenplay block", async ({ page }) => {
   await page.getByRole("button", { name: "New Feature Screenplay" }).click();
   const heading = page.locator("textarea.blk").first();

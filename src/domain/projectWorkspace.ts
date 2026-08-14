@@ -7,6 +7,7 @@ import {
   type ScreenplayElementType,
   type WorkspaceData,
 } from "./screenplay.ts";
+import { parseFountain, toFountain } from "./fountain.ts";
 import type { DraftSnapshot } from "./studio.ts";
 import type { SnapshotScope, VersionHistory } from "./versioning.ts";
 import { normalizeWorkspaceLayout, validateWorkspaceLayout, type WorkspaceLayout } from "./workspaceLayouts.ts";
@@ -454,11 +455,43 @@ export function reconcileImportedDocument(
   documentId: string,
   parsed: ScreenplayDocument,
 ): ProjectSession {
+  return reconcileDocument(session, documentId, parsed, true);
+}
+
+/** Reconcile an in-app Fountain edit without moving the external FDX baseline. */
+export function reconcileSourceDocument(
+  session: ProjectSession,
+  documentId: string,
+  parsed: ScreenplayDocument,
+): ProjectSession {
+  return reconcileDocument(session, documentId, parsed, false);
+}
+
+/** Materialize Fountain source only when its serialized screenplay actually changed. */
+export function materializeFountainSource(
+  session: ProjectSession,
+  documentId: string,
+  sourceText: string,
+): ProjectSession {
+  const previous = session.documents.find((document) => document.id === documentId);
+  if (!previous) throw new Error(`Screenplay document '${documentId}' no longer exists.`);
+  if (sourceText === toFountain(previous)) return session;
+  return reconcileSourceDocument(session, documentId, parseFountain(sourceText));
+}
+
+function reconcileDocument(
+  session: ProjectSession,
+  documentId: string,
+  parsed: ScreenplayDocument,
+  advanceImportedBaseline: boolean,
+): ProjectSession {
   const previous = session.documents.find((document) => document.id === documentId);
   if (!previous) throw new Error(`Screenplay document '${documentId}' no longer exists.`);
   const reconciliation = reconcileScreenplayDocument(previous, parsed);
-  let document = reconciliation.document;
-  if (document.source) {
+  let document = advanceImportedBaseline
+    ? reconciliation.document
+    : preserveSourceOpaqueMetadata(previous, reconciliation.document);
+  if (advanceImportedBaseline && document.source) {
     document = {
       ...document,
       source: { ...document.source, lastImportedFingerprint: screenplayTextFingerprint(document) },
@@ -490,6 +523,81 @@ export function reconcileImportedDocument(
     : task);
   repairCollaborationReferences(next);
   return next;
+}
+
+function preserveSourceOpaqueMetadata(previous: ScreenplayDocument, reconciled: ScreenplayDocument): ScreenplayDocument {
+  const previousById = new Map(previous.blocks.map((block) => [block.id, block]));
+  return {
+    ...reconciled,
+    titlePage: {
+      ...reconciled.titlePage,
+      ...(previous.titlePage.blocks ? { blocks: structuredClone(previous.titlePage.blocks) } : {}),
+    },
+    blocks: reconciled.blocks.map((block) => {
+      const before = previousById.get(block.id);
+      if (!before) return block;
+      return {
+        ...block,
+        ...(before.sceneId && !block.sceneId ? { sceneId: before.sceneId } : {}),
+        ...(before.originalType && !block.originalType ? { originalType: before.originalType } : {}),
+        ...(before.metadata ? { metadata: { ...structuredClone(before.metadata), ...block.metadata } } : {}),
+        ...(before.text === block.text && before.textRuns ? { textRuns: structuredClone(before.textRuns) } : {}),
+      };
+    }),
+  };
+}
+
+export interface DetachedFdxRelinkResult {
+  session: ProjectSession;
+  disposition: "relinked" | "updated" | "conflict";
+  localChanged: boolean;
+  externalChanged: boolean;
+}
+
+/** Safely reconnect a portable FDX document to a machine-local file. */
+export function relinkDetachedFdxDocument(
+  session: ProjectSession,
+  documentId: string,
+  imported: ScreenplayDocument,
+): DetachedFdxRelinkResult {
+  const previous = session.documents.find((document) => document.id === documentId);
+  if (!previous?.source || previous.source.type !== "fdx" || previous.source.path) {
+    throw new Error(`Screenplay document '${documentId}' is not a detached FDX document.`);
+  }
+  if (!imported.source || imported.source.type !== "fdx" || !imported.source.path) {
+    throw new Error("The selected file is not a linked FDX document.");
+  }
+
+  const baseline = previous.source.lastImportedFingerprint;
+  const localFingerprint = screenplayTextFingerprint(previous);
+  const externalFingerprint = imported.source.lastImportedFingerprint ?? screenplayTextFingerprint(imported);
+  const fingerprintsConverged = localFingerprint === externalFingerprint;
+  const localChanged = baseline ? localFingerprint !== baseline : !fingerprintsConverged;
+  const externalChanged = baseline ? externalFingerprint !== baseline : !fingerprintsConverged;
+
+  if (!localChanged && externalChanged) {
+    const updated = reconcileImportedDocument(session, documentId, imported);
+    return { session: { ...updated, activeDocumentId: documentId }, disposition: "updated", localChanged, externalChanged };
+  }
+
+  const linkedFingerprint = fingerprintsConverged ? externalFingerprint : baseline ?? externalFingerprint;
+  const next = structuredClone(session);
+  next.activeDocumentId = documentId;
+  next.documents = next.documents.map((document) => document.id === documentId ? {
+    ...document,
+    source: {
+      ...document.source!,
+      ...imported.source!,
+      lastImportedFingerprint: linkedFingerprint,
+    },
+  } : document);
+  const conflict = localChanged && externalChanged && !fingerprintsConverged;
+  return {
+    session: next,
+    disposition: conflict ? "conflict" : "relinked",
+    localChanged,
+    externalChanged,
+  };
 }
 
 function remapIds(ids: readonly string[], remap: ReadonlyMap<string, string>): string[] {
