@@ -1564,7 +1564,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     onApplyStoryStructure: (nextStructure: typeof customStructure) => {
       const blocks = applyStorySceneOrder(doc.blocks, nextStructure.sceneOrder);
       setDoc({ ...doc, blocks, scenes: undefined, characters: undefined, locations: undefined, workspace: { ...workspace, storyStructure: nextStructure } });
-      setOperationMessage("Applied the visual board scene order to the screenplay.");
+      setOperationMessage("The draft now matches the outline scene order.");
     },
     onJumpToScene: (sceneId: string) => {
       setMode("write");

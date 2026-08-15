@@ -177,7 +177,7 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
   const [deleteAllArmed, setDeleteAllArmed] = useState(false);
   const view = workspace.storyBoardView ?? "scene";
   const save = (next: CustomStoryStructure) => onWorkspace({ storyStructure: next });
-  const apply = (next: CustomStoryStructure) => onApplyStoryStructure(next);
+  const applyOutlineToDraft = () => onApplyStoryStructure(customStructure);
   const updateAct = (id: string, title: string) => save({
     ...customStructure,
     acts: customStructure.acts.map((act) => act.id === id ? { ...act, title } : act),
@@ -208,17 +208,17 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
     ...customStructure,
     sequences: customStructure.sequences.map((sequence) => sequence.id === id ? { ...sequence, ...patch } : sequence),
   });
-  const assignScene = (sequenceId: string, sceneId: string, applyOrder = false) => {
+  const assignScene = (sequenceId: string, sceneId: string) => {
     const next = {
-    ...customStructure,
-    sequences: customStructure.sequences.map((sequence) => ({
-      ...sequence,
-      sceneIds: sequence.id === sequenceId
-        ? [...sequence.sceneIds.filter((id) => id !== sceneId), sceneId]
-        : sequence.sceneIds.filter((id) => id !== sceneId),
-    })),
+      ...customStructure,
+      sequences: customStructure.sequences.map((sequence) => ({
+        ...sequence,
+        sceneIds: sequence.id === sequenceId
+          ? [...sequence.sceneIds.filter((id) => id !== sceneId), sceneId]
+          : sequence.sceneIds.filter((id) => id !== sceneId),
+      })),
     };
-    (applyOrder ? apply : save)(next);
+    save(next);
   };
   const removeScene = (sequenceId: string, sceneId: string) => save({
     ...customStructure,
@@ -233,7 +233,7 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
     const next = customStructure.sequences.filter((item) => item.id !== sequenceId);
     const insertion = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
     next.splice(insertion < 0 ? next.length : insertion, 0, { ...sequence, actId });
-    apply({ ...customStructure, sequences: next, sceneOrder: sceneOrderForSequences(customStructure, next) });
+    save({ ...customStructure, sequences: next, sceneOrder: sceneOrderForSequences(customStructure, next) });
   };
   const moveSequenceWithinAct = (sequenceId: string, direction: -1 | 1) => {
     const sequence = customStructure.sequences.find((item) => item.id === sequenceId);
@@ -264,7 +264,7 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
         })()
         : sequence.sceneIds.filter((id) => id !== sceneId),
     }));
-    apply({
+    save({
       ...customStructure,
       sceneOrder: sceneOrderForSequences(customStructure, sequences),
       sequences,
@@ -290,10 +290,17 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
     .filter((scene): scene is Scene => Boolean(scene));
   const assignedSceneIds = new Set(customStructure.sequences.flatMap((sequence) => sequence.sceneIds));
   const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
+  const draftSceneOrder = scenes.map((scene) => scene.id);
+  const outlineDiffersFromDraft = customStructure.sceneOrder.length !== draftSceneOrder.length
+    || customStructure.sceneOrder.some((sceneId, index) => sceneId !== draftSceneOrder[index]);
   const sceneReference = (scene: Scene) => scene.sceneNumber?.trim() || customStructure.sceneLabels?.[scene.id] || String(scene.number);
   const sceneBoardLabel = (scene: Scene) => {
     const reference = sceneReference(scene);
-    return `Scene ${reference}${reference === String(scene.number) ? "" : ` · now ${scene.number}`}: ${scene.heading}`;
+    const outlinePosition = customStructure.sceneOrder.indexOf(scene.id) + 1;
+    const positionContext = outlinePosition > 0 && outlinePosition !== scene.number
+      ? ` · outline ${outlinePosition}, draft ${scene.number}`
+      : "";
+    return `Scene ${reference}${positionContext}: ${scene.heading}`;
   };
   const beginDrag = (event: DragEvent<HTMLElement>, item: StoryDragItem) => {
     draggedItemRef.current = item;
@@ -366,7 +373,11 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
   };
 
   return <div className="insp-stack">
-    <Hint>Use the grip to move sequences between acts or scenes into sequences. Each scene drop updates the screenplay order.</Hint>
+    <Hint>Use the grip to organize the outline. The draft stays unchanged until you choose Make Draft Match Outline.</Hint>
+    <div className="btn-row">
+      <button className="btn" disabled={!outlineDiffersFromDraft} onClick={applyOutlineToDraft}>Make Draft Match Outline</button>
+      <span className="insp-card-meta" role="status">{outlineDiffersFromDraft ? "Outline changes are not yet in the draft." : "Draft matches outline."}</span>
+    </div>
     <div className="board-view-switch">
       {(["board", "act", "sequence", "scene", "beat", "timeline"] as StoryBoardView[]).map((name) =>
         <button key={name} className={`btn btn-ghost ${view === name ? "active" : ""}`} onClick={() => onWorkspace({ storyBoardView: name })}>{name === "board" ? "Visual Board" : name[0].toUpperCase() + name.slice(1)}</button>,
@@ -425,10 +436,10 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
       })}
     </>}
     {view === "scene" && <div className="story-card-grid">
-      {orderedScenes.map((scene, index) => <div className="insp-card" key={scene.id} draggable onDragStart={() => setDraggedItem({ kind: "scene", id: scene.id })} onDragEnd={clearDrag} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedItem?.kind === "scene" && draggedItem.id !== scene.id) apply(moveStoryScene(customStructure, draggedItem.id, index)); clearDrag(); }}>
+      {orderedScenes.map((scene, index) => <div className="insp-card" key={scene.id} draggable onDragStart={() => setDraggedItem({ kind: "scene", id: scene.id })} onDragEnd={clearDrag} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedItem?.kind === "scene" && draggedItem.id !== scene.id) save(moveStoryScene(customStructure, draggedItem.id, index)); clearDrag(); }}>
         <button className="link-btn insp-card-title" onClick={() => onJumpToScene(scene.id)}>{sceneBoardLabel(scene)}</button>
         <div className="insp-card-meta">{workspace.sceneMeta?.[scene.id]?.summary || "No summary"}</div>
-        <div className="insp-card-meta">Drag to reorder this scene in the screenplay.</div><div className="btn-row"><button className="btn btn-ghost" disabled={index === 0} onClick={() => apply(moveStoryScene(customStructure, scene.id, index - 1))}>↑</button><button className="btn btn-ghost" disabled={index === orderedScenes.length - 1} onClick={() => apply(moveStoryScene(customStructure, scene.id, index + 1))}>↓</button></div>
+        <div className="insp-card-meta">Drag to reorder this scene in the outline.</div><div className="btn-row"><button className="btn btn-ghost" disabled={index === 0} onClick={() => save(moveStoryScene(customStructure, scene.id, index - 1))}>↑</button><button className="btn btn-ghost" disabled={index === orderedScenes.length - 1} onClick={() => save(moveStoryScene(customStructure, scene.id, index + 1))}>↓</button></div>
       </div>)}
     </div>}
     {view === "beat" && <>

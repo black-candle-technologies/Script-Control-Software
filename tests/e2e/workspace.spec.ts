@@ -58,7 +58,7 @@ test("sequences stay compact and scenes can be assigned, cleared, and removed", 
   await expect(page.getByText("Unassigned scenes", { exact: true })).toBeVisible();
 });
 
-test("sequence controls apply grouped scene order and keep imported scene jumps aligned", async ({ page }) => {
+test("sequence controls defer grouped scene order until the outline is applied", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("THE LONG WAY HOME");
   await page.evaluate(() => {
@@ -90,9 +90,19 @@ test("sequence controls apply grouped scene order and keep imported scene jumps 
   await sequences.nth(0).getByRole("combobox", { name: /Add scene to/ }).selectOption({ label: "1. INT. GREYHOUND BUS - NIGHT" });
   await sequences.nth(1).getByRole("combobox", { name: /Add scene to/ }).selectOption({ label: "2. EXT. REST STOP - PARKING LOT - NIGHT" });
   await sequences.nth(1).getByRole("button", { name: "Move Sequence 2 earlier" }).click();
+  await expect(page.getByText("Outline changes are not yet in the draft.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Make Draft Match Outline" })).toBeEnabled();
 
   await page.getByRole("button", { name: "Write", exact: true }).click();
   const headings = page.locator("textarea.blk-scene_heading");
+  await expect(headings.first()).toHaveValue("INT. GREYHOUND BUS - NIGHT");
+
+  await page.getByRole("button", { name: "Outline", exact: true }).click();
+  await page.getByRole("button", { name: "Make Draft Match Outline" }).click();
+  await expect(page.getByText("Draft matches outline.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Make Draft Match Outline" })).toBeDisabled();
+
+  await page.getByRole("button", { name: "Write", exact: true }).click();
   await expect(headings.first()).toHaveValue("EXT. REST STOP - PARKING LOT - NIGHT");
   await expect(page.locator(".nav-sequence-label").first()).toHaveText("Sequence 2");
   await page.getByRole("button", { name: /INT\. GREYHOUND BUS - NIGHT/ }).first().click();
@@ -132,12 +142,19 @@ test("visual board drops assign an imported scene without appending or duplicati
 
   const requestedScene = page.getByRole("img", { name: "Drag handle for Scene 3" });
   await requestedScene.dragTo(page.getByRole("article"));
-  await expect(page.getByRole("status")).toContainText("Applied the visual board scene order");
-  await expect(page.getByRole("article").getByRole("button", { name: "Scene 3 · now 1: INT. GREYHOUND BUS - MOVING - LATER" })).toHaveCount(1);
+  await expect(page.getByText("Outline changes are not yet in the draft.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("article").getByRole("button", { name: "Scene 3 · outline 1, draft 3: INT. GREYHOUND BUS - MOVING - LATER" })).toHaveCount(1);
   await expect(page.getByRole("region", { name: "Unassigned scenes and beats" }).getByRole("button", { name: /GREYHOUND BUS - MOVING - LATER/ })).toHaveCount(0);
   await page.getByRole("img", { name: "Drag handle for Scene 1" }).dragTo(page.getByRole("article"));
-  await expect(page.getByRole("article").getByRole("button", { name: "Scene 1 · now 2: INT. GREYHOUND BUS - NIGHT" })).toHaveCount(1);
+  await expect(page.getByRole("article").getByRole("button", { name: "Scene 1 · outline 2, draft 1: INT. GREYHOUND BUS - NIGHT" })).toHaveCount(1);
 
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  await expect(page.locator("textarea.blk-scene_heading").first()).toHaveValue("INT. GREYHOUND BUS - NIGHT");
+  await expect(page.locator("textarea.blk-scene_heading").nth(1)).toHaveValue("EXT. REST STOP - PARKING LOT - NIGHT");
+
+  await page.getByRole("button", { name: "Outline", exact: true }).click();
+  await page.getByRole("button", { name: "Make Draft Match Outline" }).click();
+  await expect(page.getByText("The draft now matches the outline scene order.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Write", exact: true }).click();
   await expect(page.locator("textarea.blk-scene_heading").first()).toHaveValue("INT. GREYHOUND BUS - MOVING - LATER");
   await expect(page.locator("textarea.blk-scene_heading").nth(1)).toHaveValue("INT. GREYHOUND BUS - NIGHT");
