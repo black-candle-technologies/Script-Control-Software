@@ -78,3 +78,22 @@ test("sequence order produces screenplay order without losing unassigned scenes"
     { id: "orphan", actId: "missing-act", title: "Orphan", sceneIds: [c] },
   ]), [d, a, b, c]);
 });
+
+test("sequence scene order is authoritative and assigning an existing first scene does not append a copy", () => {
+  const doc = parseFountain("INT. A - DAY\n\nA.\n\nINT. B - DAY\n\nB.\n\nINT. C - DAY\n\nC.\n");
+  const structure = resolveStoryStructure(doc.blocks);
+  const [a, b, c] = structure.sceneOrder;
+  const sequences = [{
+    id: "opening",
+    actId: structure.acts[0].id,
+    title: "Opening",
+    sceneIds: [a],
+  }];
+
+  const assignedOrder = sceneOrderForSequences(structure, sequences);
+  assert.deepEqual(assignedOrder, [a, b, c]);
+  assert.equal(new Set(assignedOrder).size, 3);
+
+  sequences[0].sceneIds = [c, a];
+  assert.deepEqual(sceneOrderForSequences(structure, sequences), [c, a, b]);
+});

@@ -253,28 +253,21 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
     return index >= 0 && index + direction >= 0 && index + direction < siblings.length;
   };
   const moveSceneOnBoard = (sceneId: string, sequenceId: string | undefined, beforeSceneId?: string) => {
-    const order = customStructure.sceneOrder.filter((id) => id !== sceneId);
-    let insertion = beforeSceneId ? order.indexOf(beforeSceneId) : -1;
-    if (insertion < 0 && sequenceId) {
-      const destination = customStructure.sequences.find((item) => item.id === sequenceId);
-      const last = [...(destination?.sceneIds ?? [])].reverse().find((id) => id !== sceneId);
-      insertion = last ? order.indexOf(last) + 1 : order.length;
-    }
-    order.splice(insertion < 0 ? order.length : insertion, 0, sceneId);
+    const sequences = customStructure.sequences.map((sequence) => ({
+      ...sequence,
+      sceneIds: sequence.id === sequenceId
+        ? (() => {
+          const ids = sequence.sceneIds.filter((id) => id !== sceneId);
+          const index = beforeSceneId ? ids.indexOf(beforeSceneId) : -1;
+          ids.splice(index < 0 ? ids.length : index, 0, sceneId);
+          return ids;
+        })()
+        : sequence.sceneIds.filter((id) => id !== sceneId),
+    }));
     apply({
       ...customStructure,
-      sceneOrder: order,
-      sequences: customStructure.sequences.map((sequence) => ({
-        ...sequence,
-        sceneIds: sequence.id === sequenceId
-          ? (() => {
-            const ids = sequence.sceneIds.filter((id) => id !== sceneId);
-            const index = beforeSceneId ? ids.indexOf(beforeSceneId) : -1;
-            ids.splice(index < 0 ? ids.length : index, 0, sceneId);
-            return ids;
-          })()
-          : sequence.sceneIds.filter((id) => id !== sceneId),
-      })),
+      sceneOrder: sceneOrderForSequences(customStructure, sequences),
+      sequences,
     });
   };
   const addBeat = () => save({

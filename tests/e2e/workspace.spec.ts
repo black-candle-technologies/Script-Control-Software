@@ -99,8 +99,33 @@ test("sequence controls apply grouped scene order and keep imported scene jumps 
   await expect(headings.nth(1)).toBeFocused();
 });
 
-test("visual board scene drops apply whole-scene order to the screenplay", async ({ page }) => {
+test("visual board drops assign an imported scene without appending or duplicating it", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("THE LONG WAY HOME");
+  const importedSceneCount = await page.evaluate(() => {
+    const key = "scs.project-session.v3";
+    const session = JSON.parse(localStorage.getItem(key)!);
+    session.documents[0].source = {
+      type: "fdx",
+      path: "C:\\Imported\\screenplay.fdx",
+      fileName: "screenplay.fdx",
+      lastImportedAt: new Date().toISOString(),
+    };
+    const blocks = session.documents[0].blocks;
+    const starts = blocks.flatMap((block: { type: string }, index: number) => block.type === "scene_heading" ? [index] : []);
+    session.documents[0].scenes = starts.map((blockStart: number, index: number) => ({
+      id: `parsed-scene-${index + 1}`,
+      heading: blocks[blockStart].text,
+      blockStart,
+      blockEnd: (starts[index + 1] ?? blocks.length) - 1,
+      characterIds: [],
+      metadata: {},
+    }));
+    localStorage.setItem(key, JSON.stringify(session));
+    return starts.length;
+  });
+  await page.reload();
+  await page.locator(".launcher-recent").click();
   await page.getByRole("button", { name: "Outline", exact: true }).click();
   await page.getByRole("button", { name: "Visual Board" }).click();
   await page.getByRole("button", { name: "Add Sequence" }).click();
@@ -108,10 +133,13 @@ test("visual board scene drops apply whole-scene order to the screenplay", async
   const firstScene = page.getByRole("button", { name: "Scene 1: INT. GREYHOUND BUS - NIGHT" });
   await firstScene.dragTo(page.getByRole("article"));
   await expect(page.getByRole("status")).toContainText("Applied the visual board scene order");
+  await expect(page.getByRole("article").getByRole("button", { name: "Scene 1: INT. GREYHOUND BUS - NIGHT" })).toHaveCount(1);
+  await expect(page.getByRole("region", { name: "Unassigned scenes and beats" }).getByRole("button", { name: "Scene 1: INT. GREYHOUND BUS - NIGHT" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Write", exact: true }).click();
-  await expect(page.locator("textarea.blk-scene_heading").first()).toHaveValue("EXT. REST STOP - PARKING LOT - NIGHT");
-  await expect(page.locator("textarea.blk-scene_heading").last()).toHaveValue("INT. GREYHOUND BUS - NIGHT");
+  await expect(page.locator("textarea.blk-scene_heading").first()).toHaveValue("INT. GREYHOUND BUS - NIGHT");
+  await expect(page.locator("textarea.blk-scene_heading")).toHaveCount(importedSceneCount);
+  await expect.poll(() => page.locator("textarea.blk-scene_heading").evaluateAll((nodes) => nodes.filter((node) => (node as HTMLTextAreaElement).value === "INT. GREYHOUND BUS - NIGHT").length)).toBe(1);
 });
 
 test("treatments expose import and all portable export formats", async ({ page }) => {

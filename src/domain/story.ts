@@ -54,8 +54,7 @@ export function sceneOrderForSequences(
   const orderedAssigned = structure.acts.flatMap((act) => sequences
     .filter((sequence) => sequence.actId === act.id)
     .flatMap((sequence) => sequence.sceneIds
-      .filter((id) => position.has(id))
-      .sort((left, right) => position.get(left)! - position.get(right)!)));
+      .filter((id) => position.has(id))));
   const assigned = new Set(orderedAssigned);
   const unassigned = structure.sceneOrder.filter((id) => !assigned.has(id));
   return unique([...orderedAssigned, ...unassigned]);
