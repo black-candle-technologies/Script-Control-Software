@@ -97,3 +97,14 @@ test("sequence scene order is authoritative and assigning an existing first scen
   sequences[0].sceneIds = [c, a];
   assert.deepEqual(sceneOrderForSequences(structure, sequences), [c, a, b]);
 });
+
+test("board scene labels stay stable when screenplay order changes", () => {
+  const doc = parseFountain("INT. A - DAY\n\nA.\n\nINT. B - DAY\n\nB.\n\nINT. C - DAY\n\nC.\n");
+  const original = resolveStoryStructure(doc.blocks);
+  const [a, , c] = original.sceneOrder;
+  const reorderedBlocks = applyStorySceneOrder(doc.blocks, [c, a]);
+  const resolved = resolveStoryStructure(reorderedBlocks, { ...original, sceneOrder: [c, a] });
+
+  assert.equal(resolved.sceneLabels?.[c], "3");
+  assert.equal(resolved.sceneLabels?.[a], "1");
+});

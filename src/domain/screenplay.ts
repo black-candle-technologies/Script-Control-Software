@@ -101,6 +101,8 @@ export interface CustomStoryStructure {
   sequences: { id: string; actId: string; title: string; sceneIds: string[] }[];
   beats: { id: string; title?: string; text: string; color?: string; board?: StoryBoardRect; sceneId?: string; sequenceId?: string; status: "idea" | "drafted" | "complete"; moments: { id: string; text: string }[]; source?: "scs" | "fdx" }[];
   sceneOrder: string[];
+  /** Stable board labels keyed by scene-heading id, independent of screenplay order. */
+  sceneLabels?: Record<string, string>;
   connections?: StoryConnection[];
   board?: StoryBoardCanvas;
 }
@@ -435,6 +437,7 @@ export function reconcileScreenplayDocument(previous: ScreenplayDocument, parsed
   const previousStructure = previous.workspace?.storyStructure ? {
     ...previous.workspace.storyStructure,
     sceneOrder: remapSceneIds(previous.workspace.storyStructure.sceneOrder),
+    sceneLabels: Object.fromEntries(Object.entries(previous.workspace.storyStructure.sceneLabels ?? {}).flatMap(([id, label]) => remap.has(id) ? [[remap.get(id)!, label]] : [])),
     sequences: previous.workspace.storyStructure.sequences.map((sequence) => ({
       ...sequence,
       sceneIds: remapSceneIds(sequence.sceneIds),
@@ -451,6 +454,7 @@ export function reconcileScreenplayDocument(previous: ScreenplayDocument, parsed
     workspace.storyStructure = importedStructure ? {
       ...importedStructure,
       sceneOrder: importedStructure.sceneOrder.map((id) => parsedBlockIds.get(id) ?? id),
+      sceneLabels: Object.fromEntries(Object.entries(importedStructure.sceneLabels ?? {}).map(([id, label]) => [parsedBlockIds.get(id) ?? id, label])),
     } : undefined;
   } else if (!importedStructure) {
     workspace.storyStructure = previousStructure;

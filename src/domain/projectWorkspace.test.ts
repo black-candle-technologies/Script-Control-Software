@@ -301,6 +301,7 @@ test("normalization preserves portable FDX beat board metadata", () => {
     acts: [{ id: "act-1", title: "Act I" }],
     sequences: [],
     sceneOrder: [],
+    sceneLabels: { "scene-a": "12A", "scene-empty": "  " },
     beats: [{ id: "beat-a", title: "Arrival", text: "The team arrives.", color: "#AAAABBBBCCCC", board: { left: 40, top: 60, width: 240, height: 160 }, status: "drafted", moments: [], source: "fdx" }],
     connections: [{ id: "link-a", fromId: "beat-a", toId: "beat-a", color: "#111122223333", frontCap: "None", endCap: "Arrow", board: { left: 100, top: 80, width: 40, height: 20 } }],
     board: { id: "board-1", width: 2000, height: 1000, zoomLevel: 110.5, scrollOrigin: "20,40" },
@@ -312,6 +313,7 @@ test("normalization preserves portable FDX beat board metadata", () => {
   assert.equal(structure.connections?.[0].endCap, "Arrow");
   assert.deepEqual(structure.connections?.[0].board, { left: 100, top: 80, width: 40, height: 20 });
   assert.deepEqual(structure.board, { id: "board-1", width: 2000, height: 1000, zoomLevel: 110.5, scrollOrigin: "20,40" });
+  assert.deepEqual(structure.sceneLabels, { "scene-a": "12A" });
 });
 
 test("FDX re-import replaces external beats by stable id and keeps SCS beats", () => {
@@ -321,6 +323,7 @@ test("FDX re-import replaces external beats by stable id and keeps SCS beats", (
     acts: [{ id: "act-1", title: "Act I" }],
     sequences: [],
     sceneOrder: [previous.blocks[0].id],
+    sceneLabels: { [previous.blocks[0].id]: "7" },
     beats: [
       { id: "local", title: "Local", text: "Keep me", status: "idea", moments: [], source: "scs" },
       { id: "external", title: "Old", text: "Old body", status: "drafted", moments: [], source: "fdx" },
@@ -341,6 +344,7 @@ test("FDX re-import replaces external beats by stable id and keeps SCS beats", (
   const structure = reconcileImportedDocument(session, "linked", imported).documents[0].workspace!.storyStructure!;
   assert.deepEqual(structure.beats.map((beat) => [beat.id, beat.title]), [["local", "Local"], ["external", "Updated"]]);
   assert.deepEqual(structure.connections, []);
+  assert.deepEqual(structure.sceneLabels, { [previous.blocks[0].id]: "7" });
 });
 
 test("legacy per-document comments surface in the project review workflow", () => {

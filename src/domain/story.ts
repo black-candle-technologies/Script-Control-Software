@@ -14,6 +14,10 @@ export function resolveStoryStructure(blocks: ScreenplayBlock[], saved?: CustomS
       sceneIds: sequence.sceneIds.filter((id) => sceneIds.has(id) && !assigned.has(id) && Boolean(assigned.add(id))),
     }));
   const sequenceIds = new Set(sequences.map((sequence) => sequence.id));
+  const sceneLabels = Object.fromEntries(scenes.map((scene) => [
+    scene.id,
+    scene.sceneNumber?.trim() || saved.sceneLabels?.[scene.id]?.trim() || String(scene.number),
+  ]));
   const beats = saved.beats.map((beat) => ({
     ...beat,
     sceneId: beat.sceneId && sceneIds.has(beat.sceneId) ? beat.sceneId : undefined,
@@ -32,6 +36,7 @@ export function resolveStoryStructure(blocks: ScreenplayBlock[], saved?: CustomS
     sequences,
     beats,
     sceneOrder: unique(saved.sceneOrder.filter((id) => sceneIds.has(id)).concat(scenes.map((scene) => scene.id))),
+    sceneLabels,
     ...(saved.connections ? { connections: saved.connections.filter((connection) => nodeIds.has(connection.fromId) && nodeIds.has(connection.toId)) } : {}),
   };
 }
@@ -95,7 +100,13 @@ function defaultStructure(blocks: ScreenplayBlock[]): CustomStoryStructure {
     const scene = [...scenes].reverse().find((candidate) => candidate.blockIndex < index);
     return scene ? [{ id: block.id, text: block.text.trim(), sceneId: scene.id, status: "drafted" as const, moments: [] }] : [];
   });
-  return { acts, sequences: [], beats, sceneOrder: scenes.map((scene) => scene.id) };
+  return {
+    acts,
+    sequences: [],
+    beats,
+    sceneOrder: scenes.map((scene) => scene.id),
+    sceneLabels: Object.fromEntries(scenes.map((scene) => [scene.id, scene.sceneNumber?.trim() || String(scene.number)])),
+  };
 }
 
 function unique(values: string[]): string[] {

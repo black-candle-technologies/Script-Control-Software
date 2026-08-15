@@ -130,16 +130,19 @@ test("visual board drops assign an imported scene without appending or duplicati
   await page.getByRole("button", { name: "Visual Board" }).click();
   await page.getByRole("button", { name: "Add Sequence" }).click();
 
-  const firstScene = page.getByRole("button", { name: "Scene 1: INT. GREYHOUND BUS - NIGHT" });
-  await firstScene.dragTo(page.getByRole("article"));
+  const requestedScene = page.getByRole("img", { name: "Drag handle for Scene 3" });
+  await requestedScene.dragTo(page.getByRole("article"));
   await expect(page.getByRole("status")).toContainText("Applied the visual board scene order");
-  await expect(page.getByRole("article").getByRole("button", { name: "Scene 1: INT. GREYHOUND BUS - NIGHT" })).toHaveCount(1);
-  await expect(page.getByRole("region", { name: "Unassigned scenes and beats" }).getByRole("button", { name: "Scene 1: INT. GREYHOUND BUS - NIGHT" })).toHaveCount(0);
+  await expect(page.getByRole("article").getByRole("button", { name: "Scene 3 · now 1: INT. GREYHOUND BUS - MOVING - LATER" })).toHaveCount(1);
+  await expect(page.getByRole("region", { name: "Unassigned scenes and beats" }).getByRole("button", { name: /GREYHOUND BUS - MOVING - LATER/ })).toHaveCount(0);
+  await page.getByRole("img", { name: "Drag handle for Scene 1" }).dragTo(page.getByRole("article"));
+  await expect(page.getByRole("article").getByRole("button", { name: "Scene 1 · now 2: INT. GREYHOUND BUS - NIGHT" })).toHaveCount(1);
 
   await page.getByRole("button", { name: "Write", exact: true }).click();
-  await expect(page.locator("textarea.blk-scene_heading").first()).toHaveValue("INT. GREYHOUND BUS - NIGHT");
+  await expect(page.locator("textarea.blk-scene_heading").first()).toHaveValue("INT. GREYHOUND BUS - MOVING - LATER");
+  await expect(page.locator("textarea.blk-scene_heading").nth(1)).toHaveValue("INT. GREYHOUND BUS - NIGHT");
   await expect(page.locator("textarea.blk-scene_heading")).toHaveCount(importedSceneCount);
-  await expect.poll(() => page.locator("textarea.blk-scene_heading").evaluateAll((nodes) => nodes.filter((node) => (node as HTMLTextAreaElement).value === "INT. GREYHOUND BUS - NIGHT").length)).toBe(1);
+  await expect.poll(() => page.locator("textarea.blk-scene_heading").evaluateAll((nodes) => nodes.filter((node) => (node as HTMLTextAreaElement).value === "INT. GREYHOUND BUS - MOVING - LATER").length)).toBe(1);
 });
 
 test("treatments expose import and all portable export formats", async ({ page }) => {

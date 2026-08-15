@@ -880,11 +880,15 @@ function normalizeStoryStructure(value: unknown): WorkspaceData["storyStructure"
     ...(zoomLevel !== undefined ? { zoomLevel } : {}),
     ...(typeof rawBoard?.scrollOrigin === "string" ? { scrollOrigin: rawBoard.scrollOrigin } : {}),
   } : undefined;
+  const sceneLabels = isRecord(value.sceneLabels) ? Object.fromEntries(Object.entries(value.sceneLabels)
+    .filter((entry): entry is [string, string] => Boolean(entry[0]) && typeof entry[1] === "string" && Boolean(entry[1].trim()))
+    .map(([id, label]) => [id, label.trim()])) : undefined;
   return {
     acts,
     sequences,
     beats,
     sceneOrder: stringArray(value.sceneOrder),
+    ...(sceneLabels ? { sceneLabels } : {}),
     ...(connections.length ? { connections } : {}),
     ...(board ? { board } : {}),
   };
