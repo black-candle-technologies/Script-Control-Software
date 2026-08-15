@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type DragEvent } from "react";
 import TeamPanel, { type CollaborationSyncControls } from "./TeamPanel.tsx";
 import {
   createManualObjectOverride,
@@ -167,8 +167,13 @@ export default function PanelHost({ tab, ...props }: InspectorProps & { tab: Pan
   </div>;
 }
 
+type StoryDragItem = { kind: "sequence" | "scene" | "beat"; id: string };
+
+const STORY_DRAG_MIME = "application/x-scs-story-item";
+
 function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, onApplyStoryStructure, onJumpToScene }: InspectorProps) {
-  const [draggedItem, setDraggedItem] = useState<{ kind: "sequence" | "scene" | "beat"; id: string } | null>(null);
+  const [draggedItem, setDraggedItem] = useState<StoryDragItem | null>(null);
+  const draggedItemRef = useRef<StoryDragItem | null>(null);
   const [deleteAllArmed, setDeleteAllArmed] = useState(false);
   const view = workspace.storyBoardView ?? "scene";
   const save = (next: CustomStoryStructure) => onWorkspace({ storyStructure: next });
@@ -292,11 +297,68 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
     .filter((scene): scene is Scene => Boolean(scene));
   const assignedSceneIds = new Set(customStructure.sequences.flatMap((sequence) => sequence.sceneIds));
   const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
-  const clearDrag = () => setDraggedItem(null);
+  const beginDrag = (event: DragEvent<HTMLElement>, item: StoryDragItem) => {
+    draggedItemRef.current = item;
+    setDraggedItem(item);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(STORY_DRAG_MIME, JSON.stringify(item));
+    event.dataTransfer.setData("text/plain", `${item.kind}:${item.id}`);
+  };
+  const allowDrop = (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  };
+  const readDraggedItem = (event: DragEvent<HTMLElement>): StoryDragItem | null => {
+    const encoded = event.dataTransfer.getData(STORY_DRAG_MIME);
+    if (encoded) {
+      try {
+        const item = JSON.parse(encoded) as Partial<StoryDragItem>;
+        if ((item.kind === "sequence" || item.kind === "scene" || item.kind === "beat") && typeof item.id === "string" && item.id) {
+          return { kind: item.kind, id: item.id };
+        }
+      } catch {
+        // Fall through to the in-memory value for older embedded webviews.
+      }
+    }
+    return draggedItemRef.current ?? draggedItem;
+  };
+  const clearDrag = () => {
+    draggedItemRef.current = null;
+    setDraggedItem(null);
+  };
+  const dropOnAct = (event: DragEvent<HTMLElement>, actId: string) => {
+    event.preventDefault();
+    const item = readDraggedItem(event);
+    if (item?.kind === "sequence") moveSequence(item.id, actId);
+    clearDrag();
+  };
+  const dropOnSequence = (event: DragEvent<HTMLElement>, sequenceId: string, actId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const item = readDraggedItem(event);
+    if (item?.kind === "sequence") moveSequence(item.id, actId, sequenceId);
+    else if (item?.kind === "scene") moveSceneOnBoard(item.id, sequenceId);
+    clearDrag();
+  };
+  const dropOnScene = (event: DragEvent<HTMLElement>, sequenceId: string, sceneId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const item = readDraggedItem(event);
+    if (item?.kind === "scene") moveSceneOnBoard(item.id, sequenceId, sceneId);
+    else if (item?.kind === "beat") updateBeat(item.id, { sceneId, sequenceId: undefined });
+    clearDrag();
+  };
+  const dropOnUnassigned = (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    const item = readDraggedItem(event);
+    if (item?.kind === "scene") moveSceneOnBoard(item.id, undefined);
+    else if (item?.kind === "beat") updateBeat(item.id, { sceneId: undefined, sequenceId: undefined });
+    clearDrag();
+  };
   const renderBoardBeat = (beat: CustomStoryStructure["beats"][number], extraClass = "") => {
     const beatIndex = customStructure.beats.findIndex((item) => item.id === beat.id);
     const label = beat.title || beat.text;
-    return <div className={`story-board-beat ${extraClass}`.trim()} key={beat.id} style={storyCssColor(beat.color) ? { borderColor: storyCssColor(beat.color) } : undefined} draggable onDragStart={(event) => { event.stopPropagation(); setDraggedItem({ kind: "beat", id: beat.id }); }} onDragEnd={clearDrag}>
+    return <div className={`story-board-beat ${extraClass}`.trim()} key={beat.id} style={storyCssColor(beat.color) ? { borderColor: storyCssColor(beat.color) } : undefined} draggable onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "beat", id: beat.id }); }} onDragEnd={clearDrag}>
       <span>{label}</span>
       <span className="story-board-reorder" role="group" aria-label={`Reorder ${label}`}>
         <button className="link-btn" aria-label={`Move ${label} earlier`} disabled={beatIndex <= 0} onClick={(event) => { event.stopPropagation(); moveBeat(beat.id, beatIndex - 1); }}>↑</button>
@@ -306,7 +368,7 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
   };
 
   return <div className="insp-stack">
-    <Hint>Build the outline visually, then drag scenes into the order the screenplay should use. Sequence membership stays editable without changing script text.</Hint>
+    <Hint>Use the grip to move sequences between acts or scenes into sequences. Each scene drop updates the screenplay order.</Hint>
     <div className="board-view-switch">
       {(["board", "act", "sequence", "scene", "beat", "timeline"] as StoryBoardView[]).map((name) =>
         <button key={name} className={`btn btn-ghost ${view === name ? "active" : ""}`} onClick={() => onWorkspace({ storyBoardView: name })}>{name === "board" ? "Visual Board" : name[0].toUpperCase() + name.slice(1)}</button>,
@@ -315,14 +377,14 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
     {view === "board" && <>
       <div className="btn-row"><button className="btn" onClick={addAct}>Add Act</button><button className="btn btn-ghost" onClick={addSequence}>Add Sequence</button><button className="btn btn-ghost" onClick={addBeat}>Add Beat</button></div>
       <div className="story-board" aria-label="Visual story board">
-        {customStructure.acts.map((act) => <section className="story-board-act" key={act.id} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedItem?.kind === "sequence") moveSequence(draggedItem.id, act.id); clearDrag(); }}>
+        {customStructure.acts.map((act) => <section className="story-board-act" key={act.id} aria-label={`${act.title} drop zone`} onDragOver={allowDrop} onDrop={(event) => dropOnAct(event, act.id)}>
           <header><input aria-label="Act title" value={act.title} onChange={(event) => updateAct(act.id, event.target.value)} /><span>{customStructure.sequences.filter((sequence) => sequence.actId === act.id).length} sequences</span></header>
           <div className="story-board-lane">
-            {customStructure.sequences.filter((sequence) => sequence.actId === act.id).map((sequence) => <article className="story-board-sequence" key={sequence.id} draggable onDragStart={() => setDraggedItem({ kind: "sequence", id: sequence.id })} onDragEnd={clearDrag} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); if (draggedItem?.kind === "sequence") moveSequence(draggedItem.id, act.id, sequence.id); else if (draggedItem?.kind === "scene") moveSceneOnBoard(draggedItem.id, sequence.id); clearDrag(); }}>
-              <input aria-label="Sequence title" value={sequence.title} onChange={(event) => updateSequence(sequence.id, { title: event.target.value })} />
+            {customStructure.sequences.filter((sequence) => sequence.actId === act.id).map((sequence) => <article className={`story-board-sequence ${draggedItem?.kind === "sequence" && draggedItem.id === sequence.id ? "is-dragging" : ""}`} key={sequence.id} draggable onDragStart={(event) => beginDrag(event, { kind: "sequence", id: sequence.id })} onDragEnd={clearDrag} onDragOver={allowDrop} onDrop={(event) => dropOnSequence(event, sequence.id, act.id)}>
+              <div className="story-board-sequence-header"><span className="story-board-drag-handle" draggable role="img" aria-label={`Drag handle for ${sequence.title || "sequence"}`} title={`Drag ${sequence.title || "sequence"}`} onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "sequence", id: sequence.id }); }} onDragEnd={clearDrag}>⠿</span><input aria-label="Sequence title" value={sequence.title} onChange={(event) => updateSequence(sequence.id, { title: event.target.value })} /></div>
               <div className="story-board-reorder" role="group" aria-label={`Reorder ${sequence.title || "sequence"}`}><button className="link-btn" aria-label={`Move ${sequence.title || "sequence"} earlier`} disabled={!canMoveSequenceWithinAct(sequence.id, -1)} onClick={(event) => { event.stopPropagation(); moveSequenceWithinAct(sequence.id, -1); }}>←</button><button className="link-btn" aria-label={`Move ${sequence.title || "sequence"} later`} disabled={!canMoveSequenceWithinAct(sequence.id, 1)} onClick={(event) => { event.stopPropagation(); moveSequenceWithinAct(sequence.id, 1); }}>→</button></div>
               <div className="story-board-scenes">
-                {customStructure.sceneOrder.filter((sceneId) => sequence.sceneIds.includes(sceneId)).map((sceneId) => { const scene = sceneById.get(sceneId); if (!scene) return null; return <div className="story-board-scene" key={scene.id} draggable onDragStart={(event) => { event.stopPropagation(); setDraggedItem({ kind: "scene", id: scene.id }); }} onDragEnd={clearDrag} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.stopPropagation(); if (draggedItem?.kind === "scene") moveSceneOnBoard(draggedItem.id, sequence.id, scene.id); else if (draggedItem?.kind === "beat") updateBeat(draggedItem.id, { sceneId: scene.id, sequenceId: undefined }); clearDrag(); }}>
+                {customStructure.sceneOrder.filter((sceneId) => sequence.sceneIds.includes(sceneId)).map((sceneId) => { const scene = sceneById.get(sceneId); if (!scene) return null; return <div className="story-board-scene" key={scene.id} draggable onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "scene", id: scene.id }); }} onDragEnd={clearDrag} onDragOver={allowDrop} onDrop={(event) => dropOnScene(event, sequence.id, scene.id)}>
                   <button className="link-btn" onClick={() => onJumpToScene(scene.id)}>Scene {scene.number}: {scene.heading}</button>
                   {customStructure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => renderBoardBeat(beat))}
                 </div>; })}
@@ -333,7 +395,7 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
             {!customStructure.sequences.some((sequence) => sequence.actId === act.id) && <div className="story-board-empty">Drop a sequence into this act</div>}
           </div>
         </section>)}
-        <section className="story-board-unassigned" onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedItem?.kind === "scene") moveSceneOnBoard(draggedItem.id, undefined); else if (draggedItem?.kind === "beat") updateBeat(draggedItem.id, { sceneId: undefined, sequenceId: undefined }); clearDrag(); }}><strong>Unassigned scenes</strong>{orderedScenes.filter((scene) => !assignedSceneIds.has(scene.id)).map((scene) => <button key={scene.id} className="story-board-scene link-btn" draggable onDragStart={() => setDraggedItem({ kind: "scene", id: scene.id })} onDragEnd={clearDrag} onClick={() => onJumpToScene(scene.id)}>Scene {scene.number}: {scene.heading}</button>)}<strong>Unplaced beats</strong>{customStructure.beats.filter((beat) => !beat.sceneId && !beat.sequenceId).map((beat) => renderBoardBeat(beat))}</section>
+        <section className="story-board-unassigned" aria-label="Unassigned scenes and beats" onDragOver={allowDrop} onDrop={dropOnUnassigned}><strong>Unassigned scenes</strong>{orderedScenes.filter((scene) => !assignedSceneIds.has(scene.id)).map((scene) => <div className="story-board-unassigned-scene" key={scene.id}><span className="story-board-drag-handle" draggable role="img" aria-label={`Drag handle for Scene ${scene.number}`} title={`Drag Scene ${scene.number}`} onDragStart={(event) => beginDrag(event, { kind: "scene", id: scene.id })} onDragEnd={clearDrag}>⠿</span><button className="story-board-scene link-btn" draggable onDragStart={(event) => beginDrag(event, { kind: "scene", id: scene.id })} onDragEnd={clearDrag} onClick={() => onJumpToScene(scene.id)}>Scene {scene.number}: {scene.heading}</button></div>)}<strong>Unplaced beats</strong>{customStructure.beats.filter((beat) => !beat.sceneId && !beat.sequenceId).map((beat) => renderBoardBeat(beat))}</section>
       </div>
       {!!customStructure.connections?.length && <div className="story-board-connections"><strong>Beat connections</strong>{customStructure.connections.map((connection) => <span key={connection.id}><i style={storyCssColor(connection.color) ? { background: storyCssColor(connection.color) } : undefined} />{customStructure.beats.find((beat) => beat.id === connection.fromId)?.title || customStructure.beats.find((beat) => beat.id === connection.fromId)?.text || "Beat"} → {customStructure.beats.find((beat) => beat.id === connection.toId)?.title || customStructure.beats.find((beat) => beat.id === connection.toId)?.text || "Beat"}</span>)}</div>}
     </>}
