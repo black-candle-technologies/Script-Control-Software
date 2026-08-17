@@ -3172,6 +3172,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     : mode === "series" ? modeView("Series", MODE_META.series.blurb, null, "Series", () => {})
     : mode === "breakdown" ? modeView("Breakdown", MODE_META.breakdown.blurb, [
         { value: "Breakdown", label: "Reports" },
+        { value: "Global", label: "Global" },
         { value: "Production", label: "Production" },
       ], breakdownModeTab, setBreakdownModeTab)
     : mode === "drafts" ? modeView("Drafts", MODE_META.drafts.blurb, null, "Drafts", () => {})

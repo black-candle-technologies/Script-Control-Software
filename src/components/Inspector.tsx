@@ -44,6 +44,7 @@ import {
   type ProjectWorkspace,
   type ProductionExportKind,
   type ProductionCategory,
+  type ProductionRow,
   type ProductionPage,
   type ProductionReports,
   type RevisionColor,
@@ -133,7 +134,7 @@ interface InspectorProps {
 }
 
 /** Workspace panels the mode shell can host full-width. */
-export type PanelTab = "Story" | "Treatment" | "Cast" | "Props" | "Places" | "Drafts" | "Breakdown" | "Series" | "Production" | "Team" | "Assist";
+export type PanelTab = "Story" | "Treatment" | "Cast" | "Props" | "Places" | "Drafts" | "Breakdown" | "Global" | "Series" | "Production" | "Team" | "Assist";
 const Hint = ({ children }: { children: React.ReactNode }) => <p className="insp-hint">{children}</p>;
 
 const storyCssColor = (value?: string) => {
@@ -173,7 +174,7 @@ const snapshotScopeLabel = (scope?: SnapshotScope) => !scope || scope.kind === "
  */
 export default function PanelHost({ tab, ...props }: InspectorProps & { tab: PanelTab }) {
   return <div className="panel-host">
-    {tab !== "Team" && tab !== "Assist" && tab !== "Drafts" && tab !== "Breakdown" && <fieldset className="permission-scope" disabled={!props.editable}>
+    {tab !== "Team" && tab !== "Assist" && tab !== "Drafts" && tab !== "Breakdown" && tab !== "Global" && <fieldset className="permission-scope" disabled={!props.editable}>
       {tab === "Story" && <StoryWorkspaceTab {...props} />}
       {tab === "Treatment" && <TreatmentWorkspaceTab {...props} />}
       {tab === "Cast" && <CastTab {...props} />}
@@ -183,6 +184,7 @@ export default function PanelHost({ tab, ...props }: InspectorProps & { tab: Pan
       {tab === "Production" && <ProductionTab {...props} />}
     </fieldset>}
     {tab === "Breakdown" && <BreakdownTab {...props} />}
+    {tab === "Global" && <GlobalBreakdownTab {...props} />}
     {tab === "Drafts" && <DraftsTab {...props} />}
     {tab === "Team" && <TeamPanel session={props.collaborationSession} activeScene={props.activeScene} onSession={props.onCollaborationSession} onOpenTarget={props.onCollaborationTarget} onMessage={props.onCollaborationMessage} sync={props.collaborationSync} />}
     {tab === "Assist" && <AssistTab {...props} />}
@@ -1379,9 +1381,6 @@ function BreakdownTab({
   workspace,
   onWorkspace,
   onExportBreakdown,
-  onOpenEntityBreakdown,
-  activeDocumentId,
-  onOpenScriptTarget,
   breakdownSections,
   onBreakdownSectionsChange,
   onResetBreakdownSections,
@@ -1398,11 +1397,9 @@ function BreakdownTab({
     updateThread(id, { [field]: values.includes(targetId) ? values.filter((value) => value !== targetId) : [...values, targetId] });
   };
   const resolvedBeatIds = workspace.resolvedBeatIds ?? [];
-  const productionEntries = Object.entries(analysis.production) as [ProductionCategory, (typeof analysis.production)[ProductionCategory]][];
   const characterCount = analysis.entities.characters.filter((item) => item.status !== "rejected" && item.status !== "merged").length;
   const locationCount = analysis.entities.locations.filter((item) => item.status !== "rejected" && item.status !== "merged").length;
   const openThreadCount = threads.filter((thread) => !thread.resolved).length;
-  const productionCueCount = productionEntries.reduce((total, [, rows]) => total + rows.length, 0);
   const facts: [string, string | number][] = [
     ["Scenes", analysis.scenes.length], ["Pages", `~${analysis.pageEstimate}`], ["Runtime", `~${analysis.episode.runtimeMinutes} min`], ["Words", analysis.wordCount],
     ["Dialogue", `${analysis.dialogueWords} words (${Math.round(analysis.dialogueDensity * 100)}%)`], ["Characters", characterCount],
@@ -1464,34 +1461,6 @@ function BreakdownTab({
       {analysis.pacingWarnings.length ? <ul className="insp-list">{analysis.pacingWarnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{warning.message}</li>)}</ul> : <Hint>No pacing warnings.</Hint>}
     </CollapsibleSection>
 
-    <CollapsibleSection id="breakdown-production" title="Production reports" summary={`${productionCueCount} cues · ${locationCount} locations`} open={breakdownSections["production-reports"]} onOpenChange={(open) => setSection("production-reports", open)}>
-      {productionEntries.map(([category, rows]) => <details className="insp-card" key={category}><summary className="insp-card-title">{PRODUCTION_CATEGORY_LABELS[category]} ({rows.length})</summary>{rows.map((row, index) => {
-        const entityKind = category === "cast" ? "character" : category === "locations" ? "location" : null;
-        const object = row.entityId ? analysis.entities.objects.find((item) => item.id === row.entityId) : undefined;
-        const references = object?.continuity.filter((entry) => entry.sceneId === row.sceneId) ?? [];
-        const targets = references.length
-          ? references.flatMap((entry) => entry.occurrences.map((occurrence) => ({ blockId: entry.blockId, ...occurrence })))
-          : row.occurrences ?? [];
-        return <div className="script-reference-row" key={`${row.sceneId}-${row.item}-${index}`}>
-          <p className="insp-card-desc">
-            {entityKind && row.entityId
-              ? <button className="link-btn" data-entity-id={row.entityId} onClick={() => onOpenEntityBreakdown(entityKind, row.entityId!)}>{row.item}</button>
-              : <strong>Scene {row.sceneNumber} · {row.item}</strong>}
-            {": "}{row.evidence}
-          </p>
-          {!!targets.length && <div className="script-reference-actions" aria-label={`${row.item} production evidence in Scene ${row.sceneNumber}`}>{targets.map((occurrence, occurrenceIndex) => <button
-            type="button"
-            className="link-btn script-reference-link"
-            key={`${occurrence.blockId}-${occurrence.startOffset}-${occurrence.endOffset}`}
-            onClick={() => onOpenScriptTarget(scriptTarget(activeDocumentId, row.sceneId, occurrence.blockId, occurrence, "production-evidence", `Open ${row.item} production evidence`))}
-            aria-label={object
-              ? `Open ${row.item} occurrence ${occurrence.occurrence + 1} in Scene ${row.sceneNumber}`
-              : `Open ${row.item} production evidence ${occurrenceIndex + 1} in Scene ${row.sceneNumber}`}
-          >{occurrence.matchedText} · {object ? `occurrence ${occurrence.occurrence + 1}` : `evidence ${occurrenceIndex + 1}`}</button>)}</div>}
-        </div>;
-      })}</details>)}
-    </CollapsibleSection>
-
     <CollapsibleSection id="breakdown-scenes" title={`Detailed scenes (${analysis.scenes.length})`} summary={`~${analysis.pageEstimate} pages`} open={breakdownSections["detailed-scenes"]} onOpenChange={(open) => setSection("detailed-scenes", open)}>
       {analysis.scenes.map((scene) => <details className="insp-card" key={scene.id}><summary className="insp-card-title">Scene {scene.sceneNumber ?? scene.number} · {scene.heading}</summary><div className="insp-card-meta">~{scene.estimatedPages} pages · {scene.dialogueWords} dialogue words · complexity {scene.complexityScore}/5</div><p className="insp-card-desc">Cast: {scene.characters.join(", ") || "-"}<br />Objects: {scene.objects.join(", ") || "-"}</p></details>)}
     </CollapsibleSection>
@@ -1499,6 +1468,72 @@ function BreakdownTab({
     <CollapsibleSection id="breakdown-export" title="Export" summary="Markdown · CSV · JSON · PDF" open={breakdownSections.export} onOpenChange={(open) => setSection("export", open)}>
       <div className="btn-row"><button className="btn btn-ghost" onClick={() => onExportBreakdown("md")}>Markdown</button><select aria-label="CSV report" className="element-select" value={csvSection} onChange={(event) => setCsvSection(event.target.value as AnalysisCsvSection)}>{(["all", "summary", "scenes", "characters", "locations", "objects", "structure", "arcs", "coverage", "warnings", "revision", "production"] as const).map((section) => <option key={section} value={section}>{section}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportBreakdown("csv", csvSection)}>CSV</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("json")}>JSON</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("pdf")}>Print PDF</button></div>
     </CollapsibleSection>
+  </div>;
+}
+
+function GlobalBreakdownCategory({
+  category,
+  rows,
+  analysis,
+  activeDocumentId,
+  onOpenEntityBreakdown,
+  onOpenScriptTarget,
+}: Pick<InspectorProps, "analysis" | "activeDocumentId" | "onOpenEntityBreakdown" | "onOpenScriptTarget"> & {
+  category: ProductionCategory;
+  rows: ProductionRow[];
+}) {
+  const label = PRODUCTION_CATEGORY_LABELS[category];
+  const headingId = `global-breakdown-${category}`;
+  return <section className="insp-card global-breakdown-category" aria-labelledby={headingId}>
+    <h3 className="insp-card-title global-breakdown-category-title" id={headingId}><span>{label}</span><span className="global-breakdown-count">({rows.length})</span></h3>
+    {!rows.length && <Hint>No {label.toLowerCase()} detected.</Hint>}
+    {rows.map((row, index) => {
+      const entityKind = category === "cast" ? "character" : category === "locations" ? "location" : null;
+      const object = row.entityId ? analysis.entities.objects.find((item) => item.id === row.entityId) : undefined;
+      const references = object?.continuity.filter((entry) => entry.sceneId === row.sceneId) ?? [];
+      const targets = references.length
+        ? references.flatMap((entry) => entry.occurrences.map((occurrence) => ({ blockId: entry.blockId, ...occurrence })))
+        : row.occurrences ?? [];
+      return <div className="script-reference-row" key={`${row.sceneId}-${row.item}-${index}`}>
+        <p className="insp-card-desc">
+          {entityKind && row.entityId
+            ? <button className="link-btn" data-entity-id={row.entityId} onClick={() => onOpenEntityBreakdown(entityKind, row.entityId!)}>{row.item}</button>
+            : <strong>Scene {row.sceneNumber} · {row.item}</strong>}
+          {": "}{row.evidence}
+        </p>
+        {!!targets.length && <div className="script-reference-actions" aria-label={`${row.item} production evidence in Scene ${row.sceneNumber}`}>{targets.map((occurrence, occurrenceIndex) => <button
+          type="button"
+          className="link-btn script-reference-link"
+          key={`${occurrence.blockId}-${occurrence.startOffset}-${occurrence.endOffset}`}
+          onClick={() => onOpenScriptTarget(scriptTarget(activeDocumentId, row.sceneId, occurrence.blockId, occurrence, "production-evidence", `Open ${row.item} production evidence`))}
+          aria-label={object
+            ? `Open ${row.item} occurrence ${occurrence.occurrence + 1} in Scene ${row.sceneNumber}`
+            : `Open ${row.item} production evidence ${occurrenceIndex + 1} in Scene ${row.sceneNumber}`}
+        >{occurrence.matchedText} · {object ? `occurrence ${occurrence.occurrence + 1}` : `evidence ${occurrenceIndex + 1}`}</button>)}</div>}
+      </div>;
+    })}
+  </section>;
+}
+
+function GlobalBreakdownTab(props: InspectorProps) {
+  const productionEntries = Object.entries(props.analysis.production) as [ProductionCategory, ProductionRow[]][];
+  const cueCount = productionEntries.reduce((total, [, rows]) => total + rows.length, 0);
+  const activeCategories = productionEntries.filter(([, rows]) => rows.length > 0).length;
+  return <div className="insp-stack global-breakdown">
+    <div className="insp-card global-breakdown-summary">
+      <div className="insp-kicker">Screenplay-wide elements</div>
+      <div className="insp-card-title">{cueCount} cues across {activeCategories} categories</div>
+      <p className="insp-card-desc">Cast, locations, props, weapons, vehicles, and every other production category are collected here for the whole screenplay.</p>
+    </div>
+    {productionEntries.map(([category, rows]) => <GlobalBreakdownCategory
+      key={category}
+      category={category}
+      rows={rows}
+      analysis={props.analysis}
+      activeDocumentId={props.activeDocumentId}
+      onOpenEntityBreakdown={props.onOpenEntityBreakdown}
+      onOpenScriptTarget={props.onOpenScriptTarget}
+    />)}
   </div>;
 }
 

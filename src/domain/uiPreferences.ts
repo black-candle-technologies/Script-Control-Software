@@ -26,7 +26,6 @@ export const DEFAULT_BREAKDOWN_SECTION_STATE = {
   "unresolved-beats": true,
   "character-arcs": false,
   "pacing-checks": true,
-  "production-reports": false,
   "detailed-scenes": false,
   export: false,
 } as const;

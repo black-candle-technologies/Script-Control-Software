@@ -175,15 +175,18 @@ test("treatments expose import and all portable export formats", async ({ page }
 test("breakdown aggregates entities, uses readable labels, and opens character details", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
-  await page.getByRole("button", { name: /Production reports/ }).click();
+  await page.getByRole("tab", { name: "Global" }).click();
 
-  await expect(page.getByText(/^Night scenes \(\d+\)$/)).toBeVisible();
-  await expect(page.getByText(/^Crowd scenes \(\d+\)$/)).toBeVisible();
-  await expect(page.getByText(/^High-complexity scenes \(\d+\)$/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Cast \(\d+\)$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Props \(\d+\)$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Weapons \(\d+\)$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Vehicles \(\d+\)$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Night scenes \(\d+\)$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Crowd scenes \(\d+\)$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^High-complexity scenes \(\d+\)$/ })).toBeVisible();
   await expect(page.getByText(/nightScenes|crowdScenes|highComplexityScenes/)).toHaveCount(0);
 
-  await page.getByText(/^Cast \(\d+\)$/).click();
-  const characterLink = page.locator("details.insp-card", { has: page.getByText(/^Cast \(\d+\)$/) }).getByRole("button").first();
+  const characterLink = page.locator('[aria-labelledby="global-breakdown-cast"]').getByRole("button").first();
   const characterName = (await characterLink.textContent())?.trim();
   const characterId = await characterLink.getAttribute("data-entity-id");
   expect(characterName).toBeTruthy();
@@ -197,8 +200,8 @@ test("breakdown aggregates entities, uses readable labels, and opens character d
   await expect(focusedCard.getByText("Scenes and dialogue")).toBeVisible();
 
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
-  await page.getByText(/^Locations \(\d+\)$/).click();
-  const locationLink = page.locator("details.insp-card", { has: page.getByText(/^Locations \(\d+\)$/) }).getByRole("button").first();
+  await page.getByRole("tab", { name: "Global" }).click();
+  const locationLink = page.locator('[aria-labelledby="global-breakdown-locations"]').getByRole("button").first();
   const locationId = await locationLink.getAttribute("data-entity-id");
   expect(locationId).toBeTruthy();
   await locationLink.click();

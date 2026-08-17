@@ -64,7 +64,7 @@ The inspector's **Reference** tab hosts previous draft, previous/next episode, t
 
 ## Breakdown controls and exact references
 
-Every major Breakdown group is a controlled disclosure: Overview, Plot threads, Structure and coverage, Treatment coverage, Unresolved beats, Character arcs, Pacing checks, Production reports, Detailed scenes, and Export. The visible trigger keeps its label, count, warning state, or concise summary while collapsed, and children stay mounted. Defaults keep overview/actionable groups open and dense treatment, arc, production, scene, and export detail closed.
+The Breakdown workspace separates screenplay analysis from screenplay-wide elements. The **Reports** tab uses controlled disclosures for Overview, Plot threads, Structure and coverage, Treatment coverage, Unresolved beats, Character arcs, Pacing checks, Detailed scenes, and Export. The visible trigger keeps its label, count, warning state, or concise summary while collapsed, and children stay mounted. The **Global** tab keeps Cast, Locations, Props, Vehicles, Animals, Weapons, Stunts, visual and sound effects, Wardrobe, Makeup, Night scenes, Crowd scenes, and High-complexity scenes visible as direct category sections instead of nesting them behind another disclosure. The **Production** tab continues to host page locking, revisions, schedules, sides, and department exports.
 
 **Expand All**, **Collapse All**, and **Reset Sections** apply to the current project/document scope. Individual and bulk choices persist as device-local `scs.ui.v2` preferences; malformed or missing preference data falls back to the defaults. These controls and each disclosure are ordinary keyboard-operable buttons with `aria-expanded` and live bulk-action feedback.
 

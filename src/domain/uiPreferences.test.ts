@@ -59,10 +59,10 @@ test("breakdown disclosure state is scoped by project and document and resets to
   let preferences = defaultUiPreferences();
   preferences = withBreakdownSections(preferences, first, {
     ...DEFAULT_BREAKDOWN_SECTION_STATE,
-    "production-reports": true,
+    "treatment-coverage": true,
     overview: false,
   });
-  assert.equal(breakdownSectionsForScope(preferences, first)["production-reports"], true);
+  assert.equal(breakdownSectionsForScope(preferences, first)["treatment-coverage"], true);
   assert.equal(breakdownSectionsForScope(preferences, first).overview, false);
   assert.deepEqual(breakdownSectionsForScope(preferences, second), DEFAULT_BREAKDOWN_SECTION_STATE);
 

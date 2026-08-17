@@ -12,9 +12,9 @@ test("Breakdown disclosures stay mounted, support bulk controls, and persist per
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
 
   const overview = page.getByRole("button", { name: /^Overview\b/ });
-  const production = page.getByRole("button", { name: /^Production reports\b/ });
+  const treatment = page.getByRole("button", { name: /^Treatment coverage\b/ });
   await expect(overview).toHaveAttribute("aria-expanded", "true");
-  await expect(production).toHaveAttribute("aria-expanded", "false");
+  await expect(treatment).toHaveAttribute("aria-expanded", "false");
 
   await overview.focus();
   await overview.press("Space");
@@ -25,9 +25,9 @@ test("Breakdown disclosures stay mounted, support bulk controls, and persist per
   await page.getByRole("button", { name: "Collapse All" }).click();
   await expect(page.getByRole("status")).toHaveText("All breakdown sections collapsed.");
   await expect(overview).toHaveAttribute("aria-expanded", "false");
-  await expect(production).toHaveAttribute("aria-expanded", "false");
+  await expect(treatment).toHaveAttribute("aria-expanded", "false");
   const summaries = page.locator(".collapsible-section-summary");
-  await expect(summaries).toHaveCount(10);
+  await expect(summaries).toHaveCount(9);
   await expect.poll(() => summaries.evaluateAll((elements) => elements.every((element) => {
     const style = getComputedStyle(element);
     return style.display !== "none" && style.visibility !== "hidden";
@@ -49,12 +49,12 @@ test("Breakdown disclosures stay mounted, support bulk controls, and persist per
   await page.locator(".launcher-recent").click();
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
   await expect(page.getByRole("button", { name: /^Overview\b/ })).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByRole("button", { name: /^Production reports\b/ })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: /^Treatment coverage\b/ })).toHaveAttribute("aria-expanded", "false");
 
-  await page.getByRole("button", { name: /^Production reports\b/ }).click();
-  await expect(page.getByRole("button", { name: /^Production reports\b/ })).toHaveAttribute("aria-expanded", "true");
+  await page.getByRole("button", { name: /^Treatment coverage\b/ }).click();
+  await expect(page.getByRole("button", { name: /^Treatment coverage\b/ })).toHaveAttribute("aria-expanded", "true");
   await page.getByRole("button", { name: "Reset Sections" }).click();
-  await expect(page.getByRole("button", { name: /^Production reports\b/ })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: /^Treatment coverage\b/ })).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByRole("button", { name: /^Detailed scenes/ })).toHaveAttribute("aria-expanded", "false");
 });
 
@@ -86,10 +86,8 @@ test("Props and Breakdown occurrence buttons select the exact screenplay range a
   })).toBe(true);
 
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
-  const production = page.getByRole("button", { name: /^Production reports\b/ });
-  if (await production.getAttribute("aria-expanded") !== "true") await production.click();
-  const vehicles = page.locator("details.insp-card", { has: page.getByText(/^Vehicles \(/) });
-  await vehicles.locator("summary").click();
+  await page.getByRole("tab", { name: "Global" }).click();
+  const vehicles = page.locator('[aria-labelledby="global-breakdown-vehicles"]');
   await vehicles.getByRole("button", { name: /Open BUS occurrence 1 in Scene/ }).first().click();
   await expect(page.locator('textarea[data-script-target-state="exact"]')).toHaveCount(1);
 });
@@ -121,10 +119,8 @@ test("dialogue, location, and production references are keyboard-operable exact 
   })).toBe("GREYHOUND BUS");
 
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
-  const production = page.getByRole("button", { name: /^Production reports\b/ });
-  if (await production.getAttribute("aria-expanded") !== "true") await production.click();
-  const cast = page.locator("details.insp-card", { has: page.getByText(/^Cast \(/) }).first();
-  await cast.locator("summary").click();
+  await page.getByRole("tab", { name: "Global" }).click();
+  const cast = page.locator('[aria-labelledby="global-breakdown-cast"]');
   const productionEvidence = cast.getByRole("button", { name: /Open MARA production evidence 1 in Scene 1/ });
   await productionEvidence.focus();
   await productionEvidence.press("Enter");
