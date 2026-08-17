@@ -25,6 +25,7 @@ test("sample screenplay survives source mode and exposes the mode workspaces", a
   await expect(page.getByRole("heading", { name: "Comments and suggested changes" })).toBeVisible();
 
   await page.getByRole("button", { name: "Reference", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Assist", exact: true })).toHaveCount(0);
   await page.getByRole("tab", { name: "Props" }).click();
   const manualObject = page.getByRole("textbox", { name: "Manual object name" });
   await manualObject.fill("E2E Compass");

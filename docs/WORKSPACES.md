@@ -7,7 +7,7 @@ The shell is organized as **modes** on a left rail. Every mode is a useful prese
 | Write | Accessible story tree · screenplay paper · contextual inspector and reference panel |
 | Outline | Acts, sequences, scenes, and beats with Act/Sequence/Scene/Beat/Timeline views and the Visual Board |
 | Treatment | Long-form Markdown treatments with links into structure and entities |
-| Reference | Cast, Props, and Places sheets (detection with confirm/rename/merge/split) plus the opt-in Assist prompt |
+| Reference | Cast, Props, and Places sheets with detection, confirmation, rename, merge, and split controls |
 | Series (TV) | Show bible, seasons, arcs, episode metadata, A/B/C stories, continuity database |
 | Breakdown | Collapsible reports (structure, coverage, pacing, departments, detailed scenes, exports) and Production tools |
 | Drafts | Save/restore versions, milestones, Alternate Drafts, compare, combine |

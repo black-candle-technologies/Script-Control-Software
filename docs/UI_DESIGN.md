@@ -49,7 +49,7 @@ The SCS interface is built around one idea: **the screenplay page is the product
 
 - `Workspace.tsx` — shell orchestration and integration with the coordinated project session, portable save/import/export, and device-local preferences. Durable transformations live outside the component.
 - `SceneNavigator.tsx`, `ContextInspector.tsx`, `Launcher.tsx`, `TitlePageEditor.tsx`, and `CollapsibleSection.tsx` — focused accessible surfaces.
-- `Inspector.tsx` (`PanelHost`) — hosts the full-width workspace panels (Story, Treatment, Cast, Props, Places, Drafts, Breakdown, Series, Production, Team, Assist).
+- `Inspector.tsx` (`PanelHost`) — hosts the full-width workspace panels (Story, Treatment, Cast, Props, Places, Drafts, Breakdown, Series, Production, Team).
 - `components/workspace/` — generic document tabs, the validated panel registry and recursive dock renderer, the Window menu, Layout Manager, and cross-window preview overlay.
 - `BrandMark.tsx` + `domain/brandGeometry.ts` — the sole component and canonical path geometry for the visible SCS mark.
 - `ui.tsx` — shared Menu, Segmented, EmptyState controls; `Icons.tsx` — one consistent inline 16px stroke icon set (no icon dependency).

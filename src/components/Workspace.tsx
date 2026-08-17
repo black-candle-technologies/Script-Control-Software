@@ -3172,7 +3172,6 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
         { value: "Cast", label: "Cast" },
         { value: "Props", label: "Props" },
         { value: "Places", label: "Places" },
-        { value: "Assist", label: "Assist" },
       ], referenceModeTab, setReferenceModeTab)
     : mode === "series" ? modeView("Series", MODE_META.series.blurb, null, "Series", () => {})
     : mode === "breakdown" ? modeView("Breakdown", MODE_META.breakdown.blurb, [

@@ -141,7 +141,7 @@ interface InspectorProps {
 }
 
 /** Workspace panels the mode shell can host full-width. */
-export type PanelTab = "Story" | "Treatment" | "Cast" | "Props" | "Places" | "Drafts" | "Breakdown" | "Global" | "Series" | "Production" | "Team" | "Assist";
+export type PanelTab = "Story" | "Treatment" | "Cast" | "Props" | "Places" | "Drafts" | "Breakdown" | "Global" | "Series" | "Production" | "Team";
 const Hint = ({ children }: { children: React.ReactNode }) => <p className="insp-hint">{children}</p>;
 
 const storyCssColor = (value?: string) => {
@@ -181,7 +181,7 @@ const snapshotScopeLabel = (scope?: SnapshotScope) => !scope || scope.kind === "
  */
 export default function PanelHost({ tab, ...props }: InspectorProps & { tab: PanelTab }) {
   return <div className="panel-host">
-    {tab !== "Team" && tab !== "Assist" && tab !== "Drafts" && tab !== "Breakdown" && tab !== "Global" && <fieldset className="permission-scope" disabled={!props.editable}>
+    {tab !== "Team" && tab !== "Drafts" && tab !== "Breakdown" && tab !== "Global" && <fieldset className="permission-scope" disabled={!props.editable}>
       {tab === "Story" && <StoryWorkspaceTab {...props} />}
       {tab === "Treatment" && <TreatmentWorkspaceTab {...props} />}
       {tab === "Cast" && <CastTab {...props} />}
@@ -194,7 +194,6 @@ export default function PanelHost({ tab, ...props }: InspectorProps & { tab: Pan
     {tab === "Global" && <GlobalBreakdownTab {...props} />}
     {tab === "Drafts" && <DraftsTab {...props} />}
     {tab === "Team" && <TeamPanel session={props.collaborationSession} activeScene={props.activeScene} onSession={props.onCollaborationSession} onOpenTarget={props.onCollaborationTarget} onMessage={props.onCollaborationMessage} sync={props.collaborationSync} />}
-    {tab === "Assist" && <AssistTab {...props} />}
   </div>;
 }
 
@@ -1758,11 +1757,4 @@ function ProductionTab({ workspace, onWorkspace, activeScene, productionPages, p
     <div className="btn-row"><select aria-label="Scene side" className="element-select" value={sceneSide} onChange={(event) => setSceneSide(event.target.value)}><option value="">All scene sides</option>{scenes.map((scene) => <option key={scene.id} value={scene.id}>Scene {scene.sceneNumber ?? scene.number} · {scene.heading}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportProduction("scene-sides", sceneSide || undefined)}>Export Scene Sides</button></div>
     <h4>Department and revision notes</h4><textarea className="insp-notes-input" value={workspace.productionNotes} onChange={(event) => onWorkspace({ productionNotes: event.target.value })} placeholder="Wardrobe, makeup, props, department notes…" />
   </div>;
-}
-
-function AssistTab({ scenes, characters, breakdown, workspace }: InspectorProps) {
-  const prompt = useMemo(() => `Review this screenplay development summary. Keep all suggestions optional.\nScenes: ${scenes.length}\nCharacters: ${characters.map((character) => character.name).join(", ")}\nNight scenes: ${breakdown.nightScenes}\nTreatment:\n${workspace.treatment}`, [scenes, characters, breakdown, workspace.treatment]);
-  const [copied, setCopied] = useState(false);
-  const copy = async () => { await navigator.clipboard.writeText(prompt); setCopied(true); };
-  return <div className="insp-stack"><Hint>Opt-in companion prompt: SCS sends nothing. Copy this structured context into the local or API-based assistant you choose.</Hint><textarea className="insp-notes-input treatment-input" readOnly value={prompt} /><button className="btn" onClick={copy}>{copied ? "Copied" : "Copy Assistant Prompt"}</button></div>;
 }
