@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DEFAULT_BREAKDOWN_SECTION_STATE,
+  DEFAULT_GLOBAL_BREAKDOWN_CATEGORY_STATE,
   LEGACY_UI_PREFERENCES_KEY,
   UI_PREFERENCES_KEY,
   breakdownSectionsForScope,
   defaultUiPreferences,
   defaultUiWindowPreferences,
+  globalBreakdownCategoriesForScope,
   loadUiPreferences,
   normalizeUiPreferences,
   resetBreakdownSections,
@@ -17,6 +19,7 @@ import {
   uiPreferenceScope,
   uiWindowPreferences,
   withBreakdownSections,
+  withGlobalBreakdownCategories,
   withUiWindowPreferences,
   type UiPreferenceStorage,
 } from "./uiPreferences.ts";
@@ -51,7 +54,7 @@ test("UI preferences migrate legacy chrome values and normalize hostile fields",
   assert.equal(JSON.parse(storage.getItem(UI_PREFERENCES_KEY)!).schemaVersion, 2);
 });
 
-test("breakdown disclosure state is scoped by project and document and resets to defaults", () => {
+test("breakdown and Global disclosure state is scoped by project and document", () => {
   const first = uiPreferenceScope("project/a", "document one");
   const second = uiPreferenceScope("project/a", "document two");
   assert.notEqual(first, second);
@@ -66,8 +69,18 @@ test("breakdown disclosure state is scoped by project and document and resets to
   assert.equal(breakdownSectionsForScope(preferences, first).overview, false);
   assert.deepEqual(breakdownSectionsForScope(preferences, second), DEFAULT_BREAKDOWN_SECTION_STATE);
 
+  preferences = withGlobalBreakdownCategories(preferences, first, {
+    ...DEFAULT_GLOBAL_BREAKDOWN_CATEGORY_STATE,
+    cast: false,
+    weapons: false,
+  });
+  assert.equal(globalBreakdownCategoriesForScope(preferences, first).cast, false);
+  assert.equal(globalBreakdownCategoriesForScope(preferences, first).weapons, false);
+  assert.deepEqual(globalBreakdownCategoriesForScope(preferences, second), DEFAULT_GLOBAL_BREAKDOWN_CATEGORY_STATE);
+
   preferences = resetBreakdownSections(preferences, first);
   assert.deepEqual(breakdownSectionsForScope(preferences, first), DEFAULT_BREAKDOWN_SECTION_STATE);
+  assert.equal(globalBreakdownCategoriesForScope(preferences, first).cast, false);
 });
 
 test("normalization drops unknown sections and malformed scopes", () => {
@@ -75,11 +88,14 @@ test("normalization drops unknown sections and malformed scopes", () => {
     schemaVersion: 2,
     chrome: { navOpen: true, inspOpen: false, navWidth: 300, inspWidth: 400, zoom: 1.15 },
     breakdownScopes: {
-      good: { sections: { overview: false, unknown: true, "detailed-scenes": "open" } },
+      good: {
+        sections: { overview: false, unknown: true, "detailed-scenes": "open" },
+        globalCategories: { cast: false, weapons: "closed", unknown: true },
+      },
       bad: "sections",
     },
   });
-  assert.deepEqual(normalized.breakdownScopes, { good: { sections: { overview: false } } });
+  assert.deepEqual(normalized.breakdownScopes, { good: { sections: { overview: false }, globalCategories: { cast: false } } });
   assert.equal(breakdownSectionsForScope(normalized, "good")["detailed-scenes"], false);
 });
 

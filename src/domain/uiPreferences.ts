@@ -1,3 +1,5 @@
+import type { ProductionCategory } from "./analysis.ts";
+
 export const UI_PREFERENCES_KEY = "scs.ui.v2";
 export const LEGACY_UI_PREFERENCES_KEY = "scs.ui.v1";
 export const UI_PREFERENCES_SCHEMA_VERSION = 2 as const;
@@ -33,10 +35,34 @@ export const DEFAULT_BREAKDOWN_SECTION_STATE = {
 export type BreakdownSectionId = keyof typeof DEFAULT_BREAKDOWN_SECTION_STATE;
 export type BreakdownSectionState = Record<BreakdownSectionId, boolean>;
 
+export const DEFAULT_GLOBAL_BREAKDOWN_CATEGORY_STATE = {
+  cast: true,
+  locations: true,
+  props: true,
+  vehicles: true,
+  animals: true,
+  weapons: true,
+  stunts: true,
+  vfx: true,
+  sfx: true,
+  wardrobe: true,
+  makeup: true,
+  nightScenes: true,
+  crowdScenes: true,
+  highComplexityScenes: true,
+} as const satisfies Record<ProductionCategory, boolean>;
+
+export type GlobalBreakdownCategoryState = Record<ProductionCategory, boolean>;
+
+interface BreakdownScopePreferences {
+  sections: Partial<BreakdownSectionState>;
+  globalCategories?: Partial<GlobalBreakdownCategoryState>;
+}
+
 export interface UiPreferences {
   schemaVersion: typeof UI_PREFERENCES_SCHEMA_VERSION;
   chrome: UiChromePreferences;
-  breakdownScopes: Record<string, { sections: Partial<BreakdownSectionState> }>;
+  breakdownScopes: Record<string, BreakdownScopePreferences>;
   /** Machine-local project/window state. Logical saved layouts remain portable. */
   projects: Record<string, UiProjectPreferences>;
 }
@@ -87,6 +113,7 @@ export interface UiPreferenceStorage {
 }
 
 const sectionIds = Object.keys(DEFAULT_BREAKDOWN_SECTION_STATE) as BreakdownSectionId[];
+const globalCategoryIds = Object.keys(DEFAULT_GLOBAL_BREAKDOWN_CATEGORY_STATE) as ProductionCategory[];
 const zoomLevels = new Set([0.85, 1, 1.15, 1.3]);
 
 export function defaultUiPreferences(): UiPreferences {
@@ -123,7 +150,16 @@ export function normalizeUiPreferences(value: unknown): UiPreferences {
       for (const id of sectionIds) {
         if (typeof rawScope.sections[id] === "boolean") sections[id] = rawScope.sections[id];
       }
-      breakdownScopes[scope] = { sections };
+      const globalCategories: Partial<GlobalBreakdownCategoryState> = {};
+      if (isRecord(rawScope.globalCategories)) {
+        for (const id of globalCategoryIds) {
+          if (typeof rawScope.globalCategories[id] === "boolean") globalCategories[id] = rawScope.globalCategories[id];
+        }
+      }
+      breakdownScopes[scope] = {
+        sections,
+        ...(Object.keys(globalCategories).length ? { globalCategories } : {}),
+      };
     }
   }
   const projects: UiPreferences["projects"] = {};
@@ -200,6 +236,13 @@ export function breakdownSectionsForScope(preferences: UiPreferences, scope: str
   };
 }
 
+export function globalBreakdownCategoriesForScope(preferences: UiPreferences, scope: string): GlobalBreakdownCategoryState {
+  return {
+    ...DEFAULT_GLOBAL_BREAKDOWN_CATEGORY_STATE,
+    ...(preferences.breakdownScopes[scope]?.globalCategories ?? {}),
+  };
+}
+
 export function withBreakdownSections(
   preferences: UiPreferences,
   scope: string,
@@ -210,15 +253,40 @@ export function withBreakdownSections(
     ...preferences,
     breakdownScopes: {
       ...preferences.breakdownScopes,
-      [scope]: { sections: normalized },
+      [scope]: {
+        sections: normalized,
+        ...(preferences.breakdownScopes[scope]?.globalCategories
+          ? { globalCategories: preferences.breakdownScopes[scope].globalCategories }
+          : {}),
+      },
+    },
+  };
+}
+
+export function withGlobalBreakdownCategories(
+  preferences: UiPreferences,
+  scope: string,
+  globalCategories: GlobalBreakdownCategoryState,
+): UiPreferences {
+  const normalized = Object.fromEntries(globalCategoryIds.map((id) => [id, Boolean(globalCategories[id])])) as GlobalBreakdownCategoryState;
+  return {
+    ...preferences,
+    breakdownScopes: {
+      ...preferences.breakdownScopes,
+      [scope]: {
+        sections: preferences.breakdownScopes[scope]?.sections ?? {},
+        globalCategories: normalized,
+      },
     },
   };
 }
 
 export function resetBreakdownSections(preferences: UiPreferences, scope: string): UiPreferences {
-  if (!preferences.breakdownScopes[scope]) return preferences;
+  const current = preferences.breakdownScopes[scope];
+  if (!current) return preferences;
   const breakdownScopes = { ...preferences.breakdownScopes };
-  delete breakdownScopes[scope];
+  if (current.globalCategories) breakdownScopes[scope] = { sections: {}, globalCategories: current.globalCategories };
+  else delete breakdownScopes[scope];
   return { ...preferences, breakdownScopes };
 }
 

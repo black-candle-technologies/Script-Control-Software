@@ -58,6 +58,38 @@ test("Breakdown disclosures stay mounted, support bulk controls, and persist per
   await expect(page.getByRole("button", { name: /^Detailed scenes/ })).toHaveAttribute("aria-expanded", "false");
 });
 
+test("Global categories collapse individually, support bulk controls, and persist per document", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Breakdown", exact: true }).click();
+  await page.getByRole("tab", { name: "Global" }).click();
+
+  const categoryButtons = page.locator(".global-breakdown-category .collapsible-section-trigger");
+  const cast = page.getByRole("button", { name: /^Cast\b/ });
+  const weapons = page.getByRole("button", { name: /^Weapons\b/ });
+  await expect(categoryButtons).toHaveCount(14);
+  await expect.poll(() => categoryButtons.evaluateAll((buttons) => buttons.every((button) => button.getAttribute("aria-expanded") === "true"))).toBe(true);
+
+  await weapons.click();
+  await expect(weapons).toHaveAttribute("aria-expanded", "false");
+  await expect(cast).toHaveAttribute("aria-expanded", "true");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.ui.v2"))).not.toBeNull();
+
+  await page.reload();
+  await page.locator(".launcher-recent").click();
+  await page.getByRole("button", { name: "Breakdown", exact: true }).click();
+  await page.getByRole("tab", { name: "Global" }).click();
+  await expect(page.getByRole("button", { name: /^Weapons\b/ })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: /^Cast\b/ })).toHaveAttribute("aria-expanded", "true");
+
+  await page.getByRole("button", { name: "Collapse All" }).click();
+  await expect(page.getByRole("status")).toHaveText("All Global categories collapsed.");
+  await expect.poll(() => categoryButtons.evaluateAll((buttons) => buttons.every((button) => button.getAttribute("aria-expanded") === "false"))).toBe(true);
+
+  await page.getByRole("button", { name: "Expand All" }).click();
+  await expect(page.getByRole("status")).toHaveText("All Global categories expanded.");
+  await expect.poll(() => categoryButtons.evaluateAll((buttons) => buttons.every((button) => button.getAttribute("aria-expanded") === "true"))).toBe(true);
+});
+
 test("Props and Breakdown occurrence buttons select the exact screenplay range and Escape clears it", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
   await page.getByRole("button", { name: "Reference", exact: true }).click();
@@ -87,7 +119,7 @@ test("Props and Breakdown occurrence buttons select the exact screenplay range a
 
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
   await page.getByRole("tab", { name: "Global" }).click();
-  const vehicles = page.locator('[aria-labelledby="global-breakdown-vehicles"]');
+  const vehicles = page.locator('[data-section-id="global-breakdown-vehicles"]');
   await vehicles.getByRole("button", { name: /Open BUS occurrence 1 in Scene/ }).first().click();
   await expect(page.locator('textarea[data-script-target-state="exact"]')).toHaveCount(1);
 });
@@ -120,7 +152,7 @@ test("dialogue, location, and production references are keyboard-operable exact 
 
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
   await page.getByRole("tab", { name: "Global" }).click();
-  const cast = page.locator('[aria-labelledby="global-breakdown-cast"]');
+  const cast = page.locator('[data-section-id="global-breakdown-cast"]');
   const productionEvidence = cast.getByRole("button", { name: /Open MARA production evidence 1 in Scene 1/ });
   await productionEvidence.focus();
   await productionEvidence.press("Enter");

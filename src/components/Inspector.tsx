@@ -24,6 +24,7 @@ import {
   type BoardScenePlacement,
   type BreakdownSectionId,
   type BreakdownSectionState,
+  type GlobalBreakdownCategoryState,
   type AnalysisCsvSection,
   type AnalysisEntityKind,
   type CharacterRef,
@@ -105,6 +106,8 @@ interface InspectorProps {
   breakdownSections: BreakdownSectionState;
   onBreakdownSectionsChange: (sections: BreakdownSectionState) => void;
   onResetBreakdownSections: () => void;
+  globalBreakdownCategories: GlobalBreakdownCategoryState;
+  onGlobalBreakdownCategoriesChange: (categories: GlobalBreakdownCategoryState) => void;
   onOpenScriptTarget: (target: ScriptTarget) => void;
   onImportTreatment: () => void;
   onExportTreatment: (format: "md" | "docx" | "pdf") => void;
@@ -1478,14 +1481,23 @@ function GlobalBreakdownCategory({
   activeDocumentId,
   onOpenEntityBreakdown,
   onOpenScriptTarget,
+  open,
+  onOpenChange,
 }: Pick<InspectorProps, "analysis" | "activeDocumentId" | "onOpenEntityBreakdown" | "onOpenScriptTarget"> & {
   category: ProductionCategory;
   rows: ProductionRow[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const label = PRODUCTION_CATEGORY_LABELS[category];
-  const headingId = `global-breakdown-${category}`;
-  return <section className="insp-card global-breakdown-category" aria-labelledby={headingId}>
-    <h3 className="insp-card-title global-breakdown-category-title" id={headingId}><span>{label}</span><span className="global-breakdown-count">({rows.length})</span></h3>
+  return <CollapsibleSection
+    id={`global-breakdown-${category}`}
+    title={label}
+    summary={`${rows.length} cue${rows.length === 1 ? "" : "s"}`}
+    open={open}
+    onOpenChange={onOpenChange}
+    className="global-breakdown-category"
+  >
     {!rows.length && <Hint>No {label.toLowerCase()} detected.</Hint>}
     {rows.map((row, index) => {
       const entityKind = category === "cast" ? "character" : category === "locations" ? "location" : null;
@@ -1512,18 +1524,28 @@ function GlobalBreakdownCategory({
         >{occurrence.matchedText} · {object ? `occurrence ${occurrence.occurrence + 1}` : `evidence ${occurrenceIndex + 1}`}</button>)}</div>}
       </div>;
     })}
-  </section>;
+  </CollapsibleSection>;
 }
 
 function GlobalBreakdownTab(props: InspectorProps) {
+  const [bulkMessage, setBulkMessage] = useState("");
   const productionEntries = Object.entries(props.analysis.production) as [ProductionCategory, ProductionRow[]][];
   const cueCount = productionEntries.reduce((total, [, rows]) => total + rows.length, 0);
   const activeCategories = productionEntries.filter(([, rows]) => rows.length > 0).length;
+  const setAllCategories = (open: boolean) => {
+    props.onGlobalBreakdownCategoriesChange(Object.fromEntries(productionEntries.map(([category]) => [category, open])) as GlobalBreakdownCategoryState);
+    setBulkMessage(open ? "All Global categories expanded." : "All Global categories collapsed.");
+  };
   return <div className="insp-stack global-breakdown">
     <div className="insp-card global-breakdown-summary">
       <div className="insp-kicker">Screenplay-wide elements</div>
       <div className="insp-card-title">{cueCount} cues across {activeCategories} categories</div>
       <p className="insp-card-desc">Cast, locations, props, weapons, vehicles, and every other production category are collected here for the whole screenplay.</p>
+    </div>
+    <div className="breakdown-disclosure-toolbar" role="group" aria-label="Global category controls">
+      <button type="button" className="btn btn-ghost" onClick={() => setAllCategories(true)}>Expand All</button>
+      <button type="button" className="btn btn-ghost" onClick={() => setAllCategories(false)}>Collapse All</button>
+      <span className="sr-only" role="status" aria-live="polite">{bulkMessage}</span>
     </div>
     {productionEntries.map(([category, rows]) => <GlobalBreakdownCategory
       key={category}
@@ -1533,6 +1555,8 @@ function GlobalBreakdownTab(props: InspectorProps) {
       activeDocumentId={props.activeDocumentId}
       onOpenEntityBreakdown={props.onOpenEntityBreakdown}
       onOpenScriptTarget={props.onOpenScriptTarget}
+      open={props.globalBreakdownCategories[category]}
+      onOpenChange={(open) => props.onGlobalBreakdownCategoriesChange({ ...props.globalBreakdownCategories, [category]: open })}
     />)}
   </div>;
 }

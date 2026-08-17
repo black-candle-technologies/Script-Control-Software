@@ -50,6 +50,7 @@ import {
   emptyWorkspace,
   estimatePages,
   floatDockPanel,
+  globalBreakdownCategoriesForScope,
   hasPermission,
   hideDockPanel,
   getWorkspaceDockLayout,
@@ -138,6 +139,7 @@ import {
   uiPreferenceScope,
   uiWindowPreferences,
   withBreakdownSections,
+  withGlobalBreakdownCategories,
   withUiWindowPreferences,
   workspaceForPortableStorage,
 } from "../domain/index.ts";
@@ -354,6 +356,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const isTelevision = session.projectType === "television";
   const breakdownPreferenceKey = uiPreferenceScope(session.projectId, doc.id!);
   const breakdownSections = breakdownSectionsForScope(uiPreferences, breakdownPreferenceKey);
+  const globalBreakdownCategories = globalBreakdownCategoriesForScope(uiPreferences, breakdownPreferenceKey);
   const nativeViewFingerprint = JSON.stringify({
     tabs: {
       openDocumentIds: documentTabs.openDocumentIds,
@@ -2380,6 +2383,8 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     breakdownSections,
     onBreakdownSectionsChange: (sections: typeof breakdownSections) => setUiPreferences((current) => withBreakdownSections(current, breakdownPreferenceKey, sections)),
     onResetBreakdownSections: () => setUiPreferences((current) => resetBreakdownSections(current, breakdownPreferenceKey)),
+    globalBreakdownCategories,
+    onGlobalBreakdownCategoriesChange: (categories: typeof globalBreakdownCategories) => setUiPreferences((current) => withGlobalBreakdownCategories(current, breakdownPreferenceKey, categories)),
     onOpenScriptTarget: openScriptTarget,
     onImportTreatment: importTreatment,
     onExportTreatment: exportTreatment,

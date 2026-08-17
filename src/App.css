@@ -1582,25 +1582,6 @@ details.insp-card > summary { cursor: pointer; }
 
 .global-breakdown { width: 100%; }
 .global-breakdown-summary { border-inline-start: 3px solid var(--accent); }
-.global-breakdown-category-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin: 0;
-}
-.global-breakdown-count {
-  display: inline-grid;
-  place-items: center;
-  min-width: 1.7rem;
-  min-height: 1.35rem;
-  padding: 0 0.35rem;
-  color: var(--text-2);
-  background: var(--field);
-  box-shadow: var(--bevel-in-1);
-  font: 650 11px/1 var(--font-mono);
-}
-.global-breakdown-category > .insp-hint { margin: 0; }
 
 .treatment-input { min-height: 24rem; font-family: var(--font-screenplay); font-size: 13px; line-height: 1.6; }
 
