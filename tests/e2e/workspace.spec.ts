@@ -186,7 +186,7 @@ test("breakdown aggregates entities, uses readable labels, and opens character d
   await expect(page.getByRole("button", { name: /^High-complexity scenes\b/ })).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByText(/nightScenes|crowdScenes|highComplexityScenes/)).toHaveCount(0);
 
-  const characterLink = page.locator('[data-section-id="global-breakdown-cast"] .collapsible-section-content').getByRole("button").first();
+  const characterLink = page.locator('[data-section-id="global-breakdown-cast"] .collapsible-section-content [data-entity-id]').first();
   const characterName = (await characterLink.textContent())?.trim();
   const characterId = await characterLink.getAttribute("data-entity-id");
   expect(characterName).toBeTruthy();
@@ -201,7 +201,7 @@ test("breakdown aggregates entities, uses readable labels, and opens character d
 
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
   await page.getByRole("tab", { name: "Global" }).click();
-  const locationLink = page.locator('[data-section-id="global-breakdown-locations"] .collapsible-section-content').getByRole("button").first();
+  const locationLink = page.locator('[data-section-id="global-breakdown-locations"] .collapsible-section-content [data-entity-id]').first();
   const locationId = await locationLink.getAttribute("data-entity-id");
   expect(locationId).toBeTruthy();
   await locationLink.click();

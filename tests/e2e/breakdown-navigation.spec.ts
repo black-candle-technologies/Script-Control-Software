@@ -82,12 +82,56 @@ test("Global categories collapse individually, support bulk controls, and persis
   await expect(page.getByRole("button", { name: /^Cast\b/ })).toHaveAttribute("aria-expanded", "true");
 
   await page.getByRole("button", { name: "Collapse All" }).click();
-  await expect(page.getByRole("status")).toHaveText("All Global categories collapsed.");
+  await expect(page.getByRole("group", { name: "Global category controls" }).getByRole("status")).toHaveText("All Global categories collapsed.");
   await expect.poll(() => categoryButtons.evaluateAll((buttons) => buttons.every((button) => button.getAttribute("aria-expanded") === "false"))).toBe(true);
 
   await page.getByRole("button", { name: "Expand All" }).click();
-  await expect(page.getByRole("status")).toHaveText("All Global categories expanded.");
+  await expect(page.getByRole("group", { name: "Global category controls" }).getByRole("status")).toHaveText("All Global categories expanded.");
   await expect.poll(() => categoryButtons.evaluateAll((buttons) => buttons.every((button) => button.getAttribute("aria-expanded") === "true"))).toBe(true);
+});
+
+test("Global categories provide category-aware sort, include search, and exclude search", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Breakdown", exact: true }).click();
+  await page.getByRole("tab", { name: "Global" }).click();
+
+  const cast = page.locator('[data-section-id="global-breakdown-cast"]');
+  await cast.getByRole("button", { name: "Filter and sort Cast" }).click();
+  await expect(cast.getByLabel("Sort Cast", { exact: true }).locator("option")).toHaveText([
+    "Order of appearance",
+    "Lines: most to least",
+    "Lines: least to most",
+    "Scenes: most to least",
+    "Scenes: least to most",
+  ]);
+  await cast.getByLabel("Sort Cast", { exact: true }).selectOption("scenes-desc");
+  const castNames = cast.locator(".script-reference-row [data-entity-id]");
+  await expect(castNames).toHaveText(["MARA", "DELL"]);
+
+  await cast.getByLabel("Search Cast").fill("dell");
+  await expect(cast.locator(".global-breakdown-filter-bar").getByRole("status")).toHaveText("1 of 2 characters");
+  await expect(castNames).toHaveText(["DELL"]);
+  await cast.getByLabel("Cast search behavior").selectOption("exclude");
+  await expect(castNames).toHaveText(["MARA"]);
+  await cast.getByRole("button", { name: "Clear" }).click();
+  await expect(castNames).toHaveText(["DELL", "MARA"]);
+
+  const locations = page.locator('[data-section-id="global-breakdown-locations"]');
+  await locations.getByRole("button", { name: "Filter and sort Locations" }).click();
+  await locations.getByLabel("Search Locations").fill("moving");
+  await expect(locations.locator(".global-breakdown-filter-bar").getByRole("status")).toHaveText("1 of 3 locations");
+  await expect(locations.locator(".script-reference-row [data-entity-id]")).toHaveText(["GREYHOUND BUS - MOVING"]);
+
+  const vehicles = page.locator('[data-section-id="global-breakdown-vehicles"]');
+  await vehicles.getByRole("button", { name: "Filter and sort Vehicles" }).click();
+  await vehicles.getByLabel("Search Vehicles").fill("truck");
+  await expect(vehicles.locator(".global-breakdown-filter-bar").getByRole("status")).toHaveText("1 of 2 items");
+  await expect(vehicles.locator(".script-reference-row")).toContainText(["TRUCK"]);
+  await vehicles.getByLabel("Vehicles search behavior").selectOption("exclude");
+  await expect(vehicles.locator(".script-reference-row")).toContainText(["BUS"]);
+
+  await expect(page.getByRole("button", { name: "Filter and sort Props" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Filter and sort Weapons" })).toBeDisabled();
 });
 
 test("Props and Breakdown occurrence buttons select the exact screenplay range and Escape clears it", async ({ page }) => {

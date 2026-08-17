@@ -1582,6 +1582,46 @@ details.insp-card > summary { cursor: pointer; }
 
 .global-breakdown { width: 100%; }
 .global-breakdown-summary { border-inline-start: 3px solid var(--accent); }
+.global-breakdown-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+}
+.global-breakdown-filter-bar .insp-card-meta { margin-inline-start: auto; }
+.global-breakdown-filter-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  align-items: end;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.65rem;
+  background: var(--field);
+  border: 1px solid var(--line);
+  box-shadow: var(--bevel-in-1);
+}
+.global-breakdown-filter-field {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--text-3);
+  font: 650 10.5px/1.3 var(--font-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.global-breakdown-filter-field > input,
+.global-breakdown-filter-field > select {
+  width: 100%;
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.global-breakdown-filter-clear {
+  justify-self: start;
+  min-height: 2rem;
+  align-self: end;
+}
 
 .treatment-input { min-height: 24rem; font-family: var(--font-screenplay); font-size: 13px; line-height: 1.6; }
 

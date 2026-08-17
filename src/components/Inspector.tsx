@@ -3,12 +3,15 @@ import TeamPanel, { type CollaborationSyncControls } from "./TeamPanel.tsx";
 import CollapsibleSection from "./CollapsibleSection.tsx";
 import {
   DEFAULT_BREAKDOWN_SECTION_STATE,
+  DEFAULT_GLOBAL_BREAKDOWN_VIEW_OPTIONS,
   applyBoardScenePlacement,
   boardPlacementOptions,
   createManualObjectOverride,
   createStoryBeat,
   describeBoardPlacement,
   draftReviewPreview,
+  filterAndSortGlobalBreakdownRows,
+  globalBreakdownSortOptions,
   hasPermission,
   moveStoryScene,
   neighboringBoardPlacement,
@@ -25,6 +28,7 @@ import {
   type BreakdownSectionId,
   type BreakdownSectionState,
   type GlobalBreakdownCategoryState,
+  type GlobalBreakdownViewOptions,
   type AnalysisCsvSection,
   type AnalysisEntityKind,
   type CharacterRef,
@@ -1483,13 +1487,31 @@ function GlobalBreakdownCategory({
   onOpenScriptTarget,
   open,
   onOpenChange,
+  viewOptions,
+  filterOpen,
+  onFilterOpenChange,
+  onViewOptionsChange,
 }: Pick<InspectorProps, "analysis" | "activeDocumentId" | "onOpenEntityBreakdown" | "onOpenScriptTarget"> & {
   category: ProductionCategory;
   rows: ProductionRow[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  viewOptions: GlobalBreakdownViewOptions;
+  filterOpen: boolean;
+  onFilterOpenChange: (open: boolean) => void;
+  onViewOptionsChange: (options: GlobalBreakdownViewOptions) => void;
 }) {
   const label = PRODUCTION_CATEGORY_LABELS[category];
+  const visibleRows = useMemo(
+    () => filterAndSortGlobalBreakdownRows(category, rows, analysis.entities, viewOptions),
+    [analysis.entities, category, rows, viewOptions],
+  );
+  const sortOptions = globalBreakdownSortOptions(category);
+  const queryActive = Boolean(viewOptions.query.trim());
+  const activeFilterCount = Number(queryActive) + Number(viewOptions.sort !== "appearance");
+  const filterPanelId = `global-breakdown-${category}-filters`;
+  const resultNoun = category === "cast" ? "characters" : category === "locations" ? "locations" : "items";
+  const updateViewOptions = (patch: Partial<GlobalBreakdownViewOptions>) => onViewOptionsChange({ ...viewOptions, ...patch });
   return <CollapsibleSection
     id={`global-breakdown-${category}`}
     title={label}
@@ -1498,8 +1520,65 @@ function GlobalBreakdownCategory({
     onOpenChange={onOpenChange}
     className="global-breakdown-category"
   >
+    <div className="global-breakdown-filter-bar">
+      <button
+        type="button"
+        className={`btn btn-ghost global-breakdown-filter-toggle${activeFilterCount ? " active" : ""}`}
+        aria-label={`Filter and sort ${label}`}
+        aria-expanded={filterOpen}
+        aria-controls={filterPanelId}
+        disabled={!rows.length}
+        onClick={() => onFilterOpenChange(!filterOpen)}
+      >Filter &amp; sort{activeFilterCount ? ` (${activeFilterCount})` : ""}</button>
+      <span
+        className="insp-card-meta"
+        role={filterOpen ? "status" : undefined}
+        aria-live={filterOpen ? "polite" : undefined}
+      >
+        {visibleRows.length} of {rows.length} {resultNoun}
+      </span>
+    </div>
+    {filterOpen && <div className="global-breakdown-filter-panel" id={filterPanelId} role="group" aria-label={`${label} filters`}>
+      <label className="global-breakdown-filter-field global-breakdown-search-field">Search
+        <input
+          type="search"
+          className="insp-notes-input"
+          aria-label={`Search ${label}`}
+          placeholder="Name, alias, scene, or evidence"
+          value={viewOptions.query}
+          onChange={(event) => updateViewOptions({ query: event.target.value })}
+        />
+      </label>
+      <label className="global-breakdown-filter-field">Search behavior
+        <select
+          className="element-select"
+          aria-label={`${label} search behavior`}
+          value={viewOptions.filterMode}
+          disabled={!queryActive}
+          onChange={(event) => updateViewOptions({ filterMode: event.target.value as GlobalBreakdownViewOptions["filterMode"] })}
+        >
+          <option value="include">Show matches</option>
+          <option value="exclude">Exclude matches</option>
+        </select>
+      </label>
+      <label className="global-breakdown-filter-field">Sort
+        <select
+          className="element-select"
+          aria-label={`Sort ${label}`}
+          value={viewOptions.sort}
+          onChange={(event) => updateViewOptions({ sort: event.target.value as GlobalBreakdownViewOptions["sort"] })}
+        >{sortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+      </label>
+      <button
+        type="button"
+        className="link-btn global-breakdown-filter-clear"
+        disabled={!queryActive && viewOptions.sort === "appearance" && viewOptions.filterMode === "include"}
+        onClick={() => onViewOptionsChange(DEFAULT_GLOBAL_BREAKDOWN_VIEW_OPTIONS)}
+      >Clear</button>
+    </div>}
     {!rows.length && <Hint>No {label.toLowerCase()} detected.</Hint>}
-    {rows.map((row, index) => {
+    {!!rows.length && !visibleRows.length && <Hint>No {label.toLowerCase()} match this filter.</Hint>}
+    {visibleRows.map((row, index) => {
       const entityKind = category === "cast" ? "character" : category === "locations" ? "location" : null;
       const object = row.entityId ? analysis.entities.objects.find((item) => item.id === row.entityId) : undefined;
       const references = object?.continuity.filter((entry) => entry.sceneId === row.sceneId) ?? [];
@@ -1528,8 +1607,15 @@ function GlobalBreakdownCategory({
 }
 
 function GlobalBreakdownTab(props: InspectorProps) {
-  const [bulkMessage, setBulkMessage] = useState("");
   const productionEntries = Object.entries(props.analysis.production) as [ProductionCategory, ProductionRow[]][];
+  const defaultViewOptions = () => Object.fromEntries(productionEntries.map(([category]) => [category, { ...DEFAULT_GLOBAL_BREAKDOWN_VIEW_OPTIONS }])) as Record<ProductionCategory, GlobalBreakdownViewOptions>;
+  const [bulkMessage, setBulkMessage] = useState("");
+  const [filterCategory, setFilterCategory] = useState<ProductionCategory | null>(null);
+  const [viewOptionsByCategory, setViewOptionsByCategory] = useState<Record<ProductionCategory, GlobalBreakdownViewOptions>>(defaultViewOptions);
+  useEffect(() => {
+    setFilterCategory(null);
+    setViewOptionsByCategory(defaultViewOptions());
+  }, [props.activeDocumentId]);
   const cueCount = productionEntries.reduce((total, [, rows]) => total + rows.length, 0);
   const activeCategories = productionEntries.filter(([, rows]) => rows.length > 0).length;
   const setAllCategories = (open: boolean) => {
@@ -1557,6 +1643,10 @@ function GlobalBreakdownTab(props: InspectorProps) {
       onOpenScriptTarget={props.onOpenScriptTarget}
       open={props.globalBreakdownCategories[category]}
       onOpenChange={(open) => props.onGlobalBreakdownCategoriesChange({ ...props.globalBreakdownCategories, [category]: open })}
+      viewOptions={viewOptionsByCategory[category] ?? DEFAULT_GLOBAL_BREAKDOWN_VIEW_OPTIONS}
+      filterOpen={filterCategory === category}
+      onFilterOpenChange={(open) => setFilterCategory(open ? category : null)}
+      onViewOptionsChange={(options) => setViewOptionsByCategory((current) => ({ ...current, [category]: options }))}
     />)}
   </div>;
 }

@@ -9,6 +9,7 @@ export * from "./status.ts";
 export * from "./screenplay.ts";
 export * from "./editorTyping.ts";
 export * from "./fountain.ts";
+export * from "./globalBreakdown.ts";
 export * from "./hierarchy.ts";
 export * from "./projectTypes.ts";
 export * from "./foundation.ts";
