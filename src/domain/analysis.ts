@@ -30,10 +30,21 @@ export interface CharacterSceneAppearance {
   dialogueWords: number;
 }
 
-export interface DialogueLine {
+export interface ScriptTextOccurrence {
+  startOffset: number;
+  endOffset: number;
+  matchedText: string;
+  /** Zero-based occurrence of this reference within the source block. */
+  occurrence: number;
+}
+
+export interface ScriptBlockOccurrence extends ScriptTextOccurrence {
+  blockId: string;
+}
+
+export interface DialogueLine extends ScriptBlockOccurrence {
   sceneNumber: number;
   sceneId: string;
-  blockId: string;
   text: string;
 }
 
@@ -54,7 +65,7 @@ export interface CharacterProfile extends AnalysisEntityBase {
   dialogueLines: DialogueLine[];
 }
 
-export interface LocationAppearance {
+export interface LocationAppearance extends ScriptBlockOccurrence {
   sceneNumber: number;
   sceneId: string;
   heading: string;
@@ -78,10 +89,13 @@ export interface ObjectContinuityEntry {
   sceneId: string;
   blockId: string;
   mentionCount: number;
+  occurrences: ObjectContinuityOccurrence[];
   excerpt: string;
   associatedCharacters: string[];
   ownershipCharacters: string[];
 }
+
+export interface ObjectContinuityOccurrence extends ScriptTextOccurrence {}
 
 export interface ObjectAssociation {
   character: string;
@@ -226,6 +240,7 @@ export interface ProductionRow {
   evidence: string;
   blockId?: string;
   entityId?: string;
+  occurrences?: ScriptBlockOccurrence[];
 }
 
 export type ProductionReport = Record<ProductionCategory, ProductionRow[]>;
@@ -405,7 +420,16 @@ export function analyzeCharacters(input: AnalysisInput): CharacterProfile[] {
       const appearance = active.profile.appearances.get(active.sceneNumber)!;
       appearance.dialogueCount++;
       appearance.dialogueWords += words(block.text);
-      active.profile.dialogueLines.push({ sceneNumber: active.sceneNumber, sceneId: active.sceneId, blockId: block.id, text: block.text });
+      active.profile.dialogueLines.push({
+        sceneNumber: active.sceneNumber,
+        sceneId: active.sceneId,
+        blockId: block.id,
+        text: block.text,
+        startOffset: 0,
+        endOffset: block.text.length,
+        matchedText: block.text,
+        occurrence: 0,
+      });
     } else if (block.type !== "parenthetical") {
       active = undefined;
     }
@@ -461,18 +485,23 @@ export function analyzeLocations(input: AnalysisInput): LocationProfile[] {
   }
   const profiles = new Map<string, { aliases: Set<string>; appearances: LocationAppearance[] }>();
   for (const scene of deriveScenes(blocks)) {
+    const headingBlock = blocks[scene.blockIndex];
+    if (!headingBlock) continue;
     const parsed = parseHeading(scene.heading);
     const parsedLocation = parsed.location.trim().toUpperCase();
     if (!parsedLocation) continue;
+    const occurrence = locationOccurrence(headingBlock.text);
     const name = aliasesToCanonical.get(parsedLocation) ?? parsedLocation;
     const profile = profiles.get(name) ?? { aliases: new Set(aliasesByCanonical.get(name) ?? []), appearances: [] };
     if (parsedLocation !== name) profile.aliases.add(parsedLocation);
     profile.appearances.push({
       sceneNumber: scene.number,
       sceneId: scene.id,
+      blockId: headingBlock.id,
       heading: scene.heading,
       interiorExterior: parsed.intExt,
       timeOfDay: parsed.timeOfDay,
+      ...occurrence,
     });
     profiles.set(name, profile);
   }
@@ -493,6 +522,26 @@ export function analyzeLocations(input: AnalysisInput): LocationProfile[] {
       appearances: profile.appearances,
     };
   }).sort((a, b) => a.firstScene - b.firstScene || a.name.localeCompare(b.name));
+}
+
+function locationOccurrence(heading: string): ScriptTextOccurrence {
+  const trimmedStart = heading.search(/\S|$/);
+  const trimmedEnd = heading.trimEnd().length;
+  const trimmedHeading = heading.slice(trimmedStart, trimmedEnd);
+  const prefix = /^(INT\.?\/EXT\.?|EXT\.?\/INT\.?|I\/E|INT|EXT|EST)[.\s]+/i.exec(trimmedHeading);
+  const restStart = trimmedStart + (prefix?.[0].length ?? 0);
+  const rest = heading.slice(restStart, trimmedEnd);
+  const dash = rest.lastIndexOf(" - ");
+  let startOffset = restStart;
+  let endOffset = restStart + (dash >= 0 ? dash : rest.length);
+  while (startOffset < endOffset && /\s/.test(heading[startOffset])) startOffset++;
+  while (endOffset > startOffset && /\s/.test(heading[endOffset - 1])) endOffset--;
+  return {
+    startOffset,
+    endOffset,
+    matchedText: heading.slice(startOffset, endOffset),
+    occurrence: 0,
+  };
 }
 
 function termPattern(term: string): string {
@@ -564,6 +613,18 @@ export function analyzeObjects(input: AnalysisInput, characterProfiles = analyze
       if (block.type !== "action") continue;
       const matches = termMatches(block.text, object.name);
       if (!matches.length) continue;
+      const occurrences = matches.flatMap((match, occurrence): ObjectContinuityOccurrence[] => {
+        const matchedText = match[1];
+        if (!matchedText || match.index === undefined) return [];
+        // The regular expression deliberately consumes a leading separator.
+        // Offset the capture inside the full match so textarea ranges select
+        // the object itself, never the preceding space or punctuation.
+        const captureOffset = match[0].lastIndexOf(matchedText);
+        if (captureOffset < 0) return [];
+        const startOffset = match.index + captureOffset;
+        return [{ startOffset, endOffset: startOffset + matchedText.length, matchedText, occurrence }];
+      });
+      if (!occurrences.length) continue;
       const sceneNumber = blockScenes[index] ?? 1;
       const namedCharacters = characterProfiles.filter((character) => characterMentioned(block.text, character)).map((character) => character.name);
       const associatedCharacters = namedCharacters.length === 0 && (charactersByScene.get(sceneNumber)?.length ?? 0) === 1
@@ -574,7 +635,8 @@ export function analyzeObjects(input: AnalysisInput, characterProfiles = analyze
         sceneNumber,
         sceneId: scenes[sceneNumber - 1]?.id ?? "scene-1",
         blockId: block.id,
-        mentionCount: matches.length,
+        mentionCount: occurrences.length,
+        occurrences,
         excerpt: block.text.trim(),
         associatedCharacters: unique(associatedCharacters),
         ownershipCharacters: unique(ownershipCharacters),
@@ -650,9 +712,11 @@ function refreshObject(profile: ObjectProfile): ObjectProfile {
     const current = entries.get(occurrence.blockId);
     if (current) {
       current.mentionCount += occurrence.mentionCount;
+      current.occurrences = [...current.occurrences, ...occurrence.occurrences.map((item) => ({ ...item }))]
+        .sort((left, right) => left.startOffset - right.startOffset || left.endOffset - right.endOffset);
       current.associatedCharacters = unique([...current.associatedCharacters, ...occurrence.associatedCharacters]);
       current.ownershipCharacters = unique([...current.ownershipCharacters, ...occurrence.ownershipCharacters]);
-    } else entries.set(occurrence.blockId, { ...occurrence, associatedCharacters: [...occurrence.associatedCharacters], ownershipCharacters: [...occurrence.ownershipCharacters] });
+    } else entries.set(occurrence.blockId, { ...occurrence, occurrences: occurrence.occurrences.map((item) => ({ ...item })), associatedCharacters: [...occurrence.associatedCharacters], ownershipCharacters: [...occurrence.ownershipCharacters] });
   }
   profile.continuity = [...entries.values()].sort((a, b) => a.sceneNumber - b.sceneNumber);
   profile.sceneNumbers = [...new Set(profile.continuity.map((entry) => entry.sceneNumber))];
@@ -691,7 +755,7 @@ function cloneEntities(entities: AnalysisEntities): AnalysisEntities {
       aliases: [...profile.aliases],
       sceneNumbers: [...profile.sceneNumbers],
       associations: profile.associations.map((association) => ({ ...association, scenes: [...association.scenes] })),
-      continuity: profile.continuity.map((entry) => ({ ...entry, associatedCharacters: [...entry.associatedCharacters], ownershipCharacters: [...entry.ownershipCharacters] })),
+      continuity: profile.continuity.map((entry) => ({ ...entry, occurrences: entry.occurrences.map((occurrence) => ({ ...occurrence })), associatedCharacters: [...entry.associatedCharacters], ownershipCharacters: [...entry.ownershipCharacters] })),
     })),
   };
 }
@@ -735,7 +799,7 @@ function mergeLocations(target: LocationProfile, source: LocationProfile) {
 
 function mergeObjects(target: ObjectProfile, source: ObjectProfile) {
   target.aliases = unique([...target.aliases, source.name, ...source.aliases]);
-  target.continuity.push(...source.continuity.map((entry) => ({ ...entry, associatedCharacters: [...entry.associatedCharacters], ownershipCharacters: [...entry.ownershipCharacters] })));
+  target.continuity.push(...source.continuity.map((entry) => ({ ...entry, occurrences: entry.occurrences.map((occurrence) => ({ ...occurrence })), associatedCharacters: [...entry.associatedCharacters], ownershipCharacters: [...entry.ownershipCharacters] })));
   target.confidence = Math.max(target.confidence, source.confidence);
   refreshObject(target);
 }
@@ -873,23 +937,55 @@ function evidence(text: string) {
   return compact.length > 180 ? `${compact.slice(0, 177)}...` : compact;
 }
 
+function productionOccurrence(reference: ScriptBlockOccurrence): ScriptBlockOccurrence {
+  return {
+    blockId: reference.blockId,
+    startOffset: reference.startOffset,
+    endOffset: reference.endOffset,
+    matchedText: reference.matchedText,
+    occurrence: reference.occurrence,
+  };
+}
+
 function buildProduction(blocks: ScreenplayBlock[], scenes: SceneAnalysisRow[], entities: AnalysisEntities) {
   const report = emptyProduction();
   const sceneByNumber = new Map(scenes.map((scene) => [scene.number, scene]));
-  const add = (category: ProductionCategory, sceneNumber: number, item: string, detail: string, blockId?: string, entityId?: string) => {
+  const add = (
+    category: ProductionCategory,
+    sceneNumber: number,
+    item: string,
+    detail: string,
+    blockId?: string,
+    entityId?: string,
+    occurrences?: ScriptBlockOccurrence[],
+  ) => {
     const scene = sceneByNumber.get(sceneNumber);
-    if (scene) report[category].push({ category, sceneNumber, sceneId: scene.id, heading: scene.heading, item: item.toUpperCase(), evidence: detail, blockId, entityId });
+    if (scene) report[category].push({
+      category,
+      sceneNumber,
+      sceneId: scene.id,
+      heading: scene.heading,
+      item: item.toUpperCase(),
+      evidence: detail,
+      blockId,
+      entityId,
+      ...(occurrences?.length ? { occurrences } : {}),
+    });
   };
   for (const character of entities.characters.filter((item) => item.status !== "rejected" && item.status !== "merged")) {
     const firstAppearance = character.appearances[0];
-    if (firstAppearance) add(
-      "cast",
-      firstAppearance.sceneNumber,
-      character.name,
-      `${character.sceneCount} scene(s), ${character.cueCount} cue(s), ${character.dialogueCount} dialogue block(s)`,
-      undefined,
-      character.id,
-    );
+    if (firstAppearance) {
+      const firstDialogue = character.dialogueLines.find((line) => line.sceneId === firstAppearance.sceneId);
+      add(
+        "cast",
+        firstAppearance.sceneNumber,
+        character.name,
+        `${character.sceneCount} scene(s), ${character.cueCount} cue(s), ${character.dialogueCount} dialogue block(s)`,
+        firstDialogue?.blockId,
+        character.id,
+        firstDialogue ? [productionOccurrence(firstDialogue)] : undefined,
+      );
+    }
   }
   for (const location of entities.locations.filter((item) => item.status !== "rejected" && item.status !== "merged")) {
     const firstAppearance = location.appearances[0];
@@ -898,8 +994,9 @@ function buildProduction(blocks: ScreenplayBlock[], scenes: SceneAnalysisRow[], 
       firstAppearance.sceneNumber,
       location.name,
       `${location.sceneCount} scene(s): ${location.sceneNumbers.join(", ")}`,
-      undefined,
+      firstAppearance.blockId,
       location.id,
+      [productionOccurrence(firstAppearance)],
     );
   }
   for (const object of entities.objects.filter((item) => item.status !== "rejected" && item.status !== "merged")) {
@@ -913,15 +1010,45 @@ function buildProduction(blocks: ScreenplayBlock[], scenes: SceneAnalysisRow[], 
     for (const [sceneNumber, occurrences] of occurrencesByScene) {
       if (category !== "props" && !["vehicles", "animals", "weapons", "wardrobe"].includes(category)) continue;
       const excerpts = unique(occurrences.map((occurrence) => occurrence.excerpt));
-      add(category, sceneNumber, object.name, excerpts.join(" "), occurrences[0]?.blockId, object.id);
+      const productionOccurrences = occurrences.flatMap((entry) => entry.occurrences.map((occurrence) => ({
+        blockId: entry.blockId,
+        ...occurrence,
+      })));
+      add(category, sceneNumber, object.name, excerpts.join(" "), occurrences[0]?.blockId, object.id, productionOccurrences);
     }
   }
   scenes.forEach((scene) => {
-    if (scene.timeOfDay === "NIGHT") add("nightScenes", scene.number, "NIGHT", scene.heading);
+    if (scene.timeOfDay === "NIGHT") {
+      const headingBlock = blocks[scene.blockStart];
+      const match = headingBlock ? termMatches(headingBlock.text, "night")[0] : undefined;
+      const matchedText = match?.[1];
+      const startOffset = match && matchedText ? (match.index ?? 0) + match[0].length - matchedText.length : undefined;
+      add(
+        "nightScenes",
+        scene.number,
+        "NIGHT",
+        scene.heading,
+        headingBlock?.id,
+        undefined,
+        headingBlock && matchedText && startOffset !== undefined
+          ? [{ blockId: headingBlock.id, startOffset, endOffset: startOffset + matchedText.length, matchedText, occurrence: 0 }]
+          : undefined,
+      );
+    }
     const sceneBlocks = blocks.slice(scene.blockStart, scene.blockEnd + 1).filter((block) => block.type === "action");
     for (const block of sceneBlocks) {
       for (const [category, terms] of Object.entries(PRODUCTION_TERMS) as [ProductionCategory, string[]][]) {
-        for (const term of terms) if (termMatches(block.text, term).length) add(category, scene.number, term, evidence(block.text), block.id);
+        for (const term of terms) {
+          const matches = termMatches(block.text, term);
+          if (!matches.length) continue;
+          const occurrences = matches.flatMap((match, occurrence): ScriptBlockOccurrence[] => {
+            const matchedText = match[1];
+            if (!matchedText) return [];
+            const startOffset = (match.index ?? 0) + match[0].length - matchedText.length;
+            return [{ blockId: block.id, startOffset, endOffset: startOffset + matchedText.length, matchedText, occurrence }];
+          });
+          add(category, scene.number, term, evidence(block.text), block.id, undefined, occurrences);
+        }
       }
     }
   });

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { recoverySessionText, requireRecoverySessionKey } from "./recoveryStorage.ts";
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
@@ -60,9 +61,9 @@ test("sequences stay compact and scenes can be assigned, cleared, and removed", 
 
 test("sequence controls defer grouped scene order until the outline is applied", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("THE LONG WAY HOME");
-  await page.evaluate(() => {
-    const key = "scs.project-session.v3";
+  await expect.poll(() => recoverySessionText(page)).toContain("THE LONG WAY HOME");
+  const recoveryKey = await requireRecoverySessionKey(page);
+  await page.evaluate((key) => {
     const session = JSON.parse(localStorage.getItem(key)!);
     const blocks = session.documents[0].blocks;
     const starts = blocks.flatMap((block: { type: string }, index: number) => block.type === "scene_heading" ? [index] : []);
@@ -76,7 +77,7 @@ test("sequence controls defer grouped scene order until the outline is applied",
       metadata: {},
     }));
     localStorage.setItem(key, JSON.stringify(session));
-  });
+  }, recoveryKey);
   await page.reload();
   await page.locator(".launcher-recent").click();
 
@@ -111,9 +112,9 @@ test("sequence controls defer grouped scene order until the outline is applied",
 
 test("visual board drops assign an imported scene without appending or duplicating it", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("THE LONG WAY HOME");
-  const importedSceneCount = await page.evaluate(() => {
-    const key = "scs.project-session.v3";
+  await expect.poll(() => recoverySessionText(page)).toContain("THE LONG WAY HOME");
+  const recoveryKey = await requireRecoverySessionKey(page);
+  const importedSceneCount = await page.evaluate((key) => {
     const session = JSON.parse(localStorage.getItem(key)!);
     session.documents[0].source = {
       type: "fdx",
@@ -133,7 +134,7 @@ test("visual board drops assign an imported scene without appending or duplicati
     }));
     localStorage.setItem(key, JSON.stringify(session));
     return starts.length;
-  });
+  }, recoveryKey);
   await page.reload();
   await page.locator(".launcher-recent").click();
   await page.getByRole("button", { name: "Outline", exact: true }).click();
@@ -174,6 +175,7 @@ test("treatments expose import and all portable export formats", async ({ page }
 test("breakdown aggregates entities, uses readable labels, and opens character details", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
   await page.getByRole("button", { name: "Breakdown", exact: true }).click();
+  await page.getByRole("button", { name: /Production reports/ }).click();
 
   await expect(page.getByText(/^Night scenes \(\d+\)$/)).toBeVisible();
   await expect(page.getByText(/^Crowd scenes \(\d+\)$/)).toBeVisible();
@@ -483,6 +485,7 @@ test("Ctrl-drag selects contiguous screenplay blocks without changing ordinary s
   const blocks = page.locator("textarea.blk");
   const first = blocks.nth(0);
   const third = blocks.nth(2);
+  await third.scrollIntoViewIfNeeded();
   const firstBox = await first.boundingBox();
   const thirdBox = await third.boundingBox();
   if (!firstBox || !thirdBox) throw new Error("Expected screenplay blocks to be visible");
@@ -546,26 +549,30 @@ test("television workspace adds and switches episodes", async ({ page }) => {
   await page.getByRole("button", { name: "New Television Project" }).click();
   await expect(page.getByRole("textbox", { name: "Project name" })).toHaveValue("Untitled Show");
 
-  await page.getByRole("button", { name: "Episode", exact: true }).click();
-  await page.getByRole("menuitem", { name: "New Blank Episode" }).click();
-  const episodes = page.locator('[aria-label="Television episodes"]');
-  await expect(episodes.locator(".episode-tab")).toHaveCount(2);
+  await page.getByRole("button", { name: "Screenplay", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New Blank Screenplay" }).click();
+  const screenplayTabs = page.getByRole("tablist", { name: "Open screenplays" }).getByRole("tab");
+  const firstEpisode = screenplayTabs.filter({ hasText: "Untitled Episode" });
+  const secondEpisode = screenplayTabs.filter({ hasText: "Screenplay 2" });
+  await expect(screenplayTabs).toHaveCount(2);
 
-  await episodes.getByRole("button", { name: "Untitled Episode", exact: true }).click();
-  await expect(episodes.locator("button.active")).toHaveText("Untitled Episode");
-  await episodes.getByRole("button", { name: "Episode 2", exact: true }).click();
-  await expect(episodes.locator("button.active")).toHaveText("Episode 2");
+  await firstEpisode.click();
+  await expect(firstEpisode).toHaveAttribute("aria-selected", "true");
+  await secondEpisode.click();
+  await expect(secondEpisode).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("textarea.blk").first()).toBeEditable();
 });
 
 test("an episode-scoped version restores only the active television script", async ({ page }) => {
   await page.getByRole("button", { name: "New Television Project" }).click();
-  const episodes = page.locator('[aria-label="Television episodes"]');
+  const screenplayTabs = page.getByRole("tablist", { name: "Open screenplays" }).getByRole("tab");
+  const firstEpisode = screenplayTabs.filter({ hasText: "Untitled Episode" });
+  const secondEpisode = screenplayTabs.filter({ hasText: "Screenplay 2" });
   await page.locator("textarea.blk").first().fill("Episode checkpoint text.");
-  await page.getByRole("button", { name: "Episode", exact: true }).click();
-  await page.getByRole("menuitem", { name: "New Blank Episode" }).click();
+  await page.getByRole("button", { name: "Screenplay", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New Blank Screenplay" }).click();
   await page.locator("textarea.blk").first().fill("Second episode before checkpoint.");
-  await episodes.getByRole("button", { name: "Untitled Episode", exact: true }).click();
+  await firstEpisode.click();
   await page.getByRole("button", { name: "Drafts", exact: true }).click();
   await page.getByPlaceholder(/Draft \d+ name/).fill("Episode checkpoint");
   await page.getByRole("combobox", { name: "Version scope" }).selectOption("episode");
@@ -574,15 +581,15 @@ test("an episode-scoped version restores only the active television script", asy
 
   await page.getByRole("button", { name: "Write", exact: true }).click();
   await page.locator("textarea.blk").first().fill("Changed after checkpoint.");
-  await episodes.getByRole("button", { name: "Episode 2", exact: true }).click();
+  await secondEpisode.click();
   await page.locator("textarea.blk").first().fill("Second episode changed later.");
-  await episodes.getByRole("button", { name: "Untitled Episode", exact: true }).click();
+  await firstEpisode.click();
   await page.getByRole("button", { name: "Drafts", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator(".version-row", { hasText: "Episode checkpoint" }).getByRole("button", { name: "Restore" }).click();
   await page.getByRole("button", { name: "Write", exact: true }).click();
   await expect(page.locator("textarea.blk").first()).toHaveValue("EPISODE CHECKPOINT TEXT.");
-  await episodes.getByRole("button", { name: "Episode 2", exact: true }).click();
+  await secondEpisode.click();
   await expect(page.locator("textarea.blk").first()).toHaveValue("SECOND EPISODE CHANGED LATER.");
 });
 
@@ -680,7 +687,7 @@ test("edits survive local recovery and reopen from the launcher", async ({ page 
   const action = page.locator("textarea.blk-action").first();
   await action.fill("Recovered across a full reload.");
 
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("Recovered across a full reload.");
+  await expect.poll(() => recoverySessionText(page)).toContain("Recovered across a full reload.");
   await page.reload();
   await page.locator(".launcher-recent").click();
   await expect(page.locator("textarea.blk-action").first()).toHaveValue("Recovered across a full reload.");
@@ -688,9 +695,9 @@ test("edits survive local recovery and reopen from the launcher", async ({ page 
 
 test("a no-op Fountain source toggle preserves imported FDX metadata", async ({ page }) => {
   await page.getByRole("button", { name: /sample project/i }).click();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("THE LONG WAY HOME");
-  await page.evaluate(() => {
-    const key = "scs.project-session.v3";
+  await expect.poll(() => recoverySessionText(page)).toContain("THE LONG WAY HOME");
+  const recoveryKey = await requireRecoverySessionKey(page);
+  await page.evaluate((key) => {
     const session = JSON.parse(localStorage.getItem(key)!);
     const document = session.documents[0];
     document.source = {
@@ -712,26 +719,23 @@ test("a no-op Fountain source toggle preserves imported FDX metadata", async ({ 
       metadata: { Style: "Bold" },
     }];
     localStorage.setItem(key, JSON.stringify(session));
-  });
+  }, recoveryKey);
 
   await page.reload();
   await page.locator(".launcher-recent").click();
   await page.getByRole("tab", { name: "Fountain Source" }).click();
   await page.getByRole("tab", { name: "Formatted" }).click();
-  await page.waitForTimeout(1_000);
-
-  const preserved = await page.evaluate(() => {
-    const session = JSON.parse(localStorage.getItem("scs.project-session.v3")!);
-    const document = session.documents[0];
-    return {
-      baseline: document.source.lastImportedFingerprint,
-      titleBlocks: document.titlePage.blocks,
-      originalType: document.blocks[0].originalType,
-      metadata: document.blocks[0].metadata,
-      textRuns: document.blocks[0].textRuns,
-    };
-  });
-  expect(preserved).toEqual({
+  await expect.poll(() => page.evaluate((key) => {
+      const session = JSON.parse(localStorage.getItem(key)!);
+      const document = session.documents[0];
+      return {
+        baseline: document.source.lastImportedFingerprint,
+        titleBlocks: document.titlePage.blocks,
+        originalType: document.blocks[0].originalType,
+        metadata: document.blocks[0].metadata,
+        textRuns: document.blocks[0].textRuns,
+      };
+    }, recoveryKey)).toEqual({
     baseline: "external-baseline",
     titleBlocks: [{ type: "Contact", text: "writer@example.test", metadata: { Align: "Center" } }],
     originalType: "Scene Heading",
@@ -756,9 +760,9 @@ test("import warnings jump to the affected screenplay block", async ({ page }) =
   const action = page.locator("textarea.blk-action").first();
   await action.fill("Warning target line.");
 
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("scs.project-session.v3"))).toContain("Warning target line.");
-  await page.evaluate(() => {
-    const key = "scs.project-session.v3";
+  await expect.poll(() => recoverySessionText(page)).toContain("Warning target line.");
+  const recoveryKey = await requireRecoverySessionKey(page);
+  await page.evaluate((key) => {
     const session = JSON.parse(localStorage.getItem(key)!);
     session.documents[0].warnings = [{
       code: "ImportedStyle",
@@ -768,14 +772,18 @@ test("import warnings jump to the affected screenplay block", async ({ page }) =
       dataPreserved: true,
     }];
     localStorage.setItem(key, JSON.stringify(session));
-  });
+  }, recoveryKey);
 
   await page.reload();
   await page.locator(".launcher-recent").click();
   await page.getByText("1 import warning: source data was preserved where possible").click();
-  await page.getByRole("button", { name: "ImportedStyle: Imported formatting was preserved." }).click();
+  const warningTarget = page.getByRole("button", { name: "ImportedStyle: Imported formatting was preserved." });
+  await warningTarget.focus();
+  await warningTarget.press("Enter");
   await expect(action).toBeFocused();
   await expect(action).toHaveValue("Warning target line.");
+  await expect(action).toHaveAttribute("data-script-target-state", "block");
+  await expect(page.locator(".script-target-status")).toContainText("opened its original paragraph");
 });
 
 test("panels collapse, reopen, and focus mode strips the chrome", async ({ page }) => {
@@ -848,6 +856,35 @@ test("viewer role cannot edit screenplay text or enter source mode", async ({ pa
   await page.getByRole("button", { name: "Write", exact: true }).click();
   await expect(page.locator("textarea.blk").first()).toBeDisabled();
   await expect(page.getByRole("tab", { name: "Fountain Source" })).toBeDisabled();
+});
+
+test("viewer role cannot reorder scenes through outline drag and drop", async ({ page }) => {
+  await page.getByRole("button", { name: /sample project/i }).click();
+  await page.getByRole("button", { name: "Outline", exact: true }).click();
+  await page.getByRole("button", { name: "Scene", exact: true }).click();
+  let cards = page.locator(".story-card-grid .insp-card");
+  await expect(cards).toHaveCount(3);
+  const initialOrder = await cards.locator(".insp-card-title").allTextContents();
+
+  await page.getByRole("button", { name: "Team", exact: true }).click();
+  const name = page.getByPlaceholder("Collaborator name");
+  await name.fill("Outline Viewer");
+  await name.locator("xpath=following-sibling::div[1]").getByRole("combobox").selectOption("viewer");
+  await page.getByRole("button", { name: "Add Collaborator" }).click();
+  await page.getByLabel("Acting as").selectOption({ label: "Outline Viewer · Viewer" });
+  await page.getByRole("button", { name: "Outline", exact: true }).click();
+
+  cards = page.locator(".story-card-grid .insp-card");
+  await expect(cards.first()).toHaveAttribute("draggable", "false");
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await cards.first().dispatchEvent("dragstart", { dataTransfer });
+  await cards.nth(1).dispatchEvent("dragover", { dataTransfer });
+  await cards.nth(1).dispatchEvent("drop", { dataTransfer });
+  await cards.first().dispatchEvent("dragend", { dataTransfer });
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+
+  await expect.poll(() => cards.locator(".insp-card-title").allTextContents()).toEqual(initialOrder);
+  await dataTransfer.dispose();
 });
 
 test("the theme switch flips both palettes and is remembered across a reload", async ({ page }) => {

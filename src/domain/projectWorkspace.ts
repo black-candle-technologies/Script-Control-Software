@@ -1,16 +1,33 @@
 import {
+  canonicalTitlePageField,
   emptyDocument,
   emptyWorkspace,
   reconcileScreenplayDocument,
   screenplayTextFingerprint,
   type ScreenplayDocument,
   type ScreenplayElementType,
+  type TextRun,
+  type TitlePage,
+  type TitlePageBlock,
+  type TitlePageField,
   type WorkspaceData,
+  titlePageFieldValue,
 } from "./screenplay.ts";
 import { parseFountain, toFountain } from "./fountain.ts";
 import type { DraftSnapshot } from "./studio.ts";
 import type { SnapshotScope, VersionHistory } from "./versioning.ts";
-import { normalizeWorkspaceLayout, validateWorkspaceLayout, type WorkspaceLayout } from "./workspaceLayouts.ts";
+import {
+  normalizeKeyboardShortcut,
+  normalizeWorkspaceLayout,
+  validateWorkspaceLayout,
+  type WorkspaceLayout,
+} from "./workspaceLayouts.ts";
+import {
+  isWorkspaceDockLayout,
+  migrateWorkspaceLayoutToDockTree,
+  validateDockLayout,
+  type WorkspaceDockLayout,
+} from "./dockTree.ts";
 
 export type ProjectSessionType = "featureFilm" | "television";
 export type CollaboratorRole =
@@ -300,7 +317,7 @@ export function createProjectSession(document = emptyDocument(), projectType: Pr
   return {
     schemaVersion: 4,
     projectId: `project-${crypto.randomUUID()}`,
-    name: document.titlePage.title || (projectType === "television" ? "Untitled Show" : "Untitled Screenplay"),
+    name: document.titlePage.title || document.title || (projectType === "television" ? "Untitled Show" : "Untitled Screenplay"),
     projectType,
     createdAt: now,
     updatedAt: now,
@@ -318,11 +335,15 @@ export function normalizeProjectSession(value: unknown): ProjectSession {
   const rawDocuments = Array.isArray(value.documents) ? value.documents : value.document ? [value.document] : [];
   if (!rawDocuments.length) throw new Error("Project has no screenplay documents.");
   const documents = repairDocumentIds(rawDocuments.map(normalizeDocument));
-  const projectType: ProjectSessionType = value.projectType === "television" || documents.length > 1 ? "television" : "featureFilm";
+  const projectType: ProjectSessionType = value.projectType === "television"
+    ? "television"
+    : value.projectType === "featureFilm"
+      ? "featureFilm"
+      : hasLegacyTelevisionMetadata(value.workspace) ? "television" : "featureFilm";
   const session = createProjectSession(documents[0], projectType);
   session.documents = documents;
   session.projectId = string(value.projectId) || string(value.id) || session.projectId;
-  session.name = string(value.name) || documents[0].titlePage.title || session.name;
+  session.name = string(value.name) || documents[0].titlePage.title || documents[0].title || session.name;
   session.createdAt = string(value.createdAt) || session.createdAt;
   session.updatedAt = string(value.updatedAt) || session.updatedAt;
   session.versions = Array.isArray(value.versions) ? value.versions.flatMap((item): DraftSnapshot[] => {
@@ -590,14 +611,64 @@ function reconcileDocument(
   return next;
 }
 
+function titleBlockHasOpaquePresentation(block: TitlePageBlock): boolean {
+  return Object.keys(block.metadata ?? {}).some((name) => name !== "Type")
+    || (block.textRuns ?? []).some((run) => run.bold || run.italic || run.underline || run.strikeout || run.revisionId !== undefined || Object.keys(run.metadata ?? {}).length > 0);
+}
+
+function reconcileSourceTitlePage(previous: TitlePage, reconciled: TitlePage): { titlePage: TitlePage; presentationChanged: boolean } {
+  if (!previous.blocks) return { titlePage: reconciled, presentationChanged: false };
+
+  const represented = new Set<TitlePageField>();
+  const canonicalBlockIndexes = new Map<TitlePageField, number>();
+  previous.blocks.forEach((block, index) => {
+    const field = canonicalTitlePageField(block.type || block.metadata?.Type || "");
+    if (!field) return;
+    represented.add(field);
+    const prior = canonicalBlockIndexes.get(field);
+    if (prior === undefined || (!previous.blocks![prior].text.trim() && block.text.trim())) canonicalBlockIndexes.set(field, index);
+  });
+  let presentationChanged = false;
+  const blocks = previous.blocks.map((block, index) => {
+    const field = canonicalTitlePageField(block.type || block.metadata?.Type || "");
+    if (!field || canonicalBlockIndexes.get(field) !== index) return structuredClone(block);
+    const text = titlePageFieldValue(reconciled, field);
+    if (text !== block.text && titleBlockHasOpaquePresentation(block)) presentationChanged = true;
+    // Runs are intentionally retained even after an edit. The FDX exporter can
+    // then warn and fall back to plain text instead of silently claiming that
+    // stale character styling still maps to the changed value.
+    return { ...structuredClone(block), text };
+  });
+
+  for (const block of reconciled.blocks ?? []) {
+    const field = canonicalTitlePageField(block.type || block.metadata?.Type || "");
+    if (!field || represented.has(field)) continue;
+    // A parser-created paragraph for a pre-existing direct field is not new
+    // imported structure. Only add a paragraph when source mode added/changed it.
+    if (titlePageFieldValue(previous, field) === block.text) continue;
+    represented.add(field);
+    blocks.push(structuredClone(block));
+  }
+
+  return { titlePage: { ...reconciled, blocks }, presentationChanged };
+}
+
 function preserveSourceOpaqueMetadata(previous: ScreenplayDocument, reconciled: ScreenplayDocument): ScreenplayDocument {
   const previousById = new Map(previous.blocks.map((block) => [block.id, block]));
+  const titleResult = reconcileSourceTitlePage(previous.titlePage, reconciled.titlePage);
+  const warnings = [...(reconciled.warnings ?? [])];
+  if (titleResult.presentationChanged && !warnings.some((item) => item.code === "TitlePageFountainPresentation")) {
+    warnings.push({
+      code: "TitlePageFountainPresentation",
+      message: "A Fountain edit changed styled or positioned title-page text. Imported FDX attributes were retained, but FDX export will omit stale run styling and report that fallback.",
+      severity: "warning",
+      dataPreserved: true,
+    });
+  }
   return {
     ...reconciled,
-    titlePage: {
-      ...reconciled.titlePage,
-      ...(previous.titlePage.blocks ? { blocks: structuredClone(previous.titlePage.blocks) } : {}),
-    },
+    titlePage: titleResult.titlePage,
+    ...(warnings.length ? { warnings } : {}),
     blocks: reconciled.blocks.map((block) => {
       const before = previousById.get(block.id);
       if (!before) return block;
@@ -971,6 +1042,23 @@ function normalizeSceneMeta(value: unknown): NonNullable<WorkspaceData["sceneMet
     : []));
 }
 
+function normalizeTextRuns(value: unknown): TextRun[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const runs = value.flatMap((run): TextRun[] => {
+    if (!isRecord(run) || typeof run.text !== "string") return [];
+    return [{
+      text: run.text,
+      bold: run.bold === true,
+      italic: run.italic === true,
+      underline: run.underline === true,
+      strikeout: run.strikeout === true,
+      ...(typeof run.revisionId === "string" ? { revisionId: run.revisionId } : {}),
+      metadata: stringRecord(run.metadata),
+    }];
+  });
+  return runs.length ? runs : undefined;
+}
+
 function normalizeDocument(value: unknown): ScreenplayDocument {
   if (!isRecord(value) || !isRecord(value.titlePage) || !Array.isArray(value.blocks)) {
     throw new Error("A screenplay document is malformed.");
@@ -984,18 +1072,7 @@ function normalizeDocument(value: unknown): ScreenplayDocument {
     while (ids.has(id)) id = `${id}-${index + 1}`;
     ids.add(id);
     const type = screenplayElementTypes.has(raw.type as ScreenplayElementType) ? raw.type as ScreenplayElementType : "unknown";
-    const textRuns = Array.isArray(raw.textRuns) ? raw.textRuns.flatMap((run) => {
-      if (!isRecord(run) || typeof run.text !== "string") return [];
-      return [{
-        text: run.text,
-        bold: run.bold === true,
-        italic: run.italic === true,
-        underline: run.underline === true,
-        strikeout: run.strikeout === true,
-        ...(typeof run.revisionId === "string" ? { revisionId: run.revisionId } : {}),
-        metadata: stringRecord(run.metadata),
-      }];
-    }) : undefined;
+    const textRuns = normalizeTextRuns(raw.textRuns);
     return {
       id,
       type,
@@ -1007,19 +1084,39 @@ function normalizeDocument(value: unknown): ScreenplayDocument {
     };
   });
   if (!blocks.length) blocks.push(emptyDocument().blocks[0]);
+  const titlePageBlocks = Array.isArray(value.titlePage.blocks) ? value.titlePage.blocks.flatMap((block): TitlePageBlock[] => {
+    if (!isRecord(block) || typeof block.type !== "string" || typeof block.text !== "string") return [];
+    const textRuns = normalizeTextRuns(block.textRuns);
+    return [{
+      type: block.type,
+      text: block.text,
+      ...(textRuns ? { textRuns } : {}),
+      metadata: stringRecord(block.metadata),
+    }];
+  }) : undefined;
+  const titlePage: TitlePage = {
+    title: string(value.titlePage.title),
+    author: string(value.titlePage.author),
+    ...(typeof value.titlePage.credit === "string" ? { credit: value.titlePage.credit } : {}),
+    ...(typeof value.titlePage.source === "string" ? { source: value.titlePage.source } : {}),
+    ...(typeof value.titlePage.draftDate === "string" ? { draftDate: value.titlePage.draftDate } : {}),
+    ...(typeof value.titlePage.contact === "string" ? { contact: value.titlePage.contact } : {}),
+    ...(typeof value.titlePage.copyright === "string" ? { copyright: value.titlePage.copyright } : {}),
+    ...(typeof value.titlePage.notes === "string" ? { notes: value.titlePage.notes } : {}),
+    ...(titlePageBlocks ? { blocks: titlePageBlocks } : {}),
+  };
+  for (const block of titlePageBlocks ?? []) {
+    const field = canonicalTitlePageField(block.type || block.metadata.Type || "");
+    const current = field ? titlePage[field] : undefined;
+    if (field && !(typeof current === "string" && current.trim()) && block.text.trim()) titlePage[field] = block.text.trim();
+  }
   const document = {
     ...value,
     id: string(value.id),
     title: typeof value.title === "string" ? value.title : undefined,
     source: normalizeScriptSource(value.source),
     metadata: stringRecord(value.metadata),
-    titlePage: {
-      title: string(value.titlePage.title),
-      author: string(value.titlePage.author),
-      ...(Array.isArray(value.titlePage.blocks) ? { blocks: value.titlePage.blocks.flatMap((block) => isRecord(block) && typeof block.type === "string" && typeof block.text === "string"
-        ? [{ type: block.type, text: block.text, metadata: stringRecord(block.metadata) }]
-        : []) } : {}),
-    },
+    titlePage,
     blocks,
     scenes: normalizeImportedScenes(value.scenes, blocks.length),
     characters: normalizeImportedCharacters(value.characters),
@@ -1152,8 +1249,14 @@ function normalizeSavedLayouts(value: unknown, fallback: SavedLayout[]): SavedLa
   const custom = value.flatMap((raw): SavedLayout[] => {
     if (!isRecord(raw)
       || typeof raw.id !== "string" || !raw.id || ids.has(raw.id)
-      || typeof raw.name !== "string"
-      || (raw.navigator !== "left" && raw.navigator !== "right" && raw.navigator !== "hidden")
+      || typeof raw.name !== "string") return [];
+    if (isWorkspaceDockLayout(raw)) {
+      const layout = migrateWorkspaceLayoutToDockTree(raw as unknown as WorkspaceDockLayout);
+      if (!validateDockLayout(layout).valid || builtinIds.has(layout.id)) return [];
+      ids.add(layout.id);
+      return [layout];
+    }
+    if ((raw.navigator !== "left" && raw.navigator !== "right" && raw.navigator !== "hidden")
       || (raw.inspector !== "left" && raw.inspector !== "right" && raw.inspector !== "floating" && raw.inspector !== "hidden")
       || typeof raw.reference !== "string"
       || typeof raw.navigatorWidth !== "number" || !Number.isFinite(raw.navigatorWidth)
@@ -1168,13 +1271,17 @@ function normalizeSavedLayouts(value: unknown, fallback: SavedLayout[]): SavedLa
       inspectorWidth: raw.inspectorWidth,
     };
     if (safeLayoutTopology(raw)) {
-      for (const key of ["panels", "tabGroups", "splits", "floatingPanels", "synchronizedPanels"] as const) base[key] = structuredClone(raw[key]);
+      for (const key of ["panels", "tabGroups", "splits", "floatingPanels", "synchronizedPanels", "hiddenPanelIds"] as const) {
+        if (raw[key] !== undefined) base[key] = structuredClone(raw[key]);
+      }
     }
     try {
       const layout = normalizeWorkspaceLayout(base as unknown as SavedLayout);
       if (!validateWorkspaceLayout(layout).valid || builtinIds.has(layout.id)) return [];
+      const dockLayout = migrateWorkspaceLayoutToDockTree(layout);
+      if (!validateDockLayout(dockLayout).valid) return [];
       ids.add(layout.id);
-      return [layout];
+      return [dockLayout];
     } catch {
       return [];
     }
@@ -1191,6 +1298,32 @@ function safeLayoutTopology(value: Record<string, unknown>): boolean {
     && (value.splits as unknown[]).every((item) => isRecord(item) && typeof item.id === "string" && (item.direction === "horizontal" || item.direction === "vertical") && Array.isArray(item.groupIds) && item.groupIds.every((id) => typeof id === "string") && Array.isArray(item.sizes) && item.sizes.every((size) => typeof size === "number"))
     && (value.floatingPanels as unknown[]).every((item) => isRecord(item) && typeof item.panelId === "string" && [item.x, item.y, item.width, item.height].every((number) => typeof number === "number" && Number.isFinite(number)))
     && (value.synchronizedPanels as unknown[]).every((item) => isRecord(item) && typeof item.id === "string" && Array.isArray(item.panelIds) && item.panelIds.every((id) => typeof id === "string") && typeof item.mode === "string");
+}
+
+function normalizeWorkspaceShortcuts(value: unknown, fallback: Record<string, string>, layouts: SavedLayout[]): Record<string, string> {
+  const candidates = { ...fallback, ...stringRecord(value) };
+  const layoutIds = new Set(layouts.map((layout) => layout.id));
+  const used = new Set<string>();
+  const normalized: Record<string, string> = {};
+  for (const [action, shortcut] of Object.entries(candidates)) {
+    if (!action.trim()) continue;
+    if (action.startsWith("layout:") && !layoutIds.has(action.slice("layout:".length))) continue;
+    try {
+      const canonical = normalizeKeyboardShortcut(shortcut);
+      if (used.has(canonical)) continue;
+      normalized[action] = canonical;
+      used.add(canonical);
+    } catch {
+      const fallbackShortcut = fallback[action];
+      if (!fallbackShortcut) continue;
+      const canonical = normalizeKeyboardShortcut(fallbackShortcut);
+      if (!used.has(canonical)) {
+        normalized[action] = canonical;
+        used.add(canonical);
+      }
+    }
+  }
+  return normalized;
 }
 
 function normalizeProjectWorkspace(value: unknown): ProjectWorkspace {
@@ -1218,7 +1351,7 @@ function normalizeProjectWorkspace(value: unknown): ProjectWorkspace {
     writerRoom: normalizeWriterRoom(value.writerRoom, fallback.writerRoom),
     layouts,
     activeLayoutId,
-    shortcuts: { ...fallback.shortcuts, ...stringRecord(value.shortcuts) },
+    shortcuts: normalizeWorkspaceShortcuts(value.shortcuts, fallback.shortcuts, layouts),
     sync: {
       ...fallback.sync,
       ...sync,
@@ -1425,6 +1558,18 @@ function repairCollaborationReferences(session: ProjectSession): void {
 function ensureDocumentId(document: ScreenplayDocument): string {
   document.id ||= `document-${crypto.randomUUID()}`;
   return document.id;
+}
+
+function hasLegacyTelevisionMetadata(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.series)) return false;
+  const series = value.series;
+  if (typeof series.showBible === "string" && series.showBible.trim()) return true;
+  if (Array.isArray(series.seasons) && (series.seasons.length > 1 || series.seasons.some((season) => isRecord(season)
+    && ((typeof season.arc === "string" && season.arc.trim()) || (typeof season.title === "string" && season.title.trim() && season.title.trim() !== "Season 1"))))) return true;
+  if (isRecord(series.episodes) && Object.values(series.episodes).some((episode) => isRecord(episode)
+    && ((typeof episode.productionCode === "string" && episode.productionCode.trim()) || episode.coldOpen === true || episode.tag === true
+      || (Array.isArray(episode.storyLines) && episode.storyLines.length > 0) || (Array.isArray(episode.actBreakSceneIds) && episode.actBreakSceneIds.length > 0)))) return true;
+  return false;
 }
 
 function isSnapshot(value: unknown): value is DraftSnapshot {

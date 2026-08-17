@@ -1,14 +1,20 @@
 import {
+  TITLE_PAGE_FIELD_LABELS,
+  TITLE_PAGE_FIELD_ORDER,
+  canonicalTitlePageField,
   deriveCharacters,
   deriveLocations,
   deriveScenes,
   estimatePages,
   normalizeCharacterName,
   parseHeading,
+  representativeTitlePageBlockIndexes,
   type Scene,
   type ScreenplayBlock,
   type ScreenplayDocument,
   type TextRun,
+  type TitlePageField,
+  titlePageFieldValue,
 } from "./screenplay.ts";
 
 export interface DetectedObject {
@@ -358,30 +364,43 @@ function hasRunFormatting(run: TextRun): boolean {
 }
 
 function titlePageXml(doc: ScreenplayDocument, warn: (message: string) => void): string {
-  const imported = doc.titlePage.blocks;
-  if (imported) {
-    let usedTitle = false;
-    let usedAuthor = false;
-    const paragraphs = imported.map((block, index) => {
-      const type = block.type || block.metadata.Type || "General";
-      let text = block.text;
-      if (!usedTitle && type.toLowerCase() === "title") {
-        usedTitle = true;
-        if (doc.titlePage.title.trim() !== block.text.trim()) text = doc.titlePage.title;
-      } else if (!usedAuthor && ["author", "written by"].includes(type.toLowerCase())) {
-        usedAuthor = true;
-        if (doc.titlePage.author.trim() !== block.text.trim()) text = doc.titlePage.author;
+  const used = new Set<TitlePageField>();
+  const imported = doc.titlePage.blocks ?? [];
+  const canonicalBlockIndexes = representativeTitlePageBlockIndexes(doc.titlePage);
+  const paragraphs = imported.map((block, index) => {
+    const context = `Title-page block ${index + 1}`;
+    const type = block.type.trim() || block.metadata?.Type?.trim() || "";
+    const field = canonicalTitlePageField(type);
+    let text = block.text;
+    if (field) {
+      used.add(field);
+      if (canonicalBlockIndexes.get(field) === index) text = titlePageFieldValue(doc.titlePage, field);
+    }
+
+    const importedMetadata = Object.entries(block.metadata ?? {}).filter(([name]) => name !== "Type");
+    const metadata = new Map(type ? [["Type", type], ...importedMetadata] : importedMetadata);
+    const runs = block.textRuns ?? [];
+    let textXml: string;
+    if (runs.length && runs.map((run) => run.text).join("") === text) {
+      textXml = runs.map((run) => textRunXml(run, warn, context)).join("");
+    } else {
+      if (runs.some(hasRunFormatting)) {
+        warn(`${context}: styled text no longer matches the edited title-page text; the paragraph was exported without stale run styling.`);
       }
-      const metadata = new Map([["Type", type], ...Object.entries(block.metadata ?? {}).filter(([name]) => name !== "Type")]);
-      return `<Paragraph${attributes(metadata, warn, `Title-page block ${index + 1}`)}><Text>${xmlText(text, warn, `Title-page block ${index + 1}`)}</Text></Paragraph>`;
-    }).join("");
-    return paragraphs ? `  <TitlePage><Content>${paragraphs}</Content></TitlePage>\n` : "";
+      textXml = `<Text>${xmlText(text, warn, context)}</Text>`;
+    }
+    return `<Paragraph${attributes(metadata, warn, context)}>${textXml}</Paragraph>`;
+  });
+
+  for (const field of TITLE_PAGE_FIELD_ORDER) {
+    if (used.has(field)) continue;
+    const text = titlePageFieldValue(doc.titlePage, field);
+    if (!text.trim()) continue;
+    const label = TITLE_PAGE_FIELD_LABELS[field];
+    paragraphs.push(`<Paragraph Type="${label}"><Text>${xmlText(text, warn, label)}</Text></Paragraph>`);
   }
-  const title = doc.titlePage.title.trim();
-  const author = doc.titlePage.author.trim();
-  if (!title && !author) return "";
-  const paragraphs = `${title ? `<Paragraph Type="Title"><Text>${xmlText(title, warn, "Title")}</Text></Paragraph>` : ""}${author ? `<Paragraph Type="Author"><Text>${xmlText(author, warn, "Author")}</Text></Paragraph>` : ""}`;
-  return `  <TitlePage><Content>${paragraphs}</Content></TitlePage>\n`;
+
+  return paragraphs.length ? `  <TitlePage><Content>${paragraphs.join("")}</Content></TitlePage>\n` : "";
 }
 
 function attributes(metadata: Map<string, string>, warn: (message: string) => void, context: string): string {

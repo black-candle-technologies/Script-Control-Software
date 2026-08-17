@@ -5,6 +5,14 @@ import ContextInspector from "./ContextInspector.tsx";
 import SceneNavigator from "./SceneNavigator.tsx";
 import CompanionDashboard from "./CompanionDashboard.tsx";
 import Icon, { type IconName } from "./Icons.tsx";
+import BrandMark from "./BrandMark.tsx";
+import { DocumentTabs } from "./workspace/DocumentTabs.tsx";
+import { DockLayoutRenderer, PanelPlacementControls } from "./workspace/DockLayoutRenderer.tsx";
+import { WORKSPACE_PANEL_REGISTRY, type WorkspacePanelContext } from "./workspace/panelRegistry.tsx";
+import { LayoutManager } from "./workspace/LayoutManager.tsx";
+import { WindowMenu } from "./workspace/WindowMenu.tsx";
+import { CrossWindowDropOverlay } from "./workspace/CrossWindowDropOverlay.tsx";
+import "./workspace/workspace.css";
 import { Menu, Segmented, ThemeToggle, type MenuEntry } from "./ui.tsx";
 import {
   ELEMENT_TYPES,
@@ -14,15 +22,22 @@ import {
   addMilestone,
   buildCharacterSides,
   buildSceneSides,
+  breakdownSectionsForScope,
   compareSnapshots,
   compareDrafts,
   compileBreakdown,
   compileAnalysis,
   compileSeriesWorkspace,
   createAlternateDraft,
+  createDocumentTabState,
+  closeDocumentTab,
   createProjectSnapshot,
   createVersionHistory,
   dialogueOnly,
+  dockPanel,
+  dockTreeNodes,
+  deleteCustomLayout,
+  duplicateWorkspaceLayout,
   draftReviewPreview,
   countWords,
   detectObjects,
@@ -34,16 +49,30 @@ import {
   emptyDocument,
   emptyWorkspace,
   estimatePages,
+  floatDockPanel,
   hasPermission,
+  hideDockPanel,
+  getWorkspaceDockLayout,
+  getWorkspaceLayoutShortcut,
   keyboardShortcutMatches,
+  loadUiPreferences,
+  normalizeDocumentTabState,
+  openDocumentTab,
+  planDocumentRemoval,
+  reconcileDocumentTabsAfterRemoval,
+  reorderDocumentTab,
+  reconcileStorySelection,
+  removeProjectDocument,
   moveScene,
   lockPages,
   markChangedBlocks,
   materializeFountainSource,
   mergeSnapshots,
+  mergePortableSaveMetadata,
   markDraftReviewApplied,
   mergeCollaboratorSessions,
   reconcileImportedDocument,
+  reconcileFountainSourceBuffer,
   openDraftReview,
   refreshDraftReview,
   relinkDetachedFdxDocument,
@@ -52,18 +81,29 @@ import {
   restoreProjectSnapshot,
   restoreLocalDocumentState,
   restoreLocalWorkspaceState,
+  resetBreakdownSections,
+  restoreAllHiddenPanels,
+  restoreHiddenPanel,
+  restoreOffscreenFloatingPanels,
   productionPages,
   productionReports as compileProductionReports,
   productionReportsCsv,
   revisionExportMetadata,
   revisionReportMarkdown,
   saveSnapshot,
+  saveCustomLayout,
+  saveUiPreferencesForWindow,
   setDraftReviewResolution,
+  setWorkspaceLayoutShortcut,
   screenplayTextFingerprint,
   setSceneOmitted,
   summarizeRevision,
+  storedUiWindowPreferencesChanged,
   toFdxWithWarnings,
   toFountain,
+  toFountainWithWarnings,
+  updateDocumentView,
+  uniqueWorkspaceLayoutId,
   type ScreenplayDocument,
   type ScreenplayElementType,
   type AnalysisCsvSection,
@@ -83,14 +123,28 @@ import {
   type SnapshotComparison,
   type SnapshotDiffMode,
   type SnapshotScope,
+  type ScriptTarget,
   type StoryStructure,
+  type UiChromePreferences,
+  type DocumentTabState,
   type WorkspaceReferenceKind,
+  type WorkspaceDockLayout,
+  type WorkspacePanelDefinition,
+  type DockNode,
   syncSeriesDocuments,
   versionHistoryForPortableStorage,
   updateDraftReviewStatus,
+  renameCustomLayout,
+  uiPreferenceScope,
+  uiWindowPreferences,
+  withBreakdownSections,
+  withUiWindowPreferences,
   workspaceForPortableStorage,
 } from "../domain/index.ts";
 import { saveSession } from "../storage.ts";
+import { useCoordinatedSession, type CoordinatedSaveContext } from "../hooks/useCoordinatedSession.ts";
+import { useNativeInternalDrag } from "../hooks/useNativeInternalDrag.ts";
+import type { InternalDragSession } from "../services/nativeWorkspaceService.ts";
 import {
   chooseAndParseFdx,
   chooseWatchFolder,
@@ -111,12 +165,27 @@ import { chooseAndImportTreatment, saveTreatmentExport, type TreatmentFileFormat
 
 interface WorkspaceProps {
   initialSession: ProjectSession;
-  onOpenFdx: () => void;
+  onOpenFdx: (beforeReplace?: () => Promise<boolean>) => void;
   onExit: () => void;
 }
 
 /** Working modes of the shell. Each swaps the workspace around the same project. */
 type Mode = "write" | "outline" | "treatment" | "reference" | "series" | "breakdown" | "drafts" | "team" | "companion";
+
+interface SourceCoordinationConflict {
+  documentId: string;
+  reason: "changed" | "deleted";
+  documentTitle?: string;
+  baseText: string;
+  localText: string;
+  acceptedText: string;
+  acceptedRevision: number;
+}
+
+type PendingSourceExit =
+  | { kind: "formatted" }
+  | { kind: "import-warning"; blockIndex: number }
+  | { kind: "document-tabs"; tabs: DocumentTabState };
 
 const MODE_META: Record<Mode, { label: string; icon: IconName; blurb: string }> = {
   write: { label: "Write", icon: "write", blurb: "The screenplay" },
@@ -151,6 +220,8 @@ const LAYOUT_TO_MODE: Record<string, Mode> = {
   companion: "companion",
 };
 
+const BUILTIN_LAYOUT_ID_SET = new Set(["writer", "development", "revision", "television", "production", "companion"]);
+
 const REFERENCE_LABELS: Record<WorkspaceReferenceKind, string> = {
   none: "None",
   "previous-episode": "Previous episode",
@@ -165,44 +236,65 @@ const REFERENCE_LABELS: Record<WorkspaceReferenceKind, string> = {
   timeline: "Timeline",
 };
 
-interface UiPrefs {
-  navOpen: boolean;
-  inspOpen: boolean;
-  navWidth: number;
-  inspWidth: number;
-  zoom: number;
-}
-
 interface EditorScrollSnapshot {
   element: HTMLElement | null;
   top: number;
   left: number;
 }
 
-const PREFS_KEY = "scs.ui.v1";
-const DEFAULT_PREFS: UiPrefs = { navOpen: true, inspOpen: true, navWidth: 264, inspWidth: 320, zoom: 1 };
-
-function loadPrefs(): UiPrefs {
-  try {
-    return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
-  } catch {
-    return DEFAULT_PREFS;
-  }
-}
-
 export default function Workspace({ initialSession, onOpenFdx, onExit }: WorkspaceProps) {
-  const [session, setSession] = useState(initialSession);
+  const { session, setSession, mutateSession, meta: coordinated } = useCoordinatedSession(initialSession);
   const episodeDocs = session.documents;
-  const [activeEpisode, setActiveEpisode] = useState(() => Math.max(0, initialSession.documents.findIndex((document) => document.id === initialSession.activeDocumentId)));
+  const windowSlotId = workspaceSlotId();
+  const registeredNativeWindow = coordinated.windows?.windows.find((window) => window.windowId === coordinated.identity.windowId);
+  const nativeDrag = useNativeInternalDrag({
+    enabled: coordinated.native && coordinated.ready,
+    projectId: coordinated.identity.projectId,
+    sessionId: coordinated.identity.sessionId,
+    windowId: coordinated.identity.windowId,
+    sessionRevision: coordinated.revision,
+    viewRevision: registeredNativeWindow?.viewRevision ?? 0,
+  });
+  const nativeDragControllerRef = useRef(nativeDrag);
+  const nativeDragBeginRef = useRef<Promise<InternalDragSession> | null>(null);
+  nativeDragControllerRef.current = nativeDrag;
+  const [uiPreferences, setUiPreferences] = useState(() => loadUiPreferences(localStorage));
+  const [dockLayout, setDockLayout] = useState<WorkspaceDockLayout>(() => {
+    const stored = uiWindowPreferences(loadUiPreferences(localStorage), initialSession.projectId, windowSlotId);
+    return getWorkspaceDockLayout(initialSession.workspace, stored.activeLayoutId)
+      ?? getWorkspaceDockLayout(initialSession.workspace, "writer")!;
+  });
+  const [layoutWorkspaceOpen, setLayoutWorkspaceOpen] = useState(false);
+  const [layoutManagerOpen, setLayoutManagerOpen] = useState(false);
+  const [documentTabs, setDocumentTabs] = useState<DocumentTabState>(() => {
+    const stored = uiWindowPreferences(loadUiPreferences(localStorage), initialSession.projectId, windowSlotId);
+    const fallback = createDocumentTabState(initialSession.documents, initialSession.activeDocumentId);
+    return normalizeDocumentTabState({ ...fallback, ...stored.tabs }, initialSession.documents, initialSession.activeDocumentId);
+  });
+  const activeEpisode = Math.max(0, episodeDocs.findIndex((document) => document.id === documentTabs.activeDocumentId));
   const doc = episodeDocs[activeEpisode];
-  const setDoc = (next: ScreenplayDocument) => setSession((current) => ({
-    ...current,
-    documents: current.documents.map((item, index) => index === activeEpisode ? next : item),
-  }));
+  const [dirtyDocumentIds, setDirtyDocumentIds] = useState<ReadonlySet<string>>(() => initialSession.projectPath
+    ? new Set()
+    : new Set(initialSession.documents.flatMap((document) => document.id ? [document.id] : [])));
+  const lastSeenDocuments = useRef(new Map(initialSession.documents.flatMap((document) => document.id ? [[document.id, document] as const] : [])));
+  const lastSeenDocumentFingerprints = useRef(portableDocumentFingerprintMap(initialSession.documents));
+  const pendingCleanDocumentFingerprints = useRef<Map<string, string> | undefined>(undefined);
+  const setDoc = (next: ScreenplayDocument) => {
+    if (next.id) setDirtyDocumentIds((current) => new Set(current).add(next.id!));
+    setSession((current) => ({
+      ...current,
+      documents: current.documents.map((item, index) => index === activeEpisode ? next : item),
+    }));
+  };
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const [focusRequest, setFocusRequest] = useState<{ id: string; nonce: number } | null>(null);
-  const [prefs, setPrefs] = useState<UiPrefs>(loadPrefs);
-  const [modeState, setModeState] = useState<Mode>(() => LAYOUT_TO_MODE[initialSession.workspace.activeLayoutId] ?? "write");
+  const [scriptTargetRequest, setScriptTargetRequest] = useState<{ target: ScriptTarget; nonce: number } | null>(null);
+  const prefs = uiPreferences.chrome;
+  const windowPreferences = uiWindowPreferences(uiPreferences, initialSession.projectId, windowSlotId);
+  const [modeState, setModeState] = useState<Mode>(() => {
+    const stored = uiWindowPreferences(loadUiPreferences(localStorage), initialSession.projectId, windowSlotId);
+    return isMode(stored.activeMode) ? stored.activeMode : LAYOUT_TO_MODE[initialSession.workspace.activeLayoutId] ?? "write";
+  });
   const mode = modeState;
   const [focusMode, setFocusMode] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<"context" | "reference">("context");
@@ -211,8 +303,12 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const [referenceModeTab, setReferenceModeTab] = useState<PanelTab>("Cast");
   const [breakdownModeTab, setBreakdownModeTab] = useState<PanelTab>("Breakdown");
   const [entityFocusRequest, setEntityFocusRequest] = useState<{ kind: "character" | "location"; id: string; nonce: number } | null>(null);
-  const [editorMode, setEditorMode] = useState<"formatted" | "source">("formatted");
-  const [sourceText, setSourceText] = useState("");
+  const [editorMode, setEditorMode] = useState<"formatted" | "source">(() => {
+    const activeId = documentTabs.activeDocumentId;
+    return activeId && documentTabs.views[activeId]?.sourceMode ? "source" : "formatted";
+  });
+  const [sourceText, setSourceText] = useState(() => editorMode === "source" ? toFountain(doc) : "");
+  const [sourceCoordinationConflict, setSourceCoordinationConflict] = useState<SourceCoordinationConflict | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const versionHistory = session.versionHistory;
   const [versionComparison, setVersionComparison] = useState<SnapshotComparison | null>(null);
@@ -230,23 +326,66 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const [gitStatus, setGitStatus] = useState<GitSyncStatus>();
   const [sharedConflict, setSharedConflict] = useState<{ base?: ProjectSession; theirs: ProjectSession; conflicts: MergeConflict[] } | null>(null);
   const focusNonce = useRef(0);
+  const scriptTargetNonce = useRef(0);
   const entityFocusNonce = useRef(0);
   const editorHistoryRef = useRef<{ undo: () => void; redo: () => void } | null>(null);
   const editorHistoryStore = useRef(new Map<string, EditorHistory>());
   const paneDragRef = useRef<{ pointerId: number; pane: "nav" | "insp"; startX: number; startWidth: number; scroll: EditorScrollSnapshot } | null>(null);
   const scrollRestoreFrame = useRef<number | null>(null);
+  const sourceEditorRef = useRef<HTMLTextAreaElement>(null);
+  const sourceSelectionTimerRef = useRef<number | null>(null);
+  const sourceSelectionRestoreFrame = useRef<number | null>(null);
+  const suppressNextNativeViewRevision = useRef(false);
   const sessionRef = useRef(session);
-  const sourceRecoveryRef = useRef({ mode: editorMode, sourceText, document: doc });
-  sourceRecoveryRef.current = { mode: editorMode, sourceText, document: doc };
+  const sourceBaseRef = useRef<{ documentId: string; text: string; revision: number } | null>(
+    editorMode === "source" && doc.id ? { documentId: doc.id, text: toFountain(doc), revision: coordinated.revision } : null,
+  );
+  const sourceKeepPendingRef = useRef<{ documentId: string; text: string; rawText: string } | null>(null);
+  const pendingSourceExitRef = useRef<PendingSourceExit | null>(null);
+  const sourceExitVerificationRef = useRef(false);
+  const sourceRecoveryRef = useRef({ mode: editorMode, sourceText, document: doc, blocked: Boolean(sourceCoordinationConflict) });
+  sourceRecoveryRef.current = { mode: editorMode, sourceText, document: doc, blocked: Boolean(sourceCoordinationConflict) };
   const linkedBaselines = useRef(linkedBaselineMap(initialSession.documents));
   const sharedBaseline = useRef<ProjectSession | null>(null);
   // A local recovery session may be newer than its portable file. Establish
   // this baseline from disk before permitting pull/push operations.
   const portableBaseline = useRef("");
   const canEdit = hasPermission(session.workspace, session.workspace.currentUserId, "edit");
-  const isTelevision = session.projectType === "television" || episodeDocs.length > 1;
+  const isTelevision = session.projectType === "television";
+  const breakdownPreferenceKey = uiPreferenceScope(session.projectId, doc.id!);
+  const breakdownSections = breakdownSectionsForScope(uiPreferences, breakdownPreferenceKey);
+  const nativeViewFingerprint = JSON.stringify({
+    tabs: {
+      openDocumentIds: documentTabs.openDocumentIds,
+      activeDocumentId: documentTabs.activeDocumentId,
+    },
+    dockLayout,
+  });
+  const previousNativeViewFingerprint = useRef(nativeViewFingerprint);
 
-  const setPref = <K extends keyof UiPrefs>(key: K, value: UiPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
+  const setPref = <K extends keyof UiChromePreferences>(key: K, value: UiChromePreferences[K]) => setUiPreferences((current) => ({
+    ...current,
+    chrome: { ...current.chrome, [key]: value },
+  }));
+  const rememberNativeDragStart = (start: Promise<InternalDragSession>) => {
+    nativeDragBeginRef.current = start;
+    void start.catch((error) => setOperationMessage(messageFrom(error)));
+  };
+  const cancelRememberedNativeDrag = async (force: boolean) => {
+    const start = nativeDragBeginRef.current;
+    if (!start) return;
+    try {
+      const started = await start;
+      const controller = nativeDragControllerRef.current;
+      if (controller.active?.dragId === started.dragId && (force || !controller.active.target)) {
+        await controller.cancel(started.dragId);
+      }
+    } catch {
+      // Begin/cancel failures are already exposed by the validated controller.
+    } finally {
+      if (nativeDragBeginRef.current === start) nativeDragBeginRef.current = null;
+    }
+  };
   const captureEditorScroll = (): EditorScrollSnapshot => {
     const element = globalThis.document.querySelector<HTMLElement>(".editor-scroll");
     return { element, top: element?.scrollTop ?? 0, left: element?.scrollLeft ?? 0 };
@@ -261,46 +400,298 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       snapshot.element.scrollLeft = snapshot.left;
     });
   };
+  const captureSourceSelection = () => {
+    const editor = sourceEditorRef.current;
+    if (editorMode !== "source" || !editor) return undefined;
+    return { start: editor.selectionStart, end: editor.selectionEnd };
+  };
+  const restoreSourceSelection = (selection?: { start: number; end: number }) => {
+    if (sourceSelectionRestoreFrame.current !== null) window.cancelAnimationFrame(sourceSelectionRestoreFrame.current);
+    sourceSelectionRestoreFrame.current = window.requestAnimationFrame(() => {
+      sourceSelectionRestoreFrame.current = null;
+      const editor = sourceEditorRef.current;
+      if (!editor || !selection) return;
+      const start = Math.min(selection.start, editor.value.length);
+      const end = Math.max(start, Math.min(selection.end, editor.value.length));
+      editor.setSelectionRange(start, end);
+    });
+  };
+  const persistSourceSelection = (editor: HTMLTextAreaElement, immediate = false) => {
+    if (!doc.id) return;
+    if (sourceSelectionTimerRef.current !== null) window.clearTimeout(sourceSelectionTimerRef.current);
+    const documentId = doc.id;
+    const commit = () => {
+      sourceSelectionTimerRef.current = null;
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      setDocumentTabs((current) => updateDocumentView(current, documentId, { sourceSelection: { start, end } }));
+    };
+    if (immediate) commit();
+    else sourceSelectionTimerRef.current = window.setTimeout(commit, 250);
+  };
   useEffect(() => () => {
     if (scrollRestoreFrame.current !== null) window.cancelAnimationFrame(scrollRestoreFrame.current);
+    if (sourceSelectionTimerRef.current !== null) window.clearTimeout(sourceSelectionTimerRef.current);
+    if (sourceSelectionRestoreFrame.current !== null) window.cancelAnimationFrame(sourceSelectionRestoreFrame.current);
   }, []);
   useEffect(() => {
-    try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-    } catch { /* UI preferences are disposable */ }
-  }, [prefs]);
+    saveUiPreferencesForWindow(localStorage, uiPreferences, session.projectId, windowSlotId);
+  }, [session.projectId, uiPreferences, windowSlotId]);
+  useEffect(() => {
+    const receivePreferences = (event: StorageEvent) => {
+      if (event.key !== "scs.ui.v2") return;
+      const next = loadUiPreferences(localStorage);
+      const currentWindowChanged = storedUiWindowPreferencesChanged(
+        event.oldValue,
+        event.newValue,
+        session.projectId,
+        windowSlotId,
+      );
+      if (!currentWindowChanged) {
+        // A sibling window saved its own slot. Preserve this window's pending
+        // local slot while accepting the rest of the freshly merged snapshot.
+        setUiPreferences((current) => withUiWindowPreferences(
+          next,
+          session.projectId,
+          windowSlotId,
+          uiWindowPreferences(current, session.projectId, windowSlotId),
+        ));
+        return;
+      }
+      setUiPreferences(next);
+      const stored = uiWindowPreferences(next, session.projectId, windowSlotId);
+      setDocumentTabs((current) => normalizeDocumentTabState({ ...current, ...stored.tabs }, session.documents, current.activeDocumentId));
+    };
+    window.addEventListener("storage", receivePreferences);
+    return () => window.removeEventListener("storage", receivePreferences);
+  }, [session.documents, session.projectId, windowSlotId]);
+  useEffect(() => {
+    setUiPreferences((current) => withUiWindowPreferences(current, session.projectId, windowSlotId, {
+      tabs: documentTabs,
+      activeMode: mode,
+      activeLayoutId: dockLayout.id,
+    }));
+  }, [dockLayout.id, documentTabs, mode, session.projectId, windowSlotId]);
+  useEffect(() => {
+    const pendingClean = pendingCleanDocumentFingerprints.current;
+    if (pendingClean && session.documents.length === pendingClean.size && session.documents.every((document) => document.id && pendingClean.get(document.id) === portableDocumentFingerprint(document))) {
+      pendingCleanDocumentFingerprints.current = undefined;
+      lastSeenDocuments.current = new Map(session.documents.flatMap((document) => document.id ? [[document.id, document] as const] : []));
+      lastSeenDocumentFingerprints.current = pendingClean;
+      setDirtyDocumentIds(new Set());
+      return;
+    }
+    if (pendingClean) pendingCleanDocumentFingerprints.current = undefined;
+    const nextFingerprints = new Map<string, string>();
+    const changed = session.documents.flatMap((document) => {
+      if (!document.id) return [];
+      if (lastSeenDocuments.current.get(document.id) === document) {
+        const previous = lastSeenDocumentFingerprints.current.get(document.id);
+        if (previous) nextFingerprints.set(document.id, previous);
+        return [];
+      }
+      if (dirtyDocumentIds.has(document.id)) return [document.id];
+      const fingerprint = portableDocumentFingerprint(document);
+      nextFingerprints.set(document.id, fingerprint);
+      return lastSeenDocumentFingerprints.current.get(document.id) === fingerprint ? [] : [document.id];
+    });
+    lastSeenDocuments.current = new Map(session.documents.flatMap((document) => document.id ? [[document.id, document] as const] : []));
+    lastSeenDocumentFingerprints.current = nextFingerprints;
+    if (changed.length) setDirtyDocumentIds((current) => new Set([...current, ...changed]));
+  }, [dirtyDocumentIds, session.documents]);
+  useEffect(() => {
+    if (previousNativeViewFingerprint.current === nativeViewFingerprint || !nativeDrag.ready) return;
+    previousNativeViewFingerprint.current = nativeViewFingerprint;
+    if (suppressNextNativeViewRevision.current) {
+      suppressNextNativeViewRevision.current = false;
+      return;
+    }
+    void nativeDrag.markViewChanged().catch((error) => setOperationMessage(messageFrom(error)));
+  }, [nativeDrag.ready, nativeViewFingerprint]);
+  useEffect(() => {
+    if (nativeDrag.error) setOperationMessage(nativeDrag.error);
+  }, [nativeDrag.error]);
+  useEffect(() => {
+    if (!doc.id) return;
+    const scrollTop = globalThis.document.querySelector<HTMLElement>(".editor-scroll")?.scrollTop ?? documentTabs.views[doc.id]?.editorScrollTop ?? 0;
+    setDocumentTabs((current) => updateDocumentView(current, doc.id!, {
+      activeBlockId: activeBlockId ?? undefined,
+      sourceMode: editorMode === "source",
+      editorScrollTop: scrollTop,
+    }));
+  }, [activeBlockId, doc.id, editorMode]);
+  useEffect(() => {
+    if (editorMode !== "source" || !doc.id) return;
+    restoreSourceSelection(documentTabs.views[doc.id]?.sourceSelection);
+  }, [doc.id, editorMode]);
+
+  useEffect(() => {
+    if (editorMode !== "source" || !doc.id) return;
+    const acceptedText = toFountain(doc);
+    const base = sourceBaseRef.current;
+    if (base && base.documentId !== doc.id && !session.documents.some((document) => document.id === base.documentId)) {
+      const existing = sourceCoordinationConflict?.documentId === base.documentId && sourceCoordinationConflict.reason === "deleted"
+        ? sourceCoordinationConflict
+        : null;
+      setSourceCoordinationConflict({
+        documentId: base.documentId,
+        reason: "deleted",
+        documentTitle: existing?.documentTitle ?? "Removed screenplay",
+        baseText: base.text,
+        localText: sourceRecoveryRef.current.sourceText,
+        acceptedText: "",
+        acceptedRevision: coordinated.revision,
+      });
+      return;
+    }
+    if (!base || base.documentId !== doc.id) {
+      sourceBaseRef.current = { documentId: doc.id, text: acceptedText, revision: coordinated.revision };
+      sourceKeepPendingRef.current = null;
+      setSourceCoordinationConflict(null);
+      setSourceText(acceptedText);
+      return;
+    }
+    const pending = sourceKeepPendingRef.current;
+    if (pending?.documentId === doc.id) return;
+    const reconciliation = reconcileFountainSourceBuffer({
+      documentId: doc.id,
+      baseText: base.text,
+      localText: sourceRecoveryRef.current.sourceText,
+      acceptedText,
+      acceptedRevision: coordinated.revision,
+    });
+    if (reconciliation.kind === "conflict") {
+      setSourceCoordinationConflict({ ...reconciliation, reason: "changed", documentTitle: screenplayDisplayTitle(doc) || "Untitled Screenplay" });
+      return;
+    }
+    if (reconciliation.kind === "unchanged") return;
+    sourceBaseRef.current = { documentId: doc.id, text: reconciliation.baseText, revision: coordinated.revision };
+    sourceKeepPendingRef.current = null;
+    setSourceCoordinationConflict(null);
+    if (sourceRecoveryRef.current.sourceText !== reconciliation.localText) {
+      sourceRecoveryRef.current = { ...sourceRecoveryRef.current, sourceText: reconciliation.localText };
+      setSourceText(reconciliation.localText);
+    }
+  }, [coordinated.revision, doc, editorMode]);
 
   const setMode = (next: Mode) => {
     setModeState(next);
-    const layoutId = MODE_TO_LAYOUT[next];
-    if (session.workspace.activeLayoutId !== layoutId && session.workspace.layouts.some((layout) => layout.id === layoutId)) {
-      setSession((current) => ({ ...current, workspace: { ...current.workspace, activeLayoutId: layoutId } }));
-    }
+    const preset = getWorkspaceDockLayout(session.workspace, MODE_TO_LAYOUT[next]);
+    if (preset) setDockLayout(preset);
+    setLayoutWorkspaceOpen(false);
     if (next !== "write") setFocusMode(false);
   };
 
-  const materializeSourceSession = (current: ProjectSession): ProjectSession => materializeSourceDraft(current, { mode: editorMode, sourceText, document: doc });
-  const installProjectSession = (next: ProjectSession) => {
+  const materializeSourceSession = (current: ProjectSession): ProjectSession => materializeSourceDraft(current, sourceRecoveryRef.current);
+  const submitSourceBufferForCoordination = (): boolean => {
+    if (editorMode !== "source" || !doc.id) return true;
+    if (sourceCoordinationConflict) return false;
+    const base = sourceBaseRef.current;
+    if (base && base.documentId !== doc.id) {
+      setSourceCoordinationConflict({
+        documentId: base.documentId,
+        reason: "deleted",
+        documentTitle: "Removed screenplay",
+        baseText: base.text,
+        localText: sourceRecoveryRef.current.sourceText,
+        acceptedText: "",
+        acceptedRevision: coordinated.revision,
+      });
+      setOperationMessage("The screenplay behind this Fountain buffer is no longer available. Download or discard the protected local source before continuing.");
+      return false;
+    }
+    const current = sessionRef.current;
+    const currentDocument = current.documents.find((document) => document.id === doc.id);
+    if (!currentDocument) return false;
+    const candidate = materializeFountainSource(current, doc.id, sourceRecoveryRef.current.sourceText);
+    const candidateDocument = candidate.documents.find((document) => document.id === doc.id);
+    if (!candidateDocument) return false;
+    const acceptedProjection = toFountain(candidateDocument);
+    const currentProjection = toFountain(currentDocument);
+    const pending = sourceKeepPendingRef.current;
+    if (coordinated.native
+      && pending?.documentId === doc.id
+      && pending.text === acceptedProjection) {
+      if (pending.rawText !== sourceRecoveryRef.current.sourceText) {
+        sourceKeepPendingRef.current = { ...pending, rawText: sourceRecoveryRef.current.sourceText };
+      }
+      return true;
+    }
+    if (acceptedProjection === currentProjection) {
+      sourceBaseRef.current = { documentId: doc.id, text: currentProjection, revision: coordinated.revision };
+      sourceKeepPendingRef.current = null;
+      if (sourceRecoveryRef.current.sourceText !== currentProjection) setSourceText(currentProjection);
+      return true;
+    }
+    if (coordinated.native) {
+      sourceKeepPendingRef.current = {
+        documentId: doc.id,
+        text: acceptedProjection,
+        rawText: sourceRecoveryRef.current.sourceText,
+      };
+    } else {
+      sourceBaseRef.current = { documentId: doc.id, text: acceptedProjection, revision: coordinated.revision };
+      sourceKeepPendingRef.current = null;
+      if (sourceRecoveryRef.current.sourceText !== acceptedProjection) setSourceText(acceptedProjection);
+    }
+    setSession(candidate);
+    return true;
+  };
+  const deferSourceExitUntilAcknowledged = (exit: PendingSourceExit, message: string): boolean => {
+    if (editorMode !== "source" || !coordinated.native) return false;
+    if (sourceCoordinationConflict) {
+      setOperationMessage("Resolve the Fountain Source conflict before leaving Source view.");
+      return true;
+    }
+    if (!sourceKeepPendingRef.current && sourceRecoveryRef.current.sourceText === toFountain(doc)) return false;
+    pendingSourceExitRef.current = exit;
+    if (!submitSourceBufferForCoordination()) return true;
+    if (!sourceKeepPendingRef.current) {
+      pendingSourceExitRef.current = null;
+      return false;
+    }
+    setOperationMessage(message);
+    void resolvePendingSourceExit();
+    return true;
+  };
+  const installProjectSession = (next: ProjectSession): boolean => {
+    if (editorMode === "source" && (sourceCoordinationConflict
+      || sourceKeepPendingRef.current
+      || sourceBaseRef.current?.documentId !== doc.id
+      || sourceRecoveryRef.current.sourceText !== toFountain(doc))) {
+      setOperationMessage("Resolve or finish coordinating the current Fountain Source buffer before replacing the project session.");
+      return false;
+    }
     linkedBaselines.current = linkedBaselineMap(next.documents);
     setSession(next);
-    setActiveEpisode(Math.max(0, next.documents.findIndex((document) => document.id === next.activeDocumentId)));
+    setDocumentTabs((current) => normalizeDocumentTabState(current, next.documents, next.activeDocumentId));
     setActiveBlockId(null);
     setEditorMode("formatted");
     setSourceText("");
+    sourceBaseRef.current = null;
+    sourceKeepPendingRef.current = null;
+    pendingSourceExitRef.current = null;
+    setSourceCoordinationConflict(null);
+    return true;
   };
 
+
   useEffect(() => {
-    const index = session.documents.findIndex((document) => document.id === session.activeDocumentId);
-    if (index >= 0 && index !== activeEpisode) setActiveEpisode(index);
-  }, [activeEpisode, session.activeDocumentId, session.documents]);
+    setDocumentTabs((current) => normalizeDocumentTabState(current, session.documents, session.activeDocumentId));
+  }, [session.activeDocumentId, session.documents]);
 
   useEffect(() => {
     if (!initialSession.projectPath) return;
     let stopped = false;
     void openProjectSession(initialSession.projectPath).then((disk) => {
-      if (!stopped && !sharedBaseline.current && !portableBaseline.current && disk.updatedAt === initialSession.updatedAt) {
+      if (stopped || sharedBaseline.current || portableBaseline.current) return;
+      if (disk.updatedAt === initialSession.updatedAt) {
         sharedBaseline.current = disk;
         portableBaseline.current = portableFingerprint(disk);
+      } else {
+        const diskDocuments = portableDocumentFingerprintMap(disk.documents);
+        const changed = initialSession.documents.flatMap((document) => document.id && diskDocuments.get(document.id) !== portableDocumentFingerprint(document) ? [document.id] : []);
+        if (changed.length) setDirtyDocumentIds(new Set(changed));
       }
     }).catch(() => { /* the portable file may have moved since local recovery */ });
     return () => { stopped = true; };
@@ -309,13 +700,15 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   useEffect(() => {
     sessionRef.current = session;
     const timer = setTimeout(() => {
-      if (saveSession(materializeSourceSession(session))) setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-      else setOperationMessage("Local recovery storage is full. Save the portable project now.");
+      void coordinated.saveRecovery((snapshot) => saveSession(snapshot)).then((saved) => {
+        if (saved) setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+        else setOperationMessage("Local recovery storage is full. Save the portable project now.");
+      });
     }, 800);
     return () => clearTimeout(timer);
-  }, [session]);
+  }, [coordinated.saveRecovery, session]);
 
-  useEffect(() => () => { saveSession(materializeSourceDraft(sessionRef.current, sourceRecoveryRef.current)); }, []);
+  useEffect(() => () => { void coordinated.saveRecovery((snapshot) => saveSession(snapshot)); }, [coordinated.saveRecovery]);
 
   useEffect(() => {
     const path = doc.source?.type === "fdx" ? doc.source.path : null;
@@ -389,6 +782,14 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const objects = useMemo(() => detectObjects(doc.blocks), [doc.blocks]);
   const workspace = doc.workspace ?? emptyWorkspace();
   const customStructure = useMemo(() => resolveStoryStructure(doc.blocks, workspace.storyStructure), [doc.blocks, workspace.storyStructure]);
+  const storySelection = useMemo(() => reconcileStorySelection({
+    selectedSceneId: windowPreferences.selectedSceneByDocument[doc.id!],
+    selectedBeatId: windowPreferences.selectedBeatByDocument[doc.id!],
+  }, customStructure, scenes), [customStructure, doc.id, scenes, windowPreferences.selectedBeatByDocument, windowPreferences.selectedSceneByDocument]);
+  const collapsedStoryNodes = useMemo(
+    () => new Set(windowPreferences.collapsedStoryNodesByDocument[doc.id!] ?? []),
+    [doc.id, windowPreferences.collapsedStoryNodesByDocument],
+  );
   const structure = useMemo<StoryStructure>(() => ({
     acts: customStructure.acts.map((act) => ({
       id: act.id,
@@ -451,7 +852,34 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const pageEstimates = useMemo(() => new Map(analysis.scenes.map((scene) => [scene.id, scene.estimatedPages])), [analysis.scenes]);
   const activeIndex = doc.blocks.findIndex((block) => block.id === activeBlockId);
   const activeBlock = activeIndex >= 0 ? doc.blocks[activeIndex] : null;
-  const activeScene = activeIndex >= 0 ? [...scenes].reverse().find((scene) => scene.blockIndex <= activeIndex) ?? null : scenes[0] ?? null;
+  const activeScene = activeIndex >= 0 ? [...scenes].reverse().find((scene) => scene.blockIndex <= activeIndex) ?? null : null;
+  const rawSelectedSceneId = windowPreferences.selectedSceneByDocument[doc.id!];
+  const rawSelectedBeatId = windowPreferences.selectedBeatByDocument[doc.id!];
+  const updateStoryWindowPreferences = (
+    selectedSceneId: string | undefined,
+    selectedBeatId: string | undefined,
+    collapsedNodeIds: ReadonlySet<string> = collapsedStoryNodes,
+  ) => setUiPreferences((current) => {
+    const stored = uiWindowPreferences(current, session.projectId, windowSlotId);
+    const selectedSceneByDocument = { ...stored.selectedSceneByDocument };
+    const selectedBeatByDocument = { ...stored.selectedBeatByDocument };
+    if (selectedSceneId) selectedSceneByDocument[doc.id!] = selectedSceneId;
+    else delete selectedSceneByDocument[doc.id!];
+    if (selectedBeatId) selectedBeatByDocument[doc.id!] = selectedBeatId;
+    else delete selectedBeatByDocument[doc.id!];
+    return withUiWindowPreferences(current, session.projectId, windowSlotId, {
+      selectedSceneByDocument,
+      selectedBeatByDocument,
+      collapsedStoryNodesByDocument: {
+        ...stored.collapsedStoryNodesByDocument,
+        [doc.id!]: [...collapsedNodeIds],
+      },
+    });
+  });
+  useEffect(() => {
+    if (rawSelectedSceneId === storySelection.selectedSceneId && rawSelectedBeatId === storySelection.selectedBeatId) return;
+    updateStoryWindowPreferences(storySelection.selectedSceneId, storySelection.selectedBeatId);
+  }, [doc.id, rawSelectedBeatId, rawSelectedSceneId, storySelection.selectedBeatId, storySelection.selectedSceneId]);
   const previousDraftDocument = useMemo(() => versionHistory.snapshots.slice().reverse()
       .map((snapshot) => snapshot.session.documents.find((document) => document.id === doc.id))
       .find((document) => document && screenplayTextFingerprint(document) !== screenplayTextFingerprint(doc)), [doc, versionHistory.snapshots]);
@@ -469,18 +897,56 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     setFocusRequest({ id: imported ? doc.blocks[imported.blockStart].id : sceneId, nonce: ++focusNonce.current });
   };
 
+  const selectStoryScene = (sceneId?: string) => {
+    const selectedBeat = storySelection.selectedBeatId
+      ? customStructure.beats.find((beat) => beat.id === storySelection.selectedBeatId)
+      : undefined;
+    updateStoryWindowPreferences(sceneId, selectedBeat?.sceneId === sceneId ? storySelection.selectedBeatId : undefined);
+  };
+
+  const activateStoryBeat = (beatId: string, sceneId: string) => {
+    updateStoryWindowPreferences(sceneId || undefined, beatId);
+    if (sceneId) jumpToScene(sceneId);
+  };
+
   const jumpToImportWarning = (blockIndex: number) => {
     let targetDocument = doc;
     if (editorMode === "source") {
-      const reconciled = materializeFountainSource(session, doc.id!, sourceText);
+      if (sourceCoordinationConflict?.documentId === doc.id) {
+        setOperationMessage("Resolve the Fountain Source conflict before leaving Source view.");
+        return;
+      }
+      if (deferSourceExitUntilAcknowledged(
+        { kind: "import-warning", blockIndex },
+        "Waiting for the Fountain Source change to be acknowledged before opening the import warning.",
+      )) return;
+      const reconciled = materializeFountainSource(session, doc.id!, sourceRecoveryRef.current.sourceText);
       targetDocument = reconciled.documents.find((document) => document.id === doc.id) ?? doc;
       setSession(reconciled);
       setEditorMode("formatted");
       setSourceText("");
+      sourceBaseRef.current = null;
+      sourceKeepPendingRef.current = null;
+      setSourceCoordinationConflict(null);
     }
     const target = targetDocument.blocks[blockIndex];
     if (!target) return;
-    setFocusRequest({ id: target.id, nonce: ++focusNonce.current });
+    let sceneId: string | undefined;
+    for (const scene of deriveScenes(targetDocument.blocks)) {
+      if (scene.blockIndex > blockIndex) break;
+      sceneId = scene.id;
+    }
+    setMode("write");
+    setScriptTargetRequest({
+      target: {
+        documentId: targetDocument.id!,
+        blockId: target.id,
+        ...(sceneId ? { sceneId } : {}),
+        source: "import-warning",
+        reason: "Open the screenplay paragraph associated with this import warning",
+      },
+      nonce: ++scriptTargetNonce.current,
+    });
   };
 
   const setSceneNumber = (sceneId: string, number: string) => {
@@ -500,44 +966,252 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   useEffect(() => {
     if (editorMode !== "source") return;
     const timer = window.setTimeout(() => {
-      if (!saveSession(materializeSourceSession(sessionRef.current))) setOperationMessage("Local recovery storage is full. Save the portable project now.");
+      if (!submitSourceBufferForCoordination()) return;
+      let sourceAccepted = true;
+      void coordinated.saveRecovery((snapshot, context) => {
+        sourceAccepted = sourceBufferMatchesAuthority(snapshot, context.revision);
+        return sourceAccepted && saveSession(snapshot);
+      }).then((saved) => {
+        if (!sourceAccepted) {
+          setOperationMessage("The Fountain Source change was not accepted. Resolve the protected local/accepted versions before saving.");
+          return;
+        }
+        if (!saved) setOperationMessage("Local recovery storage is full. Save the portable project now.");
+      });
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [editorMode, sourceText]);
+  }, [coordinated.saveRecovery, editorMode, sourceText]);
 
-  const selectEpisode = (documentId: string) => {
-    const index = episodeDocs.findIndex((document) => document.id === documentId);
-    if (index < 0) return;
-    installProjectSession({ ...materializeSourceSession(session), activeDocumentId: documentId });
+  const applyDocumentTabState = (next: DocumentTabState) => {
+    const documentId = next.activeDocumentId;
+    const sourceSelection = captureSourceSelection();
+    if (sourceSelectionTimerRef.current !== null) {
+      window.clearTimeout(sourceSelectionTimerRef.current);
+      sourceSelectionTimerRef.current = null;
+    }
+    const withCurrentView = doc.id ? updateDocumentView(next, doc.id, {
+      activeBlockId: activeBlockId ?? undefined,
+      sourceMode: editorMode === "source",
+      ...(sourceSelection ? { sourceSelection } : {}),
+      editorScrollTop: captureEditorScroll().top,
+    }) : next;
+    if (!documentId || documentId === doc.id) {
+      setDocumentTabs(withCurrentView);
+      return;
+    }
+    if (sourceCoordinationConflict?.documentId === doc.id) {
+      setOperationMessage("Resolve the Fountain Source conflict before switching screenplays.");
+      return;
+    }
+    if (deferSourceExitUntilAcknowledged(
+      { kind: "document-tabs", tabs: withCurrentView },
+      "Waiting for the Fountain Source change to be acknowledged before switching screenplays.",
+    )) return;
+    const target = episodeDocs.find((document) => document.id === documentId);
+    if (!target) return;
+    const targetView = next.views[documentId];
+    const targetSourceText = targetView?.sourceMode ? toFountain(target) : "";
+    setSession(materializeSourceSession(session));
+    setDocumentTabs(withCurrentView);
+    setActiveBlockId(targetView?.activeBlockId ?? null);
+    setEditorMode(targetView?.sourceMode ? "source" : "formatted");
+    setSourceText(targetSourceText);
+    sourceBaseRef.current = targetView?.sourceMode && target.id
+      ? { documentId: target.id, text: targetSourceText, revision: coordinated.revision }
+      : null;
+    sourceKeepPendingRef.current = null;
+    setSourceCoordinationConflict(null);
+    setScriptTargetRequest(null);
+    window.requestAnimationFrame(() => {
+      const editor = globalThis.document.querySelector<HTMLElement>(".editor-scroll");
+      if (editor) editor.scrollTop = targetView?.editorScrollTop ?? 0;
+    });
+    if (targetView?.sourceMode) restoreSourceSelection(targetView.sourceSelection);
   };
+  const selectEpisode = (documentId: string) => {
+    if (!episodeDocs.some((document) => document.id === documentId)) return;
+    applyDocumentTabState(openDocumentTab(documentTabs, documentId));
+  };
+
+  useEffect(() => {
+    const acknowledgement = nativeDrag.lastAcknowledgement;
+    if (!acknowledgement) return;
+    const isSource = acknowledgement.sourceWindowId === coordinated.identity.windowId;
+    const isDestination = acknowledgement.destinationWindowId === coordinated.identity.windowId;
+    if (acknowledgement.payload.kind === "document-tab") {
+      const documentId = acknowledgement.payload.documentId;
+      if (isDestination && acknowledgement.placement.kind === "document-tabs") {
+        let next = openDocumentTab(documentTabs, documentId);
+        next = reorderDocumentTab(next, documentId, acknowledgement.placement.index);
+        if (JSON.stringify(next) !== JSON.stringify(documentTabs)) suppressNextNativeViewRevision.current = true;
+        applyDocumentTabState(next);
+      } else if (isSource && acknowledgement.effect === "move" && documentTabs.openDocumentIds.length > 1) {
+        const next = closeDocumentTab(documentTabs, documentId);
+        if (JSON.stringify(next) !== JSON.stringify(documentTabs)) suppressNextNativeViewRevision.current = true;
+        applyDocumentTabState(next);
+      }
+    } else {
+      const panelId = acknowledgement.payload.panelId;
+      if (isDestination) {
+        setDockLayout((current) => {
+          const definition = current.panels.find((panel) => panel.id === panelId)
+            ?? findWorkspacePanel(session.workspace, panelId);
+          if (!definition) return current;
+          let next = current.panels.some((panel) => panel.id === panelId) ? current : {
+            ...current,
+            panels: [...current.panels, definition],
+            hiddenPanelIds: [...current.hiddenPanelIds, panelId],
+          };
+          if (acknowledgement.placement.kind === "floating-layer") {
+            const placed = floatDockPanel(next, panelId);
+            if (placed !== current) suppressNextNativeViewRevision.current = true;
+            return placed;
+          }
+          if (acknowledgement.placement.kind === "dock-group") {
+            const requestedGroupId = acknowledgement.placement.groupId;
+            const targetId = dockTreeNodes(next.root).some((node) => node.kind === "tabs" && node.id === requestedGroupId)
+              ? requestedGroupId
+              : dockTreeNodes(next.root).find((node) => node.kind === "tabs")?.id;
+            if (targetId) next = dockPanel(next, panelId, targetId, acknowledgement.placement.edge);
+          }
+          if (next !== current) suppressNextNativeViewRevision.current = true;
+          return next;
+        });
+      } else if (isSource && acknowledgement.effect === "move") {
+        setDockLayout((current) => {
+          const next = hideDockPanel(current, panelId);
+          if (next !== current) suppressNextNativeViewRevision.current = true;
+          return next;
+        });
+      }
+    }
+    setOperationMessage(`${acknowledgement.effect === "copy" ? "Copied" : "Moved"} ${acknowledgement.payload.kind === "document-tab" ? "screenplay view" : "workspace panel"} after destination acknowledgement.`);
+    nativeDrag.clearOutcome();
+  }, [nativeDrag.lastAcknowledgement]);
+
+  useEffect(() => {
+    if (!nativeDrag.lastCancellation) return;
+    setOperationMessage("The cross-window transfer was canceled; the source stayed unchanged.");
+    nativeDrag.clearOutcome();
+  }, [nativeDrag.lastCancellation]);
 
   const toggleEditorMode = () => {
     if (doc.readOnly || !canEdit) return;
     if (editorMode === "formatted") {
-      setSourceText(toFountain(doc));
+      const nextSource = toFountain(doc);
+      sourceBaseRef.current = { documentId: doc.id!, text: nextSource, revision: coordinated.revision };
+      sourceKeepPendingRef.current = null;
+      setSourceCoordinationConflict(null);
+      setSourceText(nextSource);
       setEditorMode("source");
       return;
     }
-    setSession((current) => materializeFountainSource(current, doc.id!, sourceText));
+    if (sourceCoordinationConflict?.documentId === doc.id) {
+      setOperationMessage("Resolve the Fountain Source conflict before returning to Formatted view.");
+      return;
+    }
+    if (deferSourceExitUntilAcknowledged(
+      { kind: "formatted" },
+      "Waiting for the Fountain Source change to be acknowledged before returning to Formatted view.",
+    )) return;
+    setSession((current) => materializeFountainSource(current, doc.id!, sourceRecoveryRef.current.sourceText));
     setEditorMode("formatted");
     setSourceText("");
+    sourceBaseRef.current = null;
+    sourceKeepPendingRef.current = null;
+    setSourceCoordinationConflict(null);
+  };
+
+  const runPortableSave = async (
+    writer: (authoritative: ProjectSession, context: CoordinatedSaveContext) => Promise<ProjectSession | null>,
+  ): Promise<ProjectSession | null> => {
+    if (coordinated.native && !coordinated.isLeader) {
+      const leader = coordinated.windows?.windows.find((window) => window.isLeader);
+      setOperationMessage("Portable saves are serialized by the project leader window. Bringing that window forward now.");
+      if (leader) await coordinated.focusWindow(leader.windowId).catch((error) => setOperationMessage(messageFrom(error)));
+      return null;
+    }
+    let saved: ProjectSession | null = null;
+    const completed = await coordinated.savePortable(async (authoritative, context) => {
+      saved = await writer(authoritative, context);
+      return Boolean(saved);
+    });
+    return completed ? saved : null;
+  };
+
+  const writePortableProject = (
+    prepare: (authoritative: ProjectSession) => ProjectSession,
+    saveAs = false,
+  ) => {
+    if (sourceCoordinationConflict) {
+      setOperationMessage("Resolve the Fountain Source conflict before writing a portable project.");
+      return Promise.resolve(null);
+    }
+    if (!submitSourceBufferForCoordination()) return Promise.resolve(null);
+    return runPortableSave((authoritative, context) => sourceBufferMatchesAuthority(authoritative, context.revision)
+      ? saveProjectSession(prepare(authoritative), saveAs)
+      : Promise.resolve(null));
+  };
+
+  const markDocumentsClean = (
+    savedDocuments: readonly ScreenplayDocument[],
+    liveDocuments: readonly ScreenplayDocument[] = sessionRef.current.documents,
+  ) => {
+    const savedFingerprints = portableDocumentFingerprintMap(savedDocuments);
+    const liveFingerprints = portableDocumentFingerprintMap(liveDocuments);
+    const stillDirty = new Set(liveDocuments.flatMap((document) => document.id
+      && savedFingerprints.get(document.id) === liveFingerprints.get(document.id)
+      ? []
+      : document.id ? [document.id] : []));
+    pendingCleanDocumentFingerprints.current = undefined;
+    lastSeenDocuments.current = new Map(liveDocuments.flatMap((document) => document.id ? [[document.id, document] as const] : []));
+    lastSeenDocumentFingerprints.current = liveFingerprints;
+    setDirtyDocumentIds(stillDirty);
+  };
+
+  const mergePortableSaveIntoLiveSession = (
+    saved: ProjectSession,
+    applySavedChanges: (current: ProjectSession) => ProjectSession = (current) => current,
+  ) => {
+    let liveDocuments: readonly ScreenplayDocument[] = sessionRef.current.documents;
+    setSession((current) => {
+      liveDocuments = current.documents;
+      const next = applySavedChanges(current);
+      return mergePortableSaveMetadata(next, saved);
+    });
+    markDocumentsClean(saved.documents, liveDocuments);
   };
 
   const saveNow = async () => {
     if (!canEdit || busy) return;
-    const current = materializeSourceSession(session);
-    if (current !== session) setSession(current);
-    const recoverySaved = saveSession(current);
+    if (sourceCoordinationConflict) {
+      setOperationMessage("Resolve the Fountain Source conflict before saving this screenplay.");
+      return;
+    }
+    if (!submitSourceBufferForCoordination()) return;
+    let sourceAccepted = true;
+    const recoverySaved = await coordinated.saveRecovery((authoritative, context) => {
+      sourceAccepted = sourceBufferMatchesAuthority(authoritative, context.revision);
+      return sourceAccepted && saveSession(authoritative);
+    });
+    if (!sourceAccepted) {
+      setOperationMessage("The Fountain Source change was not accepted. Resolve the protected local/accepted versions before saving.");
+      return;
+    }
     if (recoverySaved) setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
     else setOperationMessage("Local recovery storage is full. Save the portable project now.");
     setBusy(true);
     try {
-      const saved = await saveProjectSession({ ...current, name: current.name || episodeDocs[0].titlePage.title || "Untitled Project" });
+      const saved = await runPortableSave(async (authoritative, context) => {
+        if (!sourceBufferMatchesAuthority(authoritative, context.revision)) return null;
+        const output = authoritative;
+        return saveProjectSession({ ...output, name: output.name || screenplayDisplayTitle(output.documents[0]) || "Untitled Project" });
+      });
       if (!saved) {
         if (recoverySaved) setOperationMessage("Local recovery was updated; the portable save was canceled.");
         return;
       }
-      setSession(saved);
+      mergePortableSaveIntoLiveSession(saved, (current) => ({ ...current, name: current.name || saved.name }));
       sharedBaseline.current = structuredClone(saved);
       portableBaseline.current = portableFingerprint(saved);
       setOperationMessage(`Project saved to ${saved.projectPath}.`);
@@ -552,20 +1226,26 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     const blob = new Blob([content], { type });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `${(doc.titlePage.title || "screenplay").toLowerCase().replace(/\s+/g, "-")}.${extension}`;
+    link.download = `${(screenplayDisplayTitle(doc) || "screenplay").toLowerCase().replace(/\s+/g, "-")}.${extension}`;
     link.click();
     URL.revokeObjectURL(link.href);
   };
 
   const outputDocument = () => materializeSourceSession(session).documents.find((document) => document.id === doc.id) ?? doc;
-  const exportFountain = () => download(toFountain(outputDocument()), "fountain", "text/plain");
+  const exportFountain = () => {
+    const result = toFountainWithWarnings(outputDocument());
+    download(result.text, "fountain", "text/plain");
+    setOperationMessage(result.warnings.length
+      ? `Fountain exported with ${result.warnings.length} preservation warning${result.warnings.length === 1 ? "" : "s"}: ${result.warnings.join(" ")}`
+      : "Fountain exported without preservation warnings.");
+  };
   const exportFdx = async () => {
     setBusy(true);
     setOperationMessage(null);
     try {
       const output = outputDocument();
       const { xml, warnings } = toFdxWithWarnings(output);
-      const path = await saveFdxExport(xml, output.titlePage.title || "screenplay");
+      const path = await saveFdxExport(xml, screenplayDisplayTitle(output) || "screenplay");
       if (!path) return;
       setOperationMessage(warnings.length
         ? `FDX exported to ${path} with ${warnings.length} preservation warning${warnings.length === 1 ? "" : "s"}: ${warnings.join(" ")}`
@@ -642,7 +1322,8 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       const projectWorkspace = structuredClone(current.workspace);
       syncSeriesDocuments(projectWorkspace.series, documents);
       linkedBaselines.current.set(imported.id!, imported.source?.lastImportedFingerprint ?? screenplayTextFingerprint(imported));
-      installProjectSession({ ...current, projectType: "television", documents, workspace: projectWorkspace, activeDocumentId: imported.id! });
+      if (!installProjectSession({ ...current, documents, workspace: projectWorkspace })) return;
+      setDocumentTabs((tabs) => openDocumentTab(normalizeDocumentTabState(tabs, documents, current.activeDocumentId), imported.id!));
     } catch (error) {
       setOperationMessage(messageFrom(error));
     } finally {
@@ -652,11 +1333,12 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
 
   const addBlankEpisode = () => {
     const current = materializeSourceSession(session);
-    const imported = emptyDocument(`Episode ${current.documents.length + 1}`);
+    const imported = emptyDocument(`Screenplay ${current.documents.length + 1}`);
     const documents = [...current.documents, imported];
     const projectWorkspace = structuredClone(current.workspace);
     syncSeriesDocuments(projectWorkspace.series, documents);
-    installProjectSession({ ...current, projectType: "television", documents, workspace: projectWorkspace, activeDocumentId: imported.id! });
+    if (!installProjectSession({ ...current, documents, workspace: projectWorkspace })) return;
+    setDocumentTabs((tabs) => openDocumentTab(normalizeDocumentTabState(tabs, documents, current.activeDocumentId), imported.id!));
   };
 
   const saveProjectAs = async () => {
@@ -664,10 +1346,12 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     setBusy(true);
     setOperationMessage(null);
     try {
-      const current = materializeSourceSession(session);
-      const saved = await saveProjectSession({ ...current, name: current.name || episodeDocs[0].titlePage.title || "Untitled Project" }, true);
+      const saved = await writePortableProject((authoritative) => ({
+        ...authoritative,
+        name: authoritative.name || screenplayDisplayTitle(authoritative.documents[0]) || "Untitled Project",
+      }), true);
       if (saved) {
-        setSession(saved);
+        mergePortableSaveIntoLiveSession(saved, (current) => ({ ...current, name: current.name || saved.name }));
         sharedBaseline.current = structuredClone(saved);
         portableBaseline.current = portableFingerprint(saved);
         setOperationMessage(`Portable project saved to ${saved.projectPath}.`);
@@ -688,6 +1372,31 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     branchId: current.versionHistory.activeBranchId || "main",
     scope,
   });
+
+  const requestRemoveDocument = (documentId: string) => {
+    const current = materializeSourceSession(session);
+    const plan = planDocumentRemoval(current, documentId, canEdit);
+    if (!plan.allowed) {
+      setOperationMessage(plan.reason === "last-document"
+        ? "A project must retain at least one screenplay."
+        : plan.reason === "permission" ? "Your collaboration role cannot remove screenplays." : "That screenplay no longer exists.");
+      return;
+    }
+    const dependencyCount = Object.values(plan.dependencies).reduce((count, ids) => count + ids.length, 0);
+    if (!window.confirm(`Remove “${plan.title}” from this project? This closes it in every view and cleans ${dependencyCount} live reference${dependencyCount === 1 ? "" : "s"}. A recovery snapshot will be created first.`)) return;
+    try {
+      const snapshot = projectSnapshot(current, `Before removing ${plan.title}`, `Protected recovery snapshot created before removing document ${documentId}.`);
+      const history = current.versionHistory.snapshots.length
+        ? saveSnapshot(current.versionHistory, snapshot)
+        : createVersionHistory(snapshot, { id: "main", name: "Main Draft" });
+      const result = removeProjectDocument({ ...current, versionHistory: history }, documentId, { canRemove: true, confirmedDocumentId: documentId });
+      setSession(result.session);
+      setDocumentTabs((tabs) => reconcileDocumentTabsAfterRemoval(tabs, result.session.documents, result.session.activeDocumentId));
+      setOperationMessage(`Removed “${plan.title}”. Its protected recovery snapshot remains in Drafts.`);
+    } catch (error) {
+      setOperationMessage(error instanceof Error ? error.message : "The screenplay could not be removed.");
+    }
+  };
 
   const saveDraftVersion = (name = `Draft ${versionHistory.snapshots.length + 1}`, description = "Saved draft version", milestone = false, scope: SnapshotScope = { kind: "project" }) => {
     if (!hasPermission(session.workspace, session.workspace.currentUserId, "edit")) {
@@ -750,7 +1459,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       history = saveSnapshot(history, projectSnapshot(session, `Before restoring ${snapshot.name}`, "Automatic recovery point before restoring a prior draft."));
     }
     const next = sessionWithHistory(restoreProjectSnapshot(snapshot, session), session, history);
-    installProjectSession(next);
+    if (!installProjectSession(next)) return;
     setOperationMessage(`Restored ${snapshot.name}; Project History was preserved.`);
   };
 
@@ -798,7 +1507,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     const history = createAlternateDraft(currentHistory, { id, name, fromSnapshotId });
     const next = sessionWithHistory(restoreProjectSnapshot(source, session), session, history);
     cancelDraftCombine();
-    installProjectSession(next);
+    if (!installProjectSession(next)) return;
     setOperationMessage(`Created Alternate Draft “${name}”.`);
   };
 
@@ -820,7 +1529,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     history = { ...history, activeBranchId: branchId };
     const next = sessionWithHistory(restoreProjectSnapshot(snapshot, session), session, history);
     cancelDraftCombine();
-    installProjectSession(next);
+    if (!installProjectSession(next)) return;
     setOperationMessage(`Switched to ${target.name}.`);
   };
 
@@ -868,7 +1577,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     const combined = projectSnapshot(mergedSession, `Combined ${source.name} into ${active.name}`, `${result.conflicts.length} conflict${result.conflicts.length === 1 ? "" : "s"}; ${alternateChoices} chose the alternate.`, [ours.id, theirs.id]);
     history = saveSnapshot(history, combined, active.id);
     const next = { ...mergedSession, versionHistory: history };
-    installProjectSession(next);
+    if (!installProjectSession(next)) return;
     cancelDraftCombine();
     setOperationMessage(result.clean ? `Combined ${source.name} without conflicts.` : `Combined ${source.name} with ${result.conflicts.length} explicit conflict choice${result.conflicts.length === 1 ? "" : "s"}.`);
   };
@@ -986,7 +1695,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       });
       history = saveSnapshot(history, combined, preview.review.targetBranchId);
       history = markDraftReviewApplied(history, reviewId, combined.id, new Date().toISOString());
-      installProjectSession({ ...mergedSession, versionHistory: history });
+      if (!installProjectSession({ ...mergedSession, versionHistory: history })) return;
       cancelDraftCombine();
       setOperationMessage(`Applied Draft Review “${preview.review.title}” to ${history.branches.find((branch) => branch.id === preview.review.targetBranchId)?.name ?? "the target draft"}.`);
     } catch (error) {
@@ -1172,7 +1881,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     if (linked) {
       const baseline = linkedBaselines.current.get(linked.id!);
       if (!baseline || screenplayTextFingerprint(linked) !== baseline) {
-        installProjectSession({ ...currentSession, activeDocumentId: linked.id! });
+        if (!installProjectSession({ ...currentSession, activeDocumentId: linked.id! })) return;
         setExternalConflict(true);
         setExternalChanged(true);
         setExternalModifiedAt(file.modifiedAt);
@@ -1262,12 +1971,25 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     if (!hasPermission(session.workspace, session.workspace.currentUserId, "resolve-conflicts")) return;
     setBusy(true);
     try {
-      const first = await saveProjectSession(materializeSourceSession(session), true);
+      const first = await writePortableProject((authoritative) => authoritative, true);
       if (!first) return;
-      const configured = { ...first, workspace: { ...first.workspace, sync: { ...first.workspace.sync, mode: "folder" as const, folderPath: "" } } };
-      const saved = await saveProjectSession(configured);
+      const saved = await writePortableProject((authoritative) => ({
+        ...authoritative,
+        projectPath: first.projectPath,
+        updatedAt: first.updatedAt,
+        workspace: {
+          ...authoritative.workspace,
+          sync: { ...authoritative.workspace.sync, mode: "folder" as const, folderPath: "" },
+        },
+      }));
       if (!saved) return;
-      installProjectSession(saved);
+      mergePortableSaveIntoLiveSession(saved, (current) => ({
+        ...current,
+        workspace: {
+          ...current.workspace,
+          sync: { ...current.workspace.sync, mode: "folder" as const, folderPath: "" },
+        },
+      }));
       sharedBaseline.current = structuredClone(saved);
       portableBaseline.current = portableFingerprint(saved);
       setSharedConflict(null);
@@ -1279,14 +2001,14 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     }
   };
 
-  const withCollaborationMergeHistory = (merged: ProjectSession): ProjectSession => {
+  const withCollaborationMergeHistory = (merged: ProjectSession, recoverySource: ProjectSession): ProjectSession => {
     let history = structuredClone(merged.versionHistory);
     if (!history.branches.length && history.snapshots.length) {
       const latest = history.snapshots[history.snapshots.length - 1];
       history.branches = [{ id: "main", name: "Main Draft", baseSnapshotId: history.snapshots[0].id, headSnapshotId: latest.id }];
       history.activeBranchId = "main";
     }
-    const recovery = projectSnapshot(materializeSourceSession(session), "Before shared collaboration merge", "Automatic recovery point before combining collaborator changes.");
+    const recovery = projectSnapshot(recoverySource, "Before shared collaboration merge", "Automatic recovery point before combining collaborator changes.");
     history = history.snapshots.length
       ? saveSnapshot(history, recovery, history.branches.some((branch) => branch.id === history.activeBranchId) ? history.activeBranchId : history.branches[0].id)
       : createVersionHistory(recovery, { id: "main", name: "Main Draft" });
@@ -1296,14 +2018,41 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   };
 
   const persistCollaboratorMerge = async (merged: ProjectSession, theirs: ProjectSession) => {
-    const candidate = { ...withCollaborationMergeHistory(merged), projectPath: theirs.projectPath, updatedAt: theirs.updatedAt };
-    const saved = await saveProjectSession(candidate);
+    const localAtDecision = materializeSourceSession(sessionRef.current);
+    const actorId = localAtDecision.workspace.currentUserId;
+    let authoritativeAtSave: ProjectSession | null = null;
+    const saved = await writePortableProject((authoritative) => {
+      authoritativeAtSave = authoritative;
+      const rebased = mergeCollaboratorSessions(localAtDecision, authoritative, merged, actorId, "ours");
+      if (!rebased.clean) {
+        throw new Error("The live project changed while the collaboration merge was being saved. Review the newly detected conflicts before writing the portable project.");
+      }
+      return {
+        ...withCollaborationMergeHistory(rebased.session, authoritative),
+        projectPath: theirs.projectPath,
+        updatedAt: theirs.updatedAt,
+      };
+    });
     if (!saved) return;
-    installProjectSession(saved);
+    let liveMergeConflicts: MergeConflict[] = [];
+    let liveDocuments: readonly ScreenplayDocument[] = sessionRef.current.documents;
+    setSession((current) => {
+      liveDocuments = current.documents;
+      if (!authoritativeAtSave) return current;
+      const live = mergeCollaboratorSessions(authoritativeAtSave, current, saved, actorId, "ours");
+      liveMergeConflicts = live.conflicts;
+      if (!live.clean) return current;
+      const next = { ...live.session, projectPath: saved.projectPath, updatedAt: saved.updatedAt };
+      liveDocuments = next.documents;
+      return next;
+    });
+    markDocumentsClean(saved.documents, liveDocuments);
     sharedBaseline.current = structuredClone(saved);
     portableBaseline.current = portableFingerprint(saved);
     setSharedConflict(null);
-    setOperationMessage("Combined local and shared project changes into a new portable version.");
+    setOperationMessage(liveMergeConflicts.length
+      ? "The collaboration merge was saved, but the live project changed during the write. Those newer edits remain in SCS; synchronize again to combine them with the portable file."
+      : "Combined local and shared project changes into a new portable version.");
   };
 
   const syncSharedProject = async () => {
@@ -1312,10 +2061,9 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     if (!path || session.workspace.sync.mode !== "folder") return;
     setBusy(true);
     try {
-      const ours = { ...materializeSourceSession(session), projectPath: path };
-      const saved = await saveProjectSession(ours);
+      const saved = await writePortableProject((authoritative) => ({ ...authoritative, projectPath: path }));
       if (!saved) return;
-      installProjectSession(saved);
+      mergePortableSaveIntoLiveSession(saved);
       sharedBaseline.current = structuredClone(saved);
       portableBaseline.current = portableFingerprint(saved);
       setSharedConflict(null);
@@ -1383,12 +2131,14 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     if (!session.projectPath || !hasPermission(session.workspace, session.workspace.currentUserId, "resolve-conflicts")) return;
     setBusy(true);
     try {
-      const saved = await saveProjectSession(materializeSourceSession(session));
+      const saved = await writePortableProject((authoritative) => authoritative);
       if (!saved) return;
       portableBaseline.current = portableFingerprint(saved);
       const result = await gitSyncInit(saved.projectPath, saved.workspace.sync.branch, saved.workspace.sync.remoteUrl);
-      const next = { ...saved, workspace: { ...saved.workspace, sync: { ...saved.workspace.sync, mode: "git" as const } } };
-      installProjectSession(next);
+      mergePortableSaveIntoLiveSession(saved, (current) => ({
+        ...current,
+        workspace: { ...current.workspace, sync: { ...current.workspace.sync, mode: "git" as const } },
+      }));
       setGitStatus(result.status);
       setOperationMessage(result.message);
     } catch (error) {
@@ -1402,10 +2152,10 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     if (!session.projectPath || !hasPermission(session.workspace, session.workspace.currentUserId, "resolve-conflicts")) return;
     setBusy(true);
     try {
-      const saved = await saveProjectSession(materializeSourceSession(session));
+      const saved = await writePortableProject((authoritative) => authoritative);
       if (!saved) return;
       portableBaseline.current = portableFingerprint(saved);
-      installProjectSession(saved);
+      mergePortableSaveIntoLiveSession(saved);
       const settings = saved.workspace.sync;
       const actor = saved.workspace.collaborators.find((collaborator) => collaborator.id === saved.workspace.currentUserId)!;
       const result = await gitSyncCommit(saved.projectPath, settings.branch, message, settings.gitAuthorName || actor.name, settings.gitAuthorEmail || `${actor.id}@scs.local`);
@@ -1423,12 +2173,17 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     setBusy(true);
     try {
       if (hasUnsavedSource || portableBaseline.current !== portableFingerprint(session)) throw new Error("Save a Git sync point before pulling so local work cannot be lost.");
+      await coordinated.flushMutations();
+      const authorityBeforePull = structuredClone(sessionRef.current);
       const before = await gitSyncStatus(session.projectPath);
       if (before.dirty) throw new Error("Save a Git sync point before pulling the remote project.");
       const result = await gitSyncPull(session.projectPath, session.workspace.sync.branch);
       const portable = await openProjectSession(session.projectPath);
-      const opened = { ...portable, documents: restoreLocalDocumentState(portable.documents, session.documents), workspace: restoreLocalWorkspaceState(portable.workspace, session.workspace) };
-      installProjectSession(opened);
+      const opened = { ...portable, documents: restoreLocalDocumentState(portable.documents, authorityBeforePull.documents), workspace: restoreLocalWorkspaceState(portable.workspace, authorityBeforePull.workspace) };
+      const live = sessionRef.current;
+      const reconciled = mergeCollaboratorSessions(authorityBeforePull, live, opened, live.workspace.currentUserId, "ours");
+      if (!reconciled.clean) throw new Error("The live project changed while Git pull was running. Those edits remain in SCS; review and synchronize again before replacing the portable draft.");
+      if (!installProjectSession(reconciled.session)) return;
       sharedBaseline.current = structuredClone(opened);
       portableBaseline.current = portableFingerprint(opened);
       setGitStatus(result.status);
@@ -1484,15 +2239,31 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
             setFocusRequest({ id: scene.id, nonce: ++focusNonce.current });
           },
         })),
-        ...document.blocks.filter((block) => block.type !== "scene_heading" && block.text.toLowerCase().includes(normalizedQuery)).map((block) => ({
-          key: `${document.id}-block-${block.id}`,
-          label: `${title} · ${elementLabels[block.type]}: ${block.text.slice(0, 90)}`,
-          action: () => {
-            selectEpisode(document.id!);
-            setMode("write");
-            setFocusRequest({ id: block.id, nonce: ++focusNonce.current });
-          },
-        })),
+        ...document.blocks.flatMap((block, blockIndex) => {
+          if (block.type === "scene_heading" || !block.text.toLowerCase().includes(normalizedQuery)) return [];
+          const startOffset = block.text.toLowerCase().indexOf(normalizedQuery);
+          const matchedText = block.text.slice(startOffset, startOffset + normalizedQuery.length);
+          let sceneId: string | undefined;
+          for (const scene of documentScenes) {
+            if (scene.blockIndex > blockIndex) break;
+            sceneId = scene.id;
+          }
+          return [{
+            key: `${document.id}-block-${block.id}`,
+            label: `${title} · ${elementLabels[block.type]}: ${block.text.slice(0, 90)}`,
+            action: () => openScriptTarget({
+              documentId: document.id!,
+              blockId: block.id,
+              ...(sceneId ? { sceneId } : {}),
+              startOffset,
+              endOffset: startOffset + matchedText.length,
+              matchedText,
+              occurrence: 0,
+              source: "other",
+              reason: "Open exact project search result",
+            }),
+          }];
+        }),
         ...documentCharacters.filter((character) => character.name.toLowerCase().includes(normalizedQuery)).map((character) => ({ key: `${document.id}-character-${character.name}`, label: `${title} · Character: ${character.name}`, action: selectDocument("Cast") })),
         ...documentObjects.filter((object) => object.name.toLowerCase().includes(normalizedQuery)).map((object) => ({ key: `${document.id}-object-${object.name}`, label: `${title} · Object: ${object.name}`, action: selectDocument("Props") })),
         ...(document.workspace?.treatments ?? []).filter((treatment) => `${treatment.title} ${treatment.markdown}`.toLowerCase().includes(normalizedQuery)).map((treatment) => ({ key: `${document.id}-treatment-${treatment.id}`, label: `${title} · Treatment: ${treatment.title}`, action: () => { selectEpisode(document.id!); setMode("treatment"); } })),
@@ -1506,7 +2277,8 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (paletteOpen) setPaletteOpen(false);
+        if (nativeDrag.canCancel) void nativeDrag.cancel().catch((error) => setOperationMessage(messageFrom(error)));
+        else if (paletteOpen) setPaletteOpen(false);
         else if (focusMode) setFocusMode(false);
         return;
       }
@@ -1544,6 +2316,16 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     if (targetId) setFocusRequest({ id: targetId, nonce: ++focusNonce.current });
   };
 
+  const openScriptTarget = (target: ScriptTarget) => {
+    if (!session.documents.some((document) => document.id === target.documentId)) {
+      setOperationMessage("That screenplay reference is no longer available.");
+      return;
+    }
+    selectEpisode(target.documentId);
+    setMode("write");
+    setScriptTargetRequest({ target, nonce: ++scriptTargetNonce.current });
+  };
+
   const openEntityBreakdown = (kind: "character" | "location", entityId: string) => {
     setEntityFocusRequest({ kind, id: entityId, nonce: ++entityFocusNonce.current });
     setReferenceModeTab(kind === "character" ? "Cast" : "Places");
@@ -1570,6 +2352,9 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       setMode("write");
       jumpToScene(sceneId);
     },
+    selectedBoardSceneId: storySelection.selectedSceneId,
+    activeEditorSceneId: activeScene?.id,
+    onSelectedBoardSceneChange: selectStoryScene,
     entityFocusRequest,
     onOpenEntityBreakdown: openEntityBreakdown,
     versionHistory,
@@ -1592,6 +2377,10 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     onResolveDraftReview: resolveDraftReview,
     onApplyDraftReview: applyDraftReview,
     onExportBreakdown: exportBreakdown,
+    breakdownSections,
+    onBreakdownSectionsChange: (sections: typeof breakdownSections) => setUiPreferences((current) => withBreakdownSections(current, breakdownPreferenceKey, sections)),
+    onResetBreakdownSections: () => setUiPreferences((current) => resetBreakdownSections(current, breakdownPreferenceKey)),
+    onOpenScriptTarget: openScriptTarget,
     onImportTreatment: importTreatment,
     onExportTreatment: exportTreatment,
     projectWorkspace: session.workspace,
@@ -1724,6 +2513,416 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     restoreEditorScroll(scroll);
   };
 
+  const applyWorkspaceLayout = (layoutId: string) => {
+    const next = getWorkspaceDockLayout(session.workspace, layoutId);
+    if (!next) {
+      setOperationMessage("That workspace layout is missing or malformed; the Writer layout remains available.");
+      return;
+    }
+    setDockLayout(next);
+    setLayoutWorkspaceOpen(true);
+    setLayoutManagerOpen(false);
+  };
+  const requirePortableLayoutEdit = () => {
+    if (canEdit) return true;
+    setOperationMessage("This project role may customize the current window but cannot change portable project layouts.");
+    return false;
+  };
+  const saveCurrentWorkspaceLayout = (name: string) => {
+    if (!requirePortableLayoutEdit()) return;
+    try {
+      const id = uniqueWorkspaceLayoutId(session.workspace, name);
+      const candidate = { ...structuredClone(dockLayout), id, name };
+      const preview = saveCustomLayout(session.workspace, candidate);
+      const saved = getWorkspaceDockLayout(preview, id);
+      if (!saved) throw new Error("The custom layout could not be normalized.");
+      mutateSession({ kind: "upsert-layout", layout: saved });
+      setDockLayout(saved);
+      setOperationMessage(`Saved custom layout ${saved.name}.`);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+  const updateCurrentWorkspaceLayout = () => {
+    if (!requirePortableLayoutEdit()) return;
+    if (BUILTIN_LAYOUT_ID_SET.has(dockLayout.id)) return;
+    try {
+      const preview = saveCustomLayout(session.workspace, dockLayout);
+      const saved = getWorkspaceDockLayout(preview, dockLayout.id);
+      if (!saved) throw new Error("The custom layout could not be normalized.");
+      mutateSession({ kind: "upsert-layout", layout: saved });
+      setDockLayout(saved);
+      setOperationMessage(`Updated custom layout ${saved.name}.`);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+  const duplicateLayout = (layoutId: string) => {
+    if (!requirePortableLayoutEdit()) return;
+    try {
+      const preview = duplicateWorkspaceLayout(session.workspace, layoutId);
+      const created = preview.layouts.find((layout) => !session.workspace.layouts.some((existing) => existing.id === layout.id));
+      const saved = created ? getWorkspaceDockLayout(preview, created.id) : undefined;
+      if (!saved) throw new Error("The layout copy could not be created.");
+      mutateSession({ kind: "upsert-layout", layout: saved });
+      setDockLayout(saved);
+      setLayoutWorkspaceOpen(true);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+  const renameLayout = (layoutId: string, name: string) => {
+    if (!requirePortableLayoutEdit()) return;
+    try {
+      const preview = renameCustomLayout(session.workspace, layoutId, name);
+      const renamed = getWorkspaceDockLayout(preview, layoutId);
+      if (!renamed) throw new Error("The renamed layout is unavailable.");
+      mutateSession({ kind: "upsert-layout", layout: renamed });
+      if (dockLayout.id === layoutId) setDockLayout(renamed);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+  const removeLayout = (layoutId: string) => {
+    if (!requirePortableLayoutEdit()) return;
+    try {
+      deleteCustomLayout(session.workspace, layoutId);
+      mutateSession({ kind: "delete-layout", layoutId });
+      if (dockLayout.id === layoutId) applyWorkspaceLayout("writer");
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+  const changeLayoutShortcut = (layoutId: string, shortcut: string) => {
+    if (!requirePortableLayoutEdit()) return;
+    try {
+      const workspace = setWorkspaceLayoutShortcut(session.workspace, layoutId, shortcut);
+      mutateSession({ kind: "set-workspace", workspace });
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+  const restoreDockPanel = (panelId: string) => setDockLayout((current) => restoreHiddenPanel(current, panelId));
+  const activeDockPanelId = activePanelInDockTree(dockLayout.root);
+  const activeDockPanel = dockLayout.panels.find((panel) => panel.id === activeDockPanelId);
+  const hiddenDockPanels = dockLayout.hiddenPanelIds.flatMap((panelId) => {
+    const panel = dockLayout.panels.find((candidate) => candidate.id === panelId);
+    return panel ? [{ id: panel.id, title: panel.title }] : [];
+  });
+  const layoutMenuEntries = session.workspace.layouts.map((layout) => ({
+    id: layout.id,
+    name: layout.name,
+    active: layoutWorkspaceOpen && dockLayout.id === layout.id,
+  }));
+
+  const nativeWindowEntries = coordinated.windows?.windows.map((window, index) => ({
+    windowId: window.windowId,
+    label: window.label,
+    title: window.slotId === "primary" ? "Primary Window" : `Window ${index + 1}`,
+    active: window.windowId === coordinated.identity.windowId,
+    leader: window.isLeader,
+  })) ?? [{ windowId: coordinated.identity.windowId, label: "browser", title: "Current Window", active: true, leader: true }];
+  const newWorkspaceWindow = async (openCurrentDocument = false, activeLayoutId?: string): Promise<boolean> => {
+    if (!coordinated.native) {
+      setOperationMessage("Native workspace windows are available in the Windows desktop build.");
+      return false;
+    }
+    const slotId = `slot-${crypto.randomUUID().slice(0, 8)}`;
+    let nextPreferences = uiPreferences;
+    if (openCurrentDocument || activeLayoutId) {
+      const tabs = openCurrentDocument ? openDocumentTab(createDocumentTabState(session.documents, doc.id), doc.id!) : undefined;
+      nextPreferences = withUiWindowPreferences(nextPreferences, session.projectId, slotId, {
+        ...(tabs ? { tabs } : {}),
+        activeMode: mode,
+        activeLayoutId: activeLayoutId ?? MODE_TO_LAYOUT[mode],
+      });
+      setUiPreferences(nextPreferences);
+      saveUiPreferencesForWindow(localStorage, nextPreferences, session.projectId, slotId);
+    }
+    try {
+      await coordinated.createWindow(slotId);
+      return true;
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+      return false;
+    }
+  };
+  const moveDocumentToWindow = async (windowId: string) => {
+    const target = coordinated.windows?.windows.find((window) => window.windowId === windowId);
+    if (!target || !doc.id) return;
+    if (coordinated.native) {
+      if (!nativeDrag.ready) {
+        setOperationMessage("Cross-window transfer listeners are still starting. Try again in a moment.");
+        return;
+      }
+      try {
+        const effect = documentTabs.openDocumentIds.length > 1 ? "move" : "copy";
+        await nativeDrag.beginDocumentTransfer(doc.id, effect);
+        await coordinated.focusWindow(windowId);
+        setOperationMessage(`${effect === "copy" ? "Open" : "Move"} the screenplay by choosing its tab placement in ${target.slotId}; this window changes only after acknowledgement.`);
+      } catch (error) {
+        setOperationMessage(messageFrom(error));
+      }
+      return;
+    }
+    const destinationPreferences = uiWindowPreferences(uiPreferences, session.projectId, target.slotId);
+    const destinationTabs = openDocumentTab(normalizeDocumentTabState(destinationPreferences.tabs, session.documents, doc.id), doc.id);
+    let nextPreferences = withUiWindowPreferences(uiPreferences, session.projectId, target.slotId, { tabs: destinationTabs });
+    const sourceTabs = documentTabs.openDocumentIds.length > 1 ? closeDocumentTab(documentTabs, doc.id) : documentTabs;
+    nextPreferences = withUiWindowPreferences(nextPreferences, session.projectId, windowSlotId, { tabs: sourceTabs });
+    setUiPreferences(nextPreferences);
+    saveUiPreferencesForWindow(localStorage, nextPreferences, session.projectId, target.slotId);
+    saveUiPreferencesForWindow(localStorage, nextPreferences, session.projectId, windowSlotId);
+    applyDocumentTabState(sourceTabs);
+    setOperationMessage(documentTabs.openDocumentIds.length > 1
+      ? `Moved ${screenplayDisplayTitle(doc) || "screenplay"} to ${target.slotId}.`
+      : `Opened ${screenplayDisplayTitle(doc) || "screenplay"} in ${target.slotId}; this window kept its only open view.`);
+  };
+  const moveDocumentToNewWindow = async () => {
+    if (!doc.id) return;
+    if (!coordinated.native || !nativeDrag.ready) {
+      setOperationMessage("Cross-window transfer listeners are still starting. Try again in a moment.");
+      return;
+    }
+    const effect = documentTabs.openDocumentIds.length > 1 ? "move" : "copy";
+    let drag: InternalDragSession | undefined;
+    try {
+      drag = await nativeDrag.beginDocumentTransfer(doc.id, effect);
+      const created = await newWorkspaceWindow(false);
+      if (!created) {
+        await nativeDrag.cancel(drag.dragId).catch(() => undefined);
+        return;
+      }
+      setOperationMessage(`${effect === "copy" ? "Open" : "Move"} ${screenplayDisplayTitle(doc) || "screenplay"} by choosing its tab placement in the new window; the source changes only after acknowledgement.`);
+    } catch (error) {
+      if (drag) await nativeDrag.cancel(drag.dragId).catch(() => undefined);
+      setOperationMessage(messageFrom(error));
+    }
+  };
+  const movePanelToWindow = async (windowId: string, copy: boolean) => {
+    if (!activeDockPanel) return;
+    if (copy && !WORKSPACE_PANEL_REGISTRY[activeDockPanel.kind].copyable) {
+      setOperationMessage(`${activeDockPanel.title} is a core window panel and cannot be copied.`);
+      return;
+    }
+    if (!copy && !activeDockPanel.closable) {
+      setOperationMessage(`${activeDockPanel.title} is required in this window and cannot be moved out of it.`);
+      return;
+    }
+    const target = coordinated.windows?.windows.find((window) => window.windowId === windowId);
+    if (!target || !nativeDrag.ready) {
+      setOperationMessage("Cross-window panel transfer is not ready yet.");
+      return;
+    }
+    try {
+      await nativeDrag.beginPanelTransfer(activeDockPanel.id, copy ? "copy" : "move");
+      await coordinated.focusWindow(windowId);
+      setOperationMessage(`Choose where to ${copy ? "copy" : "move"} ${activeDockPanel.title} in ${target.slotId}; the source remains until acknowledgement.`);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+  const useAcceptedFountainSource = () => {
+    const conflict = sourceCoordinationConflict;
+    if (!conflict) return;
+    if (conflict.reason === "deleted") {
+      sourceBaseRef.current = null;
+      sourceKeepPendingRef.current = null;
+      pendingSourceExitRef.current = null;
+      setSourceText("");
+      setEditorMode("formatted");
+      setSourceCoordinationConflict(null);
+      setOperationMessage("The local Fountain buffer for the removed screenplay was discarded.");
+      return;
+    }
+    if (conflict.documentId !== doc.id) return;
+    sourceBaseRef.current = { documentId: conflict.documentId, text: conflict.acceptedText, revision: conflict.acceptedRevision };
+    sourceKeepPendingRef.current = null;
+    setSourceText(conflict.acceptedText);
+    setSourceCoordinationConflict(null);
+    setOperationMessage("The accepted coordinated draft now replaces the local Fountain buffer.");
+  };
+  const keepLocalFountainSource = () => {
+    const conflict = sourceCoordinationConflict;
+    if (!conflict || conflict.reason === "deleted" || conflict.documentId !== doc.id || !canEdit) return;
+    const candidate = materializeFountainSource(sessionRef.current, conflict.documentId, sourceText);
+    const candidateDocument = candidate.documents.find((document) => document.id === conflict.documentId);
+    if (!candidateDocument) return;
+    const candidateText = toFountain(candidateDocument);
+    setSourceText(candidateText);
+    if (!coordinated.native || candidateText === conflict.acceptedText) {
+      sourceBaseRef.current = { documentId: conflict.documentId, text: candidateText, revision: coordinated.revision };
+      sourceKeepPendingRef.current = null;
+      setSourceCoordinationConflict(null);
+    } else {
+      sourceKeepPendingRef.current = {
+        documentId: conflict.documentId,
+        text: candidateText,
+        rawText: candidateText,
+      };
+    }
+    setSession(candidate);
+    setOperationMessage(coordinated.native
+      ? "Submitting the local Fountain source to the project coordinator. This buffer remains protected until acknowledgement."
+      : "The local Fountain source is now the accepted draft.");
+  };
+  const downloadRemovedFountainSource = () => {
+    const conflict = sourceCoordinationConflict;
+    if (!conflict || conflict.reason !== "deleted") return;
+    download(conflict.localText, "fountain", "text/plain");
+    setOperationMessage("Downloaded the protected Fountain buffer. Discard it here only after confirming the file is safe.");
+  };
+  const materializeSourceBeforeWindowLifecycle = (): boolean => {
+    if (sourceCoordinationConflict) {
+      setOperationMessage("Resolve the Fountain Source conflict before closing this window or project.");
+      return false;
+    }
+    return submitSourceBufferForCoordination();
+  };
+  const sourceBufferMatchesAuthority = (authoritative: ProjectSession, revision: number): boolean => {
+    if (editorMode !== "source") return true;
+    const base = sourceBaseRef.current;
+    if (!base) return true;
+    const acceptedDocument = authoritative.documents.find((document) => document.id === base.documentId);
+    if (!acceptedDocument) {
+      sourceKeepPendingRef.current = null;
+      setSourceCoordinationConflict({
+        documentId: base.documentId,
+        reason: "deleted",
+        documentTitle: "Removed screenplay",
+        baseText: base.text,
+        localText: sourceRecoveryRef.current.sourceText,
+        acceptedText: "",
+        acceptedRevision: revision,
+      });
+      return false;
+    }
+    const acceptedText = toFountain(acceptedDocument);
+    const pending = sourceKeepPendingRef.current;
+    if (pending?.documentId === base.documentId) {
+      if (pending.text !== acceptedText) {
+        sourceKeepPendingRef.current = null;
+        setSourceCoordinationConflict({
+          documentId: base.documentId,
+          reason: "changed",
+          documentTitle: screenplayDisplayTitle(acceptedDocument) || "Untitled Screenplay",
+          baseText: base.text,
+          localText: sourceRecoveryRef.current.sourceText,
+          acceptedText,
+          acceptedRevision: revision,
+        });
+        return false;
+      }
+      if (sourceRecoveryRef.current.sourceText !== pending.rawText) {
+        sourceKeepPendingRef.current = null;
+        sourceBaseRef.current = { documentId: base.documentId, text: acceptedText, revision };
+        setSourceCoordinationConflict({
+          documentId: base.documentId,
+          reason: "changed",
+          documentTitle: screenplayDisplayTitle(acceptedDocument) || "Untitled Screenplay",
+          baseText: acceptedText,
+          localText: sourceRecoveryRef.current.sourceText,
+          acceptedText,
+          acceptedRevision: revision,
+        });
+        return false;
+      }
+      sourceKeepPendingRef.current = null;
+      sourceBaseRef.current = { documentId: base.documentId, text: acceptedText, revision };
+      sourceRecoveryRef.current = { ...sourceRecoveryRef.current, sourceText: acceptedText, document: acceptedDocument };
+      setSourceText(acceptedText);
+      setSourceCoordinationConflict(null);
+      return true;
+    }
+    const reconciliation = reconcileFountainSourceBuffer({
+      documentId: base.documentId,
+      baseText: base.text,
+      localText: sourceRecoveryRef.current.sourceText,
+      acceptedText,
+      acceptedRevision: revision,
+    });
+    if (reconciliation.kind === "conflict") {
+      setSourceCoordinationConflict({
+        ...reconciliation,
+        reason: "changed",
+        documentTitle: screenplayDisplayTitle(acceptedDocument) || "Untitled Screenplay",
+      });
+      return false;
+    }
+    sourceBaseRef.current = { documentId: base.documentId, text: acceptedText, revision };
+    sourceRecoveryRef.current = { ...sourceRecoveryRef.current, sourceText: acceptedText, document: acceptedDocument };
+    setSourceText(acceptedText);
+    setSourceCoordinationConflict(null);
+    return true;
+  };
+  async function resolvePendingSourceExit() {
+    if (sourceExitVerificationRef.current || !pendingSourceExitRef.current) return;
+    sourceExitVerificationRef.current = true;
+    try {
+      const authority = await coordinated.flushMutations();
+      if (!sourceBufferMatchesAuthority(authority.session, authority.revision)) {
+        setOperationMessage("The Fountain Source change was not accepted. Resolve the protected local/accepted versions before leaving Source view.");
+        return;
+      }
+      const pendingExit = pendingSourceExitRef.current;
+      pendingSourceExitRef.current = null;
+      if (!pendingExit) return;
+      if (pendingExit.kind === "formatted") toggleEditorMode();
+      else if (pendingExit.kind === "import-warning") jumpToImportWarning(pendingExit.blockIndex);
+      else applyDocumentTabState(pendingExit.tabs);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    } finally {
+      sourceExitVerificationRef.current = false;
+    }
+  }
+  const closeCurrentWindow = async () => {
+    if (!materializeSourceBeforeWindowLifecycle()) return;
+    const authority = await coordinated.flushMutations();
+    if (!sourceBufferMatchesAuthority(authority.session, authority.revision)) {
+      setOperationMessage("The Fountain Source change was not accepted. Resolve the protected local/accepted versions before closing.");
+      return;
+    }
+    if (!coordinated.native) { onExit(); return; }
+    try {
+      const disposition = await coordinated.closeWindow();
+      if (disposition !== "final-window") return;
+      const allow = window.confirm("Close the final project window? SCS will write the latest local recovery state before closing.");
+      if (!allow) {
+        await coordinated.confirmFinalClose(false);
+        return;
+      }
+      const recoverySaved = await coordinated.saveRecovery((snapshot) => saveSession(snapshot));
+      const closeWithoutRecovery = recoverySaved || window.confirm("SCS could not write the emergency recovery copy. Close the final project window anyway?");
+      await coordinated.confirmFinalClose(closeWithoutRecovery);
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+    }
+  };
+  const leaveCurrentProject = async (): Promise<boolean> => {
+    try {
+      if (!materializeSourceBeforeWindowLifecycle()) return false;
+      const authority = await coordinated.flushMutations();
+      if (!sourceBufferMatchesAuthority(authority.session, authority.revision)) {
+        setOperationMessage("The Fountain Source change was not accepted. Resolve the protected local/accepted versions before leaving the project.");
+        return false;
+      }
+      const recoverySaved = await coordinated.saveRecovery((snapshot) => saveSession(snapshot));
+      if (!recoverySaved && !window.confirm("SCS could not write the emergency recovery copy. Leave this project anyway?")) return false;
+      await coordinated.leaveProject(true);
+      return true;
+    } catch (error) {
+      setOperationMessage(messageFrom(error));
+      return false;
+    }
+  };
+  const exitToLauncher = async () => {
+    if (await leaveCurrentProject()) onExit();
+  };
+  useEffect(() => {
+    if (coordinated.closeRequest) void closeCurrentWindow();
+  }, [coordinated.closeRequest]);
+
   const projectMenu: MenuEntry[] = [
     { label: "Save Project", hint: session.workspace.shortcuts.save || "", disabled: busy || !canEdit, onSelect: () => void saveNow() },
     { label: "Save Project As…", disabled: busy || !canEdit, onSelect: () => void saveProjectAs() },
@@ -1732,18 +2931,18 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     { label: "Export Fountain", onSelect: exportFountain },
     { label: "Export FDX", disabled: busy, onSelect: () => void exportFdx() },
     "divider",
-    { label: "Open FDX…", disabled: busy || !canEdit, onSelect: onOpenFdx },
+    { label: "Open FDX…", disabled: busy || !canEdit, onSelect: () => onOpenFdx(leaveCurrentProject) },
     ...(doc.source?.type === "fdx" && doc.source.path ? [
       { label: "Open linked FDX externally", onSelect: () => void openExternalFile(doc.source!.path) },
       { label: "Reveal linked FDX", onSelect: () => void revealExternalPath(doc.source!.path) },
     ] satisfies MenuEntry[] : []),
     "divider",
-    { label: "Close Project", onSelect: onExit },
+    { label: "Close Project", onSelect: () => void exitToLauncher() },
   ];
 
   const episodeMenu: MenuEntry[] = [
-    { label: "New Blank Episode", disabled: busy || !canEdit, onSelect: addBlankEpisode },
-    { label: "Import Episode FDX…", disabled: busy || !canEdit, onSelect: () => void addEpisode() },
+    { label: "New Blank Screenplay", disabled: busy || !canEdit, onSelect: addBlankEpisode },
+    { label: "Import Screenplay FDX…", disabled: busy || !canEdit, onSelect: () => void addEpisode() },
   ];
 
   const modes = availableModes(isTelevision);
@@ -1752,6 +2951,8 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
   const nextScene = activeScene ? scenes[scenes.findIndex((scene) => scene.id === activeScene.id) + 1] : undefined;
 
   const banners = <>
+    {coordinated.error && <div className="notice notice-warning" role="alert">Native window coordination needs attention: {coordinated.error}</div>}
+    {sourceCoordinationConflict && <div className="notice notice-warning" role="alert"><span>{sourceCoordinationConflict.reason === "deleted" ? "This screenplay was removed in another window while its Fountain buffer was open. The local source is protected until you download or explicitly discard it." : "Fountain Source changed in another window while this buffer had local edits. Choose which complete source to keep; SCS will not merge or save over either version automatically."}</span> {sourceCoordinationConflict.reason === "deleted" ? <><button className="btn" type="button" onClick={downloadRemovedFountainSource}>Download local source</button><button className="btn btn-ghost" type="button" onClick={useAcceptedFountainSource}>Discard local buffer</button></> : <><button className="btn" type="button" onClick={useAcceptedFountainSource}>Use accepted draft</button><button className="btn btn-ghost" type="button" disabled={!canEdit} onClick={keepLocalFountainSource}>Keep my source</button></>}</div>}
     {doc.source?.type === "fdx" && <div className="notice notice-linked">{doc.source.path ? "Linked FDX · edits stay in SCS until exported." : "Imported FDX · choose its watch folder on this computer to relink companion updates."} <span>{doc.source.fileName}</span></div>}
     {externalChanged && <div className="notice notice-warning" role="alert">{externalConflict ? "Both SCS and the linked FDX changed. Choose which script text to keep; SCS snapshots the current draft first." : "The linked FDX changed outside SCS."} <button className="btn" disabled={!canEdit} onClick={reloadLinkedFdx}>{externalConflict ? "Use external FDX" : "Re-import and preserve metadata"}</button>{externalConflict && <button className="btn btn-ghost" disabled={!canEdit} onClick={keepLocalAfterConflict}>Keep SCS draft</button>}</div>}
     {operationMessage && <div className="notice notice-status" role="status"><span>{operationMessage}</span><button className="notice-dismiss" aria-label="Dismiss message" onClick={() => setOperationMessage(null)}><Icon name="close" size={12} /></button></div>}
@@ -1807,6 +3008,12 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
               canEdit={canEdit && !doc.readOnly}
               onSelect={jumpToScene}
               onMoveScene={moveSceneTo}
+              collapsedNodeIds={collapsedStoryNodes}
+              onCollapsedNodeIdsChange={(collapsed) => updateStoryWindowPreferences(storySelection.selectedSceneId, storySelection.selectedBeatId, collapsed)}
+              selectedSceneId={storySelection.selectedSceneId ?? null}
+              selectedBeatId={storySelection.selectedBeatId ?? null}
+              onSceneActivate={(sceneId) => { selectStoryScene(sceneId); jumpToScene(sceneId); }}
+              onBeatActivate={activateStoryBeat}
             />
           </aside>
           <div className="pane-resize" role="separator" aria-orientation="vertical" aria-label="Resize scene navigator" tabIndex={0}
@@ -1816,8 +3023,8 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
         <div className="canvas" style={{ "--canvas-zoom": prefs.zoom } as React.CSSProperties}>
           <fieldset className="canvas-fieldset" disabled={!canEdit}>
             {editorMode === "formatted"
-              ? <Editor documentId={doc.id!} blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} readOnly={doc.readOnly || !canEdit || busy} productionPages={productionPageRows} historyRef={editorHistoryRef} historyStore={editorHistoryStore} />
-              : <div className="source-wrap"><textarea className="source-editor" value={sourceText} spellCheck={false} readOnly={!canEdit || busy} onChange={(event) => setSourceText(event.target.value)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
+              ? <Editor documentId={doc.id!} blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} scriptTargetRequest={scriptTargetRequest} readOnly={doc.readOnly || !canEdit || busy} productionPages={productionPageRows} historyRef={editorHistoryRef} historyStore={editorHistoryStore} />
+              : <div className="source-wrap"><textarea ref={sourceEditorRef} className="source-editor" value={sourceText} spellCheck={false} readOnly={!canEdit || busy || sourceCoordinationConflict?.reason === "deleted"} onChange={(event) => setSourceText(event.target.value)} onSelect={(event) => persistSourceSelection(event.currentTarget)} onBlur={(event) => persistSourceSelection(event.currentTarget, true)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
           </fieldset>
         </div>
         {prefs.inspOpen && !focusMode && <>
@@ -1852,6 +3059,66 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     </div>
   );
 
+  const dockNavigatorPanel = (
+    <SceneNavigator
+      title={doc.titlePage.title || "Untitled Screenplay"}
+      scenes={scenes}
+      structure={structure}
+      sceneMeta={workspace.sceneMeta ?? {}}
+      omittedSceneIds={workspace.omittedSceneIds ?? []}
+      pageEstimates={pageEstimates}
+      activeSceneId={activeScene?.id ?? null}
+      totalPages={pages}
+      canEdit={canEdit && !doc.readOnly}
+      onSelect={jumpToScene}
+      onMoveScene={moveSceneTo}
+      collapsedNodeIds={collapsedStoryNodes}
+      onCollapsedNodeIdsChange={(collapsed) => updateStoryWindowPreferences(storySelection.selectedSceneId, storySelection.selectedBeatId, collapsed)}
+      selectedSceneId={storySelection.selectedSceneId ?? null}
+      selectedBeatId={storySelection.selectedBeatId ?? null}
+      onSceneActivate={(sceneId) => { selectStoryScene(sceneId); jumpToScene(sceneId); }}
+      onBeatActivate={activateStoryBeat}
+    />
+  );
+  const dockScreenplayPanel = (
+    <div className="dock-screenplay-surface">
+      <div className="write-toolbar" role="toolbar" aria-label="Screenplay panel tools">
+        <select className="input element-select" aria-label="Current element" value={activeBlock?.type ?? "action"} disabled={!activeBlock || editorMode === "source" || doc.readOnly || !canEdit} onChange={(event) => setActiveType(event.target.value as ScreenplayElementType)}>
+          {ELEMENT_TYPES.map((type, index) => <option key={type} value={type}>{elementLabels[type]} | Ctrl+{index + 1}</option>)}
+        </select>
+        <button className="tool-btn icon-only" aria-label="Undo" disabled={doc.readOnly || !canEdit || editorMode === "source"} onClick={() => editorHistoryRef.current?.undo()}><Icon name="undo" /></button>
+        <button className="tool-btn icon-only" aria-label="Redo" disabled={doc.readOnly || !canEdit || editorMode === "source"} onClick={() => editorHistoryRef.current?.redo()}><Icon name="redo" /></button>
+        <div className="tool-spacer" />
+        <Segmented ariaLabel="Editor view" options={[{ value: "formatted", label: "Formatted" }, { value: "source", label: "Fountain Source" }]} value={editorMode} disabled={doc.readOnly || !canEdit} onChange={(value) => value !== editorMode && toggleEditorMode()} />
+      </div>
+      <div className="canvas dock-screenplay-canvas" style={{ "--canvas-zoom": prefs.zoom } as React.CSSProperties}>
+        <fieldset className="canvas-fieldset" disabled={!canEdit}>
+          {editorMode === "formatted"
+            ? <Editor documentId={doc.id!} blocks={doc.blocks} onBlocksChange={(blocks) => setDoc({ ...doc, blocks })} titlePage={doc.titlePage} onTitlePageChange={(titlePage) => setDoc({ ...doc, titlePage })} onActiveBlock={setActiveBlockId} focusRequest={focusRequest} scriptTargetRequest={scriptTargetRequest} readOnly={doc.readOnly || !canEdit || busy} productionPages={productionPageRows} historyRef={editorHistoryRef} historyStore={editorHistoryStore} />
+            : <div className="source-wrap"><textarea ref={sourceEditorRef} className="source-editor" value={sourceText} spellCheck={false} readOnly={!canEdit || busy || sourceCoordinationConflict?.reason === "deleted"} onChange={(event) => setSourceText(event.target.value)} onSelect={(event) => persistSourceSelection(event.currentTarget)} onBlur={(event) => persistSourceSelection(event.currentTarget, true)} /><p className="source-hint">Fountain-inspired source. Switching back to Formatted re-parses this text.</p></div>}
+        </fieldset>
+      </div>
+    </div>
+  );
+  const dockInspectorPanel = (
+    <ContextInspector activeBlock={activeBlock} activeScene={activeScene} structure={structure} workspace={workspace} sceneNotes={doc.sceneNotes} canEdit={canEdit && !doc.readOnly} sourceMode={editorMode === "source"} onSetType={setActiveType} onWorkspace={panelProps.onWorkspace} onSceneNote={(sceneId, text) => setDoc({ ...doc, sceneNotes: { ...doc.sceneNotes, [sceneId]: text } })} />
+  );
+  const dockPanelContext: WorkspacePanelContext = {
+    renderers: {
+      navigator: () => dockNavigatorPanel,
+      screenplay: () => dockScreenplayPanel,
+      inspector: () => dockInspectorPanel,
+      reference: (definition) => renderReference(definition.referenceKind ?? referenceKind, definition.targetId ?? referenceTarget),
+      story: () => <PanelHost tab="Story" {...panelProps} />,
+      treatment: () => <PanelHost tab="Treatment" {...panelProps} />,
+      breakdown: () => <PanelHost tab="Breakdown" {...panelProps} />,
+      versions: () => <PanelHost tab="Drafts" {...panelProps} />,
+      series: () => <PanelHost tab="Series" {...panelProps} />,
+      production: () => <PanelHost tab="Production" {...panelProps} />,
+      companion: () => <CompanionDashboard documents={session.documents} files={watchFiles} folderPath={session.workspace.sync.watchFolderPath} recursive={session.workspace.sync.watchRecursive} busy={busy} stats={companionStats} onChooseFolder={() => void chooseFdxWatchFolder()} onRefresh={() => void refreshWatchFiles()} onRecursive={setWatchRecursive} onReviewFile={(file) => void reviewWatchFile(file)} onOpenFile={(path) => void openExternalFile(path)} onReveal={(path) => void revealExternalPath(path)} />,
+    },
+  };
+
   const modeView = (title: string, blurb: string, tabs: { value: PanelTab; label: string }[] | null, activeTab: PanelTab, onTab: (tab: PanelTab) => void, content?: React.ReactNode) => (
     <div className="mode-view">
       <header className="mode-header">
@@ -1868,7 +3135,32 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     </div>
   );
 
-  const content = mode === "write" ? writeView
+  const content = layoutWorkspaceOpen ? (
+    <div className="mode-view layout-workspace-view">
+      <header className="mode-header"><div><h2>{dockLayout.name}</h2><p>Customizable panels · logical placement travels only when saved as a project layout.</p></div><button className="btn" type="button" onClick={() => setLayoutManagerOpen(true)}>Manage layouts</button></header>
+      {banners}
+      <div className="mode-body dock-mode-body">
+        <DockLayoutRenderer
+          layout={dockLayout}
+          context={dockPanelContext}
+          onLayoutChange={setDockLayout}
+          onBeginExternalPanelDrag={(panel, event) => {
+            if (!nativeDrag.ready) return;
+            const effect = (event.altKey || event.ctrlKey) && WORKSPACE_PANEL_REGISTRY[panel.kind].copyable ? "copy" : "move";
+            if ((effect === "copy" && !WORKSPACE_PANEL_REGISTRY[panel.kind].copyable) || (effect === "move" && !panel.closable)) {
+              setOperationMessage(`${panel.title} is required in this window; use a movable or copyable workspace panel instead.`);
+              return;
+            }
+            rememberNativeDragStart(nativeDrag.beginPanelTransfer(panel.id, effect));
+          }}
+          onEndExternalPanelDrag={(_panel, event) => {
+            if (event.dataTransfer.dropEffect === "none") void cancelRememberedNativeDrag(false);
+          }}
+          onInternalPanelDrop={() => void cancelRememberedNativeDrag(true)}
+        />
+      </div>
+    </div>
+  ) : mode === "write" ? writeView
     : mode === "outline" ? modeView("Outline", MODE_META.outline.blurb, null, "Story", () => {})
     : mode === "treatment" ? modeView("Treatment", MODE_META.treatment.blurb, null, "Treatment", () => {})
     : mode === "reference" ? modeView("Reference", MODE_META.reference.blurb, [
@@ -1888,7 +3180,58 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
         <CompanionDashboard documents={session.documents} files={watchFiles} folderPath={session.workspace.sync.watchFolderPath} recursive={session.workspace.sync.watchRecursive} busy={busy} stats={companionStats} onChooseFolder={() => void chooseFdxWatchFolder()} onRefresh={() => void refreshWatchFiles()} onRecursive={setWatchRecursive} onReviewFile={(file) => void reviewWatchFile(file)} onOpenFile={(path) => void openExternalFile(path)} onReveal={(path) => void revealExternalPath(path)} />
       ));
 
+  const activeNativeDrag = nativeDrag.active;
+  const activeNativeDocumentId = activeNativeDrag?.payload.kind === "document-tab" ? activeNativeDrag.payload.documentId : undefined;
+  const activeNativePanelId = activeNativeDrag?.payload.kind === "workspace-panel" ? activeNativeDrag.payload.panelId : undefined;
+  const nativeDragTitle = activeNativeDocumentId
+    ? screenplayDisplayTitle(session.documents.find((document) => document.id === activeNativeDocumentId) ?? doc) || "screenplay"
+    : activeNativePanelId
+      ? findWorkspacePanel(session.workspace, activeNativePanelId)?.title ?? "workspace panel"
+      : "workspace item";
+  const documentStatusById = Object.fromEntries(session.documents.flatMap((document) => {
+    if (!document.id) return [];
+    const dirty = dirtyDocumentIds.has(document.id)
+      || (document.id === doc.id && editorMode === "source" && sourceText !== toFountain(doc));
+    const status = document.id === doc.id && externalConflict ? "conflict"
+      : document.id === doc.id && busy ? "saving"
+        : dirty ? "dirty" : "saved";
+    return [[document.id, status] as const];
+  }));
+
   return <div className={`shell ${focusMode ? "focus-mode" : ""}`}>
+    {nativeDrag.active ? (
+      <CrossWindowDropOverlay
+        active={nativeDrag.active}
+        windowId={coordinated.identity.windowId}
+        title={nativeDragTitle}
+        documentTabCount={documentTabs.openDocumentIds.filter((documentId) => documentId !== activeNativeDocumentId).length}
+        dockGroupIds={dockTreeNodes(dockLayout.root).flatMap((node) => node.kind === "tabs" ? [node.id] : [])}
+        onPreview={nativeDrag.preview}
+        onAcknowledge={nativeDrag.acknowledge}
+        onCancel={nativeDrag.cancel}
+      />
+    ) : null}
+    {layoutManagerOpen && <div className="layout-manager-backdrop" onMouseDown={() => setLayoutManagerOpen(false)}>
+      <div className="layout-manager-dialog" role="dialog" aria-modal="true" aria-label="Workspace layout manager" onMouseDown={(event) => event.stopPropagation()}>
+        <button className="layout-manager-close" type="button" aria-label="Close layout manager" onClick={() => setLayoutManagerOpen(false)}><Icon name="close" size={12} /></button>
+        <LayoutManager
+          readOnly={!canEdit}
+          layouts={session.workspace.layouts.map((layout) => ({ id: layout.id, name: layout.name, builtin: BUILTIN_LAYOUT_ID_SET.has(layout.id), active: dockLayout.id === layout.id, shortcut: getWorkspaceLayoutShortcut(session.workspace, layout.id) }))}
+          hiddenPanelCount={dockLayout.hiddenPanelIds.length}
+          onApply={applyWorkspaceLayout}
+          onSaveCurrent={saveCurrentWorkspaceLayout}
+          {...(!BUILTIN_LAYOUT_ID_SET.has(dockLayout.id) ? { onUpdateCurrent: updateCurrentWorkspaceLayout } : {})}
+          onDuplicate={duplicateLayout}
+          onRename={renameLayout}
+          onDelete={removeLayout}
+          onResetBuiltin={applyWorkspaceLayout}
+          onRestoreHidden={() => setDockLayout((current) => restoreAllHiddenPanels(current))}
+          onResetFloatingPlacement={() => setDockLayout((current) => restoreOffscreenFloatingPanels(current))}
+          onShortcut={changeLayoutShortcut}
+          placementControls={<PanelPlacementControls layout={dockLayout} onChange={setDockLayout} readOnly={!canEdit} />}
+        />
+      </div>
+    </div>}
     {paletteOpen && <div className="palette-backdrop" onMouseDown={() => setPaletteOpen(false)}>
       <div className="palette" role="dialog" aria-label="Find and command" onMouseDown={(event) => event.stopPropagation()}>
         <input autoFocus value={query} placeholder="Find scenes, dialogue, characters, drafts…" onChange={(event) => setQuery(event.target.value)} />
@@ -1908,25 +3251,62 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     </div>}
 
     <header className="titlebar">
-      <button className="titlebar-mark" onClick={onExit} title="Back to launcher">SCS</button>
+      <button className="titlebar-mark brand-mark-button" onClick={() => void exitToLauncher()} title="Back to launcher" aria-label="Back to launcher"><BrandMark size={22} decorative /></button>
       <input className="project-name" aria-label="Project name" value={session.name} disabled={!canEdit} onChange={(event) => setSession({ ...session, name: event.target.value })} />
       <span className="titlebar-context">{MODE_META[mode].label}</span>
       <div className="tool-spacer" />
       <span className={`save-chip ${savedAt ? "saved" : ""}`} title="SCS autosaves a local recovery copy while you write">{savedAt ? `Saved · ${savedAt}` : doc.readOnly ? "Read-only" : "Autosave ready"}</span>
       <button className="tool-btn" disabled={busy || !canEdit} onClick={() => void saveNow()}>Save</button>
       <Menu label="Project" items={projectMenu} />
+      <WindowMenu
+        windows={nativeWindowEntries}
+        currentDocumentTitle={screenplayDisplayTitle(doc) || "Current screenplay"}
+        activePanelTitle={activeDockPanel?.title}
+        canMoveActivePanel={Boolean(activeDockPanel?.closable)}
+        canCopyActivePanel={Boolean(activeDockPanel && WORKSPACE_PANEL_REGISTRY[activeDockPanel.kind].copyable)}
+        documentTransferKeepsSource={documentTabs.openDocumentIds.length <= 1}
+        canMoveDocumentToNewWindow={documentTabs.openDocumentIds.length > 1}
+        hiddenPanels={hiddenDockPanels}
+        layouts={layoutMenuEntries}
+        onNewWindow={() => void newWorkspaceWindow()}
+        onOpenDocumentInNewWindow={() => void newWorkspaceWindow(true)}
+        onOpenLayoutInNewWindow={() => void newWorkspaceWindow(false, dockLayout.id)}
+        onMoveDocumentToNewWindow={() => void moveDocumentToNewWindow()}
+        onMoveDocumentToWindow={(windowId) => void moveDocumentToWindow(windowId)}
+        onMovePanelToWindow={(windowId, copy) => void movePanelToWindow(windowId, copy)}
+        onBringAllToFront={() => void coordinated.bringAllToFront().catch((error) => setOperationMessage(messageFrom(error)))}
+        onFocusWindow={(windowId) => void coordinated.focusWindow(windowId).catch((error) => setOperationMessage(messageFrom(error)))}
+        onCloseWindow={() => void closeCurrentWindow()}
+        onResetPlacement={() => void coordinated.resetPlacement().catch((error) => setOperationMessage(messageFrom(error)))}
+        onRestorePanel={restoreDockPanel}
+        onApplyLayout={applyWorkspaceLayout}
+        onCustomizeLayout={() => setLayoutWorkspaceOpen(true)}
+        onManageLayouts={() => setLayoutManagerOpen(true)}
+      />
       <button className="tool-btn icon-only" aria-label="Find in project" title={`Find (${session.workspace.shortcuts.commandPalette || "Ctrl+K"})`} onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
       <ThemeToggle />
     </header>
 
-    {isTelevision && <div className="episode-strip" aria-label="Television episodes">
-      <div className="episode-tabs">
-        {episodeDocs.map((episode, index) => <button key={episode.id ?? episode.source?.path ?? index} className={`episode-tab ${index === activeEpisode ? "active" : ""}`} onClick={() => selectEpisode(episode.id!)}>
-          {session.workspace.series.episodes[episode.id!]?.title || episode.titlePage.title || `Episode ${index + 1}`}
-        </button>)}
-      </div>
-      <Menu label="Episode" icon={<Icon name="plus" size={12} />} items={episodeMenu} buttonClassName="tool-btn episode-add" />
-    </div>}
+    <div className="episode-strip document-strip" aria-label="Project screenplays">
+      <DocumentTabs
+        documents={episodeDocs}
+        state={documentTabs}
+        onChange={applyDocumentTabState}
+        onRequestRemove={requestRemoveDocument}
+        onBeginExternalDrag={(documentId) => {
+          if (!nativeDrag.ready) return;
+          const effect = documentTabs.openDocumentIds.length > 1 ? "move" : "copy";
+          rememberNativeDragStart(nativeDrag.beginDocumentTransfer(documentId, effect));
+        }}
+        onEndExternalDrag={(_documentId, event) => {
+          if (event.dataTransfer.dropEffect === "none") void cancelRememberedNativeDrag(false);
+        }}
+        onInternalDrop={() => void cancelRememberedNativeDrag(true)}
+        statusByDocumentId={documentStatusById}
+        readOnly={!canEdit}
+      />
+      <Menu label="Screenplay" icon={<Icon name="plus" size={12} />} items={episodeMenu} buttonClassName="tool-btn episode-add" />
+    </div>
 
     <div className="shell-body">
       <nav className="mode-rail" aria-label="Workspaces">
@@ -1955,6 +3335,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
       <span>{words} words</span>
       <div className="tool-spacer" />
       <span className="status-draft">{activeBranch?.name ?? "Main Draft"}</span>
+      <span>{coordinated.native ? `${coordinated.isLeader ? "Leader" : "Window"} · revision ${coordinated.revision}` : "Single-window browser"}</span>
       <span>{doc.readOnly ? `Linked source · ${doc.source?.fileName ?? "FDX"}` : savedAt ? `Saved locally · ${savedAt}` : "Not saved yet"}</span>
     </footer>
   </div>;
@@ -2029,10 +3410,37 @@ function linkedBaselineMap(documents: ScreenplayDocument[]): Map<string, string>
 
 function materializeSourceDraft(
   session: ProjectSession,
-  source: { mode: "formatted" | "source"; sourceText: string; document: ScreenplayDocument },
+  source: { mode: "formatted" | "source"; sourceText: string; document: ScreenplayDocument; blocked?: boolean },
 ): ProjectSession {
-  if (source.mode !== "source" || !source.document.id) return session;
+  if (source.mode !== "source" || !source.document.id || source.blocked) return session;
   return materializeFountainSource(session, source.document.id, source.sourceText);
+}
+
+function workspaceSlotId(): string {
+  const params = new URLSearchParams(globalThis.location?.search ?? "");
+  const requested = (params.get("scsSlotId") ?? params.get("slot"))?.trim();
+  return requested && /^[a-zA-Z0-9_-]{1,96}$/.test(requested) ? requested : "primary";
+}
+
+function activePanelInDockTree(node: DockNode): string {
+  if (node.kind === "tabs") return node.activePanelId;
+  return activePanelInDockTree(node.children[0]);
+}
+
+function findWorkspacePanel(workspace: ProjectSession["workspace"], panelId: string): WorkspacePanelDefinition | undefined {
+  for (const layout of workspace.layouts) {
+    const panel = getWorkspaceDockLayout(workspace, layout.id)?.panels.find((candidate) => candidate.id === panelId);
+    if (panel) return structuredClone(panel);
+  }
+  return undefined;
+}
+
+function isMode(value: string): value is Mode {
+  return Object.prototype.hasOwnProperty.call(MODE_META, value);
+}
+
+function screenplayDisplayTitle(document: ScreenplayDocument): string {
+  return document.title?.trim() || document.titlePage.title.trim();
 }
 
 function versionableFingerprint(session: ProjectSession): string {
@@ -2051,6 +3459,14 @@ function versionableFingerprint(session: ProjectSession): string {
 function portableFingerprint(session: ProjectSession): string {
   const { projectPath: _path, updatedAt: _updated, activeDocumentId: _activeDocumentId, ...portable } = session;
   return JSON.stringify({ ...portable, documents: documentsForPortableStorage(portable.documents), workspace: workspaceForPortableStorage(portable.workspace), versionHistory: versionHistoryForPortableStorage(portable.versionHistory) });
+}
+
+function portableDocumentFingerprint(document: ScreenplayDocument): string {
+  return JSON.stringify(documentsForPortableStorage([document])[0]);
+}
+
+function portableDocumentFingerprintMap(documents: readonly ScreenplayDocument[]): Map<string, string> {
+  return new Map(documents.flatMap((document) => document.id ? [[document.id, portableDocumentFingerprint(document)] as const] : []));
 }
 
 function findCommonSnapshot(snapshots: ProjectSnapshot[], leftId: string, rightId: string): ProjectSnapshot | undefined {

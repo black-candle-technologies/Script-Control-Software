@@ -46,10 +46,194 @@ export interface ScreenplayBlock {
   metadata?: Record<string, string>;
 }
 
+export type TitlePageField =
+  | "title"
+  | "credit"
+  | "author"
+  | "source"
+  | "draftDate"
+  | "contact"
+  | "copyright"
+  | "notes";
+
+export interface TitlePageBlock {
+  type: string;
+  text: string;
+  textRuns?: TextRun[];
+  metadata: Record<string, string>;
+}
+
 export interface TitlePage {
   title: string;
   author: string;
-  blocks?: { type: string; text: string; metadata: Record<string, string> }[];
+  credit?: string;
+  source?: string;
+  draftDate?: string;
+  contact?: string;
+  copyright?: string;
+  notes?: string;
+  /** Ordered imported paragraphs, including duplicate and vendor-specific fields. */
+  blocks?: TitlePageBlock[];
+}
+
+export const TITLE_PAGE_FIELD_ORDER: readonly TitlePageField[] = [
+  "title",
+  "credit",
+  "author",
+  "source",
+  "draftDate",
+  "contact",
+  "copyright",
+  "notes",
+];
+
+export const TITLE_PAGE_FIELD_LABELS: Readonly<Record<TitlePageField, string>> = {
+  title: "Title",
+  credit: "Credit",
+  author: "Author",
+  source: "Source",
+  draftDate: "Draft Date",
+  contact: "Contact",
+  copyright: "Copyright",
+  notes: "Notes",
+};
+
+/** Classifies common FDX/Fountain labels without treating arbitrary vendor labels as canonical. */
+export function canonicalTitlePageField(value: string): TitlePageField | undefined {
+  const key = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  switch (key) {
+    case "title": return "title";
+    case "credit": return "credit";
+    case "author":
+    case "authors":
+    case "writtenby": return "author";
+    case "source": return "source";
+    case "draftdate": return "draftDate";
+    case "contact":
+    case "contactinfo":
+    case "contactinformation": return "contact";
+    case "copyright": return "copyright";
+    case "note":
+    case "notes": return "notes";
+    default: return undefined;
+  }
+}
+
+/** Returns an explicit canonical value, or derives it from the first matching imported paragraph. */
+export function titlePageFieldValue(titlePage: TitlePage, field: TitlePageField): string {
+  const direct = titlePage[field];
+  if (typeof direct === "string") return direct;
+  const matches = titlePage.blocks?.filter((block) => canonicalTitlePageField(block.type || block.metadata?.Type || "") === field) ?? [];
+  return matches.find((block) => block.text.trim())?.text ?? matches[0]?.text ?? "";
+}
+
+/**
+ * Identifies the ordered paragraph that projects each canonical title-page field.
+ * An exact canonical-value match keeps empty placeholders and duplicate aliases from
+ * unexpectedly taking ownership; legacy data without a matching projection falls
+ * back to the first non-empty paragraph, then the first paragraph.
+ */
+export function representativeTitlePageBlockIndexes(titlePage: TitlePage): ReadonlyMap<TitlePageField, number> {
+  const candidates = new Map<TitlePageField, number[]>();
+  for (const [index, block] of (titlePage.blocks ?? []).entries()) {
+    const field = canonicalTitlePageField(block.type || block.metadata?.Type || "");
+    if (!field) continue;
+    candidates.set(field, [...(candidates.get(field) ?? []), index]);
+  }
+
+  const representatives = new Map<TitlePageField, number>();
+  for (const [field, indexes] of candidates) {
+    const direct = titlePage[field];
+    const exact = typeof direct === "string"
+      ? indexes.find((index) => titlePage.blocks?.[index]?.text === direct)
+      : undefined;
+    representatives.set(
+      field,
+      exact ?? indexes.find((index) => Boolean(titlePage.blocks?.[index]?.text.trim())) ?? indexes[0],
+    );
+  }
+  return representatives;
+}
+
+/** Updates a canonical field and its representative rich paragraph as one edit. */
+export function updateTitlePageField(titlePage: TitlePage, field: TitlePageField, text: string): TitlePage {
+  const index = representativeTitlePageBlockIndexes(titlePage).get(field);
+  if (index === undefined || !titlePage.blocks?.[index]) return { ...titlePage, [field]: text };
+  return {
+    ...titlePage,
+    [field]: text,
+    blocks: replaceTitlePageBlockText(titlePage.blocks, index, text),
+  };
+}
+
+/**
+ * Updates an ordered paragraph and, when it is the canonical representative,
+ * keeps the canonical projection in sync. Coherent imported run boundaries and
+ * their formatting/metadata survive ordinary plain-text edits.
+ */
+export function updateTitlePageBlockText(titlePage: TitlePage, index: number, text: string): TitlePage {
+  const block = titlePage.blocks?.[index];
+  if (!block) return titlePage;
+  const field = canonicalTitlePageField(block.type || block.metadata?.Type || "");
+  const isRepresentative = field !== undefined && representativeTitlePageBlockIndexes(titlePage).get(field) === index;
+  return {
+    ...titlePage,
+    ...(isRepresentative ? { [field]: text } : {}),
+    blocks: replaceTitlePageBlockText(titlePage.blocks ?? [], index, text),
+  };
+}
+
+function replaceTitlePageBlockText(blocks: readonly TitlePageBlock[], index: number, text: string): TitlePageBlock[] {
+  return blocks.map((block, blockIndex) => blockIndex === index
+    ? { ...block, text, ...(block.textRuns ? { textRuns: reconcileTextRuns(block, text) } : {}) }
+    : block);
+}
+
+function reconcileTextRuns(block: TitlePageBlock, text: string): TextRun[] {
+  const runs = block.textRuns ?? [];
+  if (!runs.length || block.text === text) return runs;
+  if (runs.map((run) => run.text).join("") !== block.text) return runs;
+
+  let prefixLength = 0;
+  while (prefixLength < block.text.length && prefixLength < text.length && block.text[prefixLength] === text[prefixLength]) {
+    prefixLength += 1;
+  }
+  let suffixLength = 0;
+  while (
+    suffixLength < block.text.length - prefixLength
+    && suffixLength < text.length - prefixLength
+    && block.text[block.text.length - suffixLength - 1] === text[text.length - suffixLength - 1]
+  ) {
+    suffixLength += 1;
+  }
+
+  const oldEnd = block.text.length - suffixLength;
+  const inserted = text.slice(prefixLength, text.length - suffixLength);
+  let offset = 0;
+  let targetIndex = runs.length - 1;
+  for (const [runIndex, run] of runs.entries()) {
+    const end = offset + run.text.length;
+    const containsChange = oldEnd > prefixLength
+      ? end > prefixLength && offset < oldEnd
+      : end >= prefixLength;
+    if (containsChange) {
+      targetIndex = runIndex;
+      break;
+    }
+    offset = end;
+  }
+
+  offset = 0;
+  return runs.map((run, runIndex) => {
+    const start = offset;
+    offset += run.text.length;
+    const beforeEnd = Math.max(0, Math.min(run.text.length, prefixLength - start));
+    const afterStart = Math.max(0, Math.min(run.text.length, oldEnd - start));
+    const nextText = run.text.slice(0, beforeEnd)
+      + (runIndex === targetIndex ? inserted : "")
+      + run.text.slice(afterStart);
+    return nextText === run.text ? run : { ...run, text: nextText };
+  });
 }
 
 export interface ScreenplayDocument {

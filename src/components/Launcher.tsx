@@ -4,6 +4,7 @@
  * a dashboard: opening a project is the whole job.
  */
 import type { AppInfo } from "../domain/index.ts";
+import BrandMark from "./BrandMark.tsx";
 import Icon from "./Icons.tsx";
 import { ThemeToggle } from "./ui.tsx";
 
@@ -23,7 +24,7 @@ export default function Launcher({ appInfo, savedTitle, onOpen, onOpenFdx, onOpe
   return (
     <div className="launcher">
       <aside className="launcher-brand">
-        <div className="launcher-mark" aria-hidden="true">SCS</div>
+        <BrandMark size={56} decorative />
         <h1>{appInfo.name}</h1>
         <p>{appInfo.tagline}</p>
         <span className="launcher-version">v{appInfo.version} · {appInfo.phase}</span>
@@ -59,9 +60,9 @@ export default function Launcher({ appInfo, savedTitle, onOpen, onOpenFdx, onOpe
               </span>
             </button>
             <button className="launcher-action" onClick={onOpenFdx} disabled={importing}>
-              <Icon name="companion" />
+              {importing ? <BrandMark size={18} loading decorative /> : <Icon name="companion" />}
               <span className="launcher-action-text">
-                <strong>{importing ? "Importing…" : "Import Final Draft (FDX)"}</strong>
+                <strong aria-live="polite">{importing ? "Importing…" : "Import Final Draft (FDX)"}</strong>
                 <span>Bring in an .fdx script and keep it linked.</span>
               </span>
             </button>

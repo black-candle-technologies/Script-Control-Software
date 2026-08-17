@@ -1,0 +1,105 @@
+.scene-nav-tree,
+.scene-nav-tree [role="group"] {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scene-nav-tree [role="group"] { padding-inline-start: 0.55rem; }
+
+.scene-nav-tree [role="treeitem"]:focus-visible {
+  outline: none;
+}
+
+.scene-nav-tree [role="treeitem"]:focus-visible > button {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.nav-tree-branch { min-width: 0; }
+
+.nav-sequence-label.nav-tree-branch {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.nav-sequence-label.nav-tree-branch:hover { background: var(--bg-hover); }
+.nav-sequence-label.nav-tree-branch > span { flex: 1; }
+
+.nav-tree-empty {
+  padding: 0.32rem 0.45rem 0.4rem 1.3rem;
+  color: var(--text-3);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.nav-tree-disclosure,
+.nav-tree-disclosure-placeholder {
+  display: grid;
+  place-items: center;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 16px;
+  align-self: center;
+}
+
+.nav-tree-disclosure { cursor: pointer; color: var(--text-3); }
+
+.nav-scene.selected {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--frost);
+  color: var(--text-1);
+}
+
+.nav-scene.active.selected { background: var(--accent-soft); }
+
+.scene-nav-tree .nav-beats {
+  margin: 0;
+  padding: 0 0 0 0.8rem;
+  list-style: none;
+}
+
+.scene-nav-tree .nav-beats > li::before { content: none; }
+
+.nav-beat {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.22rem 0.45rem;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.nav-beat:hover { color: var(--text-1); background: var(--bg-hover); }
+.nav-beat.selected { color: var(--text-1); background: var(--frost); box-shadow: inset 3px 0 0 var(--accent); }
+
+.nav-beat-dot {
+  flex: 0 0 5px;
+  width: 5px;
+  height: 5px;
+  margin-top: 0.48em;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.75;
+}
+
+.nav-beat-label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -2,20 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createProjectSession, defaultProjectWorkspace, normalizeProjectSession } from "./projectWorkspace.ts";
 import {
+  activateWorkspaceLayout,
   deleteCustomLayout,
   duplicateWorkspaceLayout,
   getWorkspaceLayout,
+  getWorkspaceLayoutShortcut,
   keyboardShortcutMatches,
   normalizeKeyboardShortcut,
   normalizeWorkspaceLayout,
+  renameCustomLayout,
+  resetCustomLayoutToBuiltIn,
+  resetWorkspaceLayout,
   resizeWorkspaceSplit,
   saveCustomLayout,
   setKeyboardShortcut,
+  setWorkspaceLayoutShortcut,
   validateKeyboardShortcuts,
   validateWorkspaceLayout,
   type WorkspacePanelDefinition,
   type WorkspaceLayout,
+  uniqueWorkspaceLayoutId,
 } from "./workspaceLayouts.ts";
+import {
+  dockPanel,
+  getWorkspaceDockLayout,
+  isWorkspaceDockLayout,
+  migrateWorkspaceLayoutToDockTree,
+  validateDockLayout,
+} from "./dockTree.ts";
 
 test("every existing SavedLayout preset upgrades to a valid panel and tab layout", () => {
   const workspace = defaultProjectWorkspace();
@@ -31,7 +45,7 @@ test("every existing SavedLayout preset upgrades to a valid panel and tab layout
   assert.deepEqual(normalizeWorkspaceLayout(workspace.layouts.find((layout) => layout.id === "revision")!).panels.find((panel) => panel.kind === "reference")?.referenceKind, "previous-draft");
   assert.deepEqual(normalizeWorkspaceLayout(workspace.layouts.find((layout) => layout.id === "production")!).tabGroups.find((group) => group.id === "production-tabs")?.panelIds, ["breakdown", "production"]);
   const companionCopy = duplicateWorkspaceLayout(workspace, "companion");
-  assert.equal(getWorkspaceLayout(companionCopy, companionCopy.activeLayoutId)?.panels[0].kind, "companion");
+  assert.equal(getWorkspaceLayout(companionCopy, "companion-copy")?.panels[0].kind, "companion");
 });
 
 test("split resizing keeps the total stable and enforces adjacent panel minimums", () => {
@@ -109,12 +123,14 @@ test("custom layouts save, duplicate, and delete without mutating the workspace 
   };
 
   const saved = saveCustomLayout(original, custom);
+  assert.equal(uniqueWorkspaceLayoutId(saved, "Focus Room"), "focus-room-2");
+  assert.equal(uniqueWorkspaceLayoutId(saved, "Writer"), "writer-2");
   const duplicated = duplicateWorkspaceLayout(saved, "focus-room");
   const deleted = deleteCustomLayout(duplicated, "focus-room");
 
   assert.equal(original.layouts.some((layout) => layout.id === "focus-room"), false);
   assert.equal(getWorkspaceLayout(saved, "focus-room")?.floatingPanels[0].width, 480);
-  assert.equal(duplicated.activeLayoutId, "focus-room-copy");
+  assert.equal(duplicated.activeLayoutId, original.activeLayoutId);
   assert.equal(deleted.layouts.some((layout) => layout.id === "focus-room"), false);
   assert.equal(deleted.layouts.some((layout) => layout.id === "focus-room-copy"), true);
   assert.throws(() => deleteCustomLayout(deleted, "writer"), /built-in/i);
@@ -179,7 +195,10 @@ test("custom layouts and shortcuts survive project normalization", () => {
     ],
   };
   custom.splits = [{ id: "review-split", direction: "vertical", groupIds: custom.tabGroups.map((group) => group.id), sizes: custom.tabGroups.map(() => 1 / custom.tabGroups.length) }];
-  session.workspace = setKeyboardShortcut(saveCustomLayout(session.workspace, custom), "toggleInspector", "mod+i");
+  session.workspace = activateWorkspaceLayout(
+    setKeyboardShortcut(saveCustomLayout(session.workspace, custom), "toggleInspector", "mod+i"),
+    custom.id,
+  );
 
   const restored = normalizeProjectSession(JSON.parse(JSON.stringify(session)));
   assert.equal(restored.workspace.activeLayoutId, "review-desk");
@@ -187,4 +206,97 @@ test("custom layouts and shortcuts survive project normalization", () => {
   assert.equal(getWorkspaceLayout(restored.workspace, "review-desk")?.panels.find((panel) => panel.id === "lead-reference")?.targetId, "lead");
   assert.equal(getWorkspaceLayout(restored.workspace, "review-desk")?.splits[0].direction, "vertical");
   assert.equal(restored.workspace.shortcuts.toggleInspector, "mod+i");
+});
+
+test("custom saves persist a versioned tree while legacy flat callers retain a projection", () => {
+  const workspace = defaultProjectWorkspace();
+  const flat = {
+    ...normalizeWorkspaceLayout(workspace.layouts.find((layout) => layout.id === "development")!),
+    id: "portable-development",
+    name: "Portable Development",
+  };
+  const saved = saveCustomLayout(workspace, flat);
+  const persisted = saved.layouts.find((layout) => layout.id === flat.id)!;
+  const dock = getWorkspaceDockLayout(saved, flat.id)!;
+
+  assert.equal(isWorkspaceDockLayout(persisted), true);
+  assert.equal(dock.layoutVersion, 2);
+  assert.equal(validateDockLayout(dock).valid, true);
+  assert.deepEqual(getWorkspaceLayout(saved, flat.id)?.tabGroups.map((group) => group.id), flat.tabGroups.map((group) => group.id));
+});
+
+test("duplicate and rename preserve nested custom topology while built-ins remain protected", () => {
+  const workspace = defaultProjectWorkspace();
+  const development = migrateWorkspaceLayoutToDockTree(normalizeWorkspaceLayout(workspace.layouts.find((layout) => layout.id === "development")!));
+  const nested = dockPanel({ ...development, id: "nested-room", name: "Nested Room" }, "story", "main-tabs", "top");
+  const saved = saveCustomLayout(workspace, nested);
+  const duplicated = duplicateWorkspaceLayout(saved, nested.id);
+  const renamed = renameCustomLayout(duplicated, "nested-room-copy", "Second Room");
+  const source = getWorkspaceDockLayout(renamed, nested.id)!;
+  const copy = getWorkspaceDockLayout(renamed, "nested-room-copy")!;
+
+  assert.deepEqual(copy.root, source.root);
+  assert.equal(copy.name, "Second Room");
+  assert.throws(() => renameCustomLayout(renamed, "writer", "Changed"), /built-in/i);
+  assert.throws(() => saveCustomLayout(renamed, { ...source, id: "writer" }), /reserved/i);
+  assert.throws(() => deleteCustomLayout(renamed, "development"), /built-in/i);
+});
+
+test("layout reset and layout-specific shortcuts are pure and clean up on deletion", () => {
+  const original = defaultProjectWorkspace();
+  const custom = {
+    ...normalizeWorkspaceLayout(original.layouts[0]),
+    id: "shortcut-room",
+    name: "Shortcut Room",
+  };
+  const saved = saveCustomLayout(original, custom);
+  const assigned = setWorkspaceLayoutShortcut(saved, custom.id, "mod+alt+1");
+  const activated = activateWorkspaceLayout(resetWorkspaceLayout(assigned), custom.id);
+  const reset = resetWorkspaceLayout(assigned, "development");
+  const resetCustom = resetCustomLayoutToBuiltIn(assigned, custom.id, "production");
+  const deleted = deleteCustomLayout(assigned, custom.id);
+
+  assert.equal(getWorkspaceLayoutShortcut(assigned, custom.id), "mod+alt+1");
+  assert.equal(activated.activeLayoutId, custom.id);
+  assert.equal(reset.activeLayoutId, "development");
+  assert.deepEqual(getWorkspaceDockLayout(resetCustom, custom.id)?.panels.map((panel) => panel.kind),
+    getWorkspaceDockLayout(resetCustom, "production")?.panels.map((panel) => panel.kind));
+  assert.equal(getWorkspaceLayoutShortcut(resetCustom, custom.id), "mod+alt+1");
+  assert.equal(getWorkspaceLayoutShortcut(deleted, custom.id), "");
+  assert.equal(original.activeLayoutId, "writer");
+  assert.throws(() => setWorkspaceLayoutShortcut(saved, "missing", "mod+1"), /does not exist/i);
+  assert.throws(() => activateWorkspaceLayout(saved, "missing"), /does not exist/i);
+});
+
+test("legacy custom layouts migrate and hostile saved trees recover during project normalization", () => {
+  const session = createProjectSession();
+  const legacy = {
+    ...normalizeWorkspaceLayout(session.workspace.layouts[0]),
+    id: "legacy-custom",
+    name: "Legacy Custom",
+  };
+  session.workspace.layouts.push(legacy);
+  session.workspace.activeLayoutId = legacy.id;
+  session.workspace.shortcuts[`layout:${legacy.id}`] = "mod+alt+9";
+  session.workspace.shortcuts["layout:missing"] = "mod+alt+8";
+  session.workspace.shortcuts.invalid = "mod+only+broken";
+  const migrated = normalizeProjectSession(JSON.parse(JSON.stringify(session)));
+  assert.equal(isWorkspaceDockLayout(migrated.workspace.layouts.find((layout) => layout.id === legacy.id)), true);
+  assert.equal(getWorkspaceLayoutShortcut(migrated.workspace, legacy.id), "mod+alt+9");
+  assert.equal(migrated.workspace.shortcuts["layout:missing"], undefined);
+  assert.equal(migrated.workspace.shortcuts.invalid, undefined);
+
+  const hostile = structuredClone(getWorkspaceDockLayout(migrated.workspace, legacy.id)!);
+  hostile.id = "hostile-tree";
+  hostile.name = "Hostile Tree";
+  if (hostile.root.kind === "split") {
+    const firstTabs = hostile.root.children.find((node) => node.kind === "tabs");
+    if (firstTabs?.kind === "tabs") hostile.root.children.push({ ...firstTabs, id: "duplicate-owner" });
+    hostile.root.sizes = hostile.root.children.map(() => 1 / hostile.root.children.length);
+  }
+  migrated.workspace.layouts.push(hostile);
+  const repaired = normalizeProjectSession(JSON.parse(JSON.stringify(migrated)));
+  const recovered = getWorkspaceDockLayout(repaired.workspace, hostile.id)!;
+  assert.deepEqual(recovered.panels.map((panel) => panel.kind), ["navigator", "screenplay", "inspector"]);
+  assert.equal(validateDockLayout(recovered).valid, true);
 });

@@ -3,7 +3,9 @@ mod external_files;
 mod fdx;
 mod git_sync;
 mod project_file;
+mod session_coordinator;
 mod treatment_files;
+mod window_manager;
 
 use domain::{AppInfo, PhaseStatus, SampleProject};
 use external_files::{
@@ -104,8 +106,11 @@ fn file_modified_at(path: String) -> Result<u64, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(session_coordinator::SessionCoordinatorState::default())
+        .manage(window_manager::WindowManagerState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(window_manager::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             get_sample_screenplay,
@@ -126,7 +131,27 @@ pub fn run() {
             git_sync::git_sync_init,
             git_sync::git_sync_commit,
             git_sync::git_sync_pull,
-            git_sync::git_sync_push
+            git_sync::git_sync_push,
+            session_coordinator::register_coordinated_session,
+            session_coordinator::coordinator_snapshot,
+            session_coordinator::submit_coordinated_mutation,
+            session_coordinator::request_coordinated_save,
+            session_coordinator::complete_coordinated_save,
+            window_manager::register_workspace_window,
+            window_manager::list_workspace_windows,
+            window_manager::create_workspace_window,
+            window_manager::focus_workspace_window,
+            window_manager::bring_all_workspace_windows_to_front,
+            window_manager::reset_workspace_window_placement,
+            window_manager::leave_workspace_project,
+            window_manager::request_close_workspace_window,
+            window_manager::confirm_close_workspace_window,
+            window_manager::advance_workspace_view_revision,
+            window_manager::begin_internal_drag,
+            window_manager::list_active_internal_drags,
+            window_manager::preview_internal_drag,
+            window_manager::acknowledge_internal_drag,
+            window_manager::cancel_internal_drag
         ])
         .run(tauri::generate_context!())
         .expect("error while running Script Control Software");

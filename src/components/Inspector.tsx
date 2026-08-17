@@ -1,15 +1,29 @@
-import { useMemo, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import TeamPanel, { type CollaborationSyncControls } from "./TeamPanel.tsx";
+import CollapsibleSection from "./CollapsibleSection.tsx";
 import {
+  DEFAULT_BREAKDOWN_SECTION_STATE,
+  applyBoardScenePlacement,
+  boardPlacementOptions,
   createManualObjectOverride,
+  createStoryBeat,
+  describeBoardPlacement,
   draftReviewPreview,
   hasPermission,
   moveStoryScene,
+  neighboringBoardPlacement,
   nextRevisionColor,
+  normalizeBeatEdit,
   parseHeading,
   REVISION_COLORS,
+  resolveBoardPointerPlacement,
+  reconcileStorySelection,
+  resolveNewBeatTarget,
   sceneOrderForSequences,
   type Breakdown,
+  type BoardScenePlacement,
+  type BreakdownSectionId,
+  type BreakdownSectionState,
   type AnalysisCsvSection,
   type AnalysisEntityKind,
   type CharacterRef,
@@ -37,6 +51,7 @@ import {
   type ProductionRevisionSummary,
   type SeriesWorkspaceReport,
   type ScriptAnalysis,
+  type ScriptTarget,
   type SnapshotComparison,
   type SnapshotDiffMode,
   type SnapshotScope,
@@ -61,6 +76,9 @@ interface InspectorProps {
   onWorkspace: (patch: Partial<WorkspaceData>) => void;
   onApplyStoryStructure: (structure: CustomStoryStructure) => void;
   onJumpToScene: (sceneId: string) => void;
+  selectedBoardSceneId?: string;
+  activeEditorSceneId?: string;
+  onSelectedBoardSceneChange?: (sceneId: string | undefined) => void;
   entityFocusRequest: { kind: "character" | "location"; id: string; nonce: number } | null;
   onOpenEntityBreakdown: (kind: "character" | "location", entityId: string) => void;
   versionHistory: VersionHistory;
@@ -83,6 +101,10 @@ interface InspectorProps {
   onResolveDraftReview: (reviewId: string, path: string, resolution: "ours" | "theirs" | null) => void;
   onApplyDraftReview: (reviewId: string) => void;
   onExportBreakdown: (format: "md" | "csv" | "json" | "pdf", section?: AnalysisCsvSection) => void;
+  breakdownSections: BreakdownSectionState;
+  onBreakdownSectionsChange: (sections: BreakdownSectionState) => void;
+  onResetBreakdownSections: () => void;
+  onOpenScriptTarget: (target: ScriptTarget) => void;
   onImportTreatment: () => void;
   onExportTreatment: (format: "md" | "docx" | "pdf") => void;
   projectWorkspace: ProjectWorkspace;
@@ -151,16 +173,16 @@ const snapshotScopeLabel = (scope?: SnapshotScope) => !scope || scope.kind === "
  */
 export default function PanelHost({ tab, ...props }: InspectorProps & { tab: PanelTab }) {
   return <div className="panel-host">
-    {tab !== "Team" && tab !== "Assist" && tab !== "Drafts" && <fieldset className="permission-scope" disabled={!props.editable}>
+    {tab !== "Team" && tab !== "Assist" && tab !== "Drafts" && tab !== "Breakdown" && <fieldset className="permission-scope" disabled={!props.editable}>
       {tab === "Story" && <StoryWorkspaceTab {...props} />}
       {tab === "Treatment" && <TreatmentWorkspaceTab {...props} />}
       {tab === "Cast" && <CastTab {...props} />}
       {tab === "Props" && <PropsTab {...props} />}
       {tab === "Places" && <PlacesTab {...props} />}
-      {tab === "Breakdown" && <BreakdownTab {...props} />}
       {tab === "Series" && <SeriesTab {...props} />}
       {tab === "Production" && <ProductionTab {...props} />}
     </fieldset>}
+    {tab === "Breakdown" && <BreakdownTab {...props} />}
     {tab === "Drafts" && <DraftsTab {...props} />}
     {tab === "Team" && <TeamPanel session={props.collaborationSession} activeScene={props.activeScene} onSession={props.onCollaborationSession} onOpenTarget={props.onCollaborationTarget} onMessage={props.onCollaborationMessage} sync={props.collaborationSync} />}
     {tab === "Assist" && <AssistTab {...props} />}
@@ -168,12 +190,54 @@ export default function PanelHost({ tab, ...props }: InspectorProps & { tab: Pan
 }
 
 type StoryDragItem = { kind: "sequence" | "scene" | "beat"; id: string };
+type BoardScenePreview = { sceneId: string; placement: BoardScenePlacement };
+type StoryBeat = CustomStoryStructure["beats"][number];
+type BeatEditorState = { beatId: string; draft: StoryBeat; error?: string };
+type SceneContextMenuState = { sceneId: string; x: number; y: number; trigger: HTMLElement };
+type SceneLabelEditorState = { sceneId: string; value: string; restoreFocus?: HTMLElement };
 
 const STORY_DRAG_MIME = "application/x-scs-story-item";
 
-function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, onApplyStoryStructure, onJumpToScene }: InspectorProps) {
+function storyDragItem(value: unknown): StoryDragItem | null {
+  if (!value || typeof value !== "object" || !("kind" in value) || !("id" in value)) return null;
+  return (value.kind === "sequence" || value.kind === "scene" || value.kind === "beat")
+    && typeof value.id === "string"
+    && Boolean(value.id)
+    ? { kind: value.kind, id: value.id }
+    : null;
+}
+
+function sameBoardScenePreview(left: BoardScenePreview | null, right: BoardScenePreview | null): boolean {
+  if (!left || !right) return left === right;
+  return left.sceneId === right.sceneId && JSON.stringify(left.placement) === JSON.stringify(right.placement);
+}
+
+function StoryWorkspaceTab({
+  customStructure,
+  scenes,
+  workspace,
+  onWorkspace,
+  onApplyStoryStructure,
+  onJumpToScene,
+  selectedBoardSceneId,
+  activeEditorSceneId,
+  onSelectedBoardSceneChange,
+  editable,
+}: InspectorProps) {
   const [draggedItem, setDraggedItem] = useState<StoryDragItem | null>(null);
   const draggedItemRef = useRef<StoryDragItem | null>(null);
+  const [scenePreview, setScenePreview] = useState<BoardScenePreview | null>(null);
+  const scenePreviewRef = useRef<BoardScenePreview | null>(null);
+  const announcementNonce = useRef(0);
+  const [boardAnnouncement, setBoardAnnouncement] = useState({ nonce: 0, message: "" });
+  const [localSelectedSceneId, setLocalSelectedSceneId] = useState<string>();
+  const selectedSceneId = onSelectedBoardSceneChange ? selectedBoardSceneId : localSelectedSceneId;
+  const sceneClickTimer = useRef<number | null>(null);
+  const [beatEditor, setBeatEditor] = useState<BeatEditorState | null>(null);
+  const beatCardRefs = useRef(new Map<string, HTMLDivElement>());
+  const [sceneContextMenu, setSceneContextMenu] = useState<SceneContextMenuState | null>(null);
+  const sceneContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const [sceneLabelEditor, setSceneLabelEditor] = useState<SceneLabelEditorState | null>(null);
   const [deleteAllArmed, setDeleteAllArmed] = useState(false);
   const view = workspace.storyBoardView ?? "scene";
   const save = (next: CustomStoryStructure) => onWorkspace({ storyStructure: next });
@@ -252,28 +316,15 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
     const index = siblings.findIndex((item) => item.id === sequenceId);
     return index >= 0 && index + direction >= 0 && index + direction < siblings.length;
   };
-  const moveSceneOnBoard = (sceneId: string, sequenceId: string | undefined, beforeSceneId?: string) => {
-    const sequences = customStructure.sequences.map((sequence) => ({
-      ...sequence,
-      sceneIds: sequence.id === sequenceId
-        ? (() => {
-          const ids = sequence.sceneIds.filter((id) => id !== sceneId);
-          const index = beforeSceneId ? ids.indexOf(beforeSceneId) : -1;
-          ids.splice(index < 0 ? ids.length : index, 0, sceneId);
-          return ids;
-        })()
-        : sequence.sceneIds.filter((id) => id !== sceneId),
-    }));
-    save({
-      ...customStructure,
-      sceneOrder: sceneOrderForSequences(customStructure, sequences),
-      sequences,
-    });
+  const newBeatTarget = resolveNewBeatTarget(selectedSceneId, activeEditorSceneId, scenes);
+  const addBeatForTarget = (target = newBeatTarget) => {
+    if (!editable) return;
+    const beat = createStoryBeat(target);
+    save({ ...customStructure, beats: [...customStructure.beats, beat] });
+    setBeatEditor({ beatId: beat.id, draft: { ...beat, moments: beat.moments.map((moment) => ({ ...moment })) } });
+    announceBoard(`Added a beat to ${target.label}.`);
   };
-  const addBeat = () => save({
-    ...customStructure,
-    beats: [...customStructure.beats, { id: `beat-${crypto.randomUUID()}`, title: "New beat", text: "New beat", sceneId: scenes[0]?.id, status: "idea", moments: [], source: "scs" }],
-  });
+  const addBeat = () => addBeatForTarget();
   const updateBeat = (id: string, patch: Partial<CustomStoryStructure["beats"][number]>) => save({
     ...customStructure,
     beats: customStructure.beats.map((beat) => beat.id === id ? { ...beat, ...patch } : beat),
@@ -302,77 +353,498 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
       : "";
     return `Scene ${reference}${positionContext}: ${scene.heading}`;
   };
+  const announceBoard = (message: string) => setBoardAnnouncement({ nonce: ++announcementNonce.current, message });
+  const changeSelectedScene = (sceneId: string | undefined) => {
+    if (!onSelectedBoardSceneChange) setLocalSelectedSceneId(sceneId);
+    onSelectedBoardSceneChange?.(sceneId);
+  };
+  const cancelPendingSceneClick = () => {
+    if (sceneClickTimer.current === null) return;
+    window.clearTimeout(sceneClickTimer.current);
+    sceneClickTimer.current = null;
+  };
+  const openSceneInWrite = (sceneId: string) => {
+    cancelPendingSceneClick();
+    onJumpToScene(sceneId);
+  };
+  const handleSceneClick = (sceneId: string) => {
+    cancelPendingSceneClick();
+    sceneClickTimer.current = window.setTimeout(() => {
+      sceneClickTimer.current = null;
+      onJumpToScene(sceneId);
+    }, 220);
+  };
+  const handleSceneDoubleClick = (event: ReactMouseEvent<HTMLElement>, scene: Scene) => {
+    if (event.target instanceof Element && event.target.closest(".story-board-beat, .story-board-move-menu, .story-board-scene-menu-trigger, .story-board-label-editor")) return;
+    event.preventDefault();
+    cancelPendingSceneClick();
+    changeSelectedScene(scene.id);
+    announceBoard(`Selected Scene ${sceneReference(scene)} for board operations.`);
+  };
+  const clearScenePreview = () => {
+    scenePreviewRef.current = null;
+    setScenePreview(null);
+  };
+  const clearDrag = () => {
+    draggedItemRef.current = null;
+    scenePreviewRef.current = null;
+    setDraggedItem(null);
+    setScenePreview(null);
+  };
   const beginDrag = (event: DragEvent<HTMLElement>, item: StoryDragItem) => {
+    if (!editable) {
+      event.preventDefault();
+      return;
+    }
+    clearDrag();
     draggedItemRef.current = item;
     setDraggedItem(item);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData(STORY_DRAG_MIME, JSON.stringify(item));
     event.dataTransfer.setData("text/plain", `${item.kind}:${item.id}`);
   };
-  const allowDrop = (event: DragEvent<HTMLElement>) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-  };
+  const dragItemExists = (item: StoryDragItem) => item.kind === "scene"
+    ? customStructure.sceneOrder.includes(item.id) && sceneById.has(item.id)
+    : item.kind === "sequence"
+      ? customStructure.sequences.some((sequence) => sequence.id === item.id)
+      : customStructure.beats.some((beat) => beat.id === item.id);
   const readDraggedItem = (event: DragEvent<HTMLElement>): StoryDragItem | null => {
-    const encoded = event.dataTransfer.getData(STORY_DRAG_MIME);
-    if (encoded) {
-      try {
-        const item = JSON.parse(encoded) as Partial<StoryDragItem>;
-        if ((item.kind === "sequence" || item.kind === "scene" || item.kind === "beat") && typeof item.id === "string" && item.id) {
-          return { kind: item.kind, id: item.id };
+    const hasTypedPayload = Array.from(event.dataTransfer.types).includes(STORY_DRAG_MIME);
+    if (hasTypedPayload) {
+      const encoded = event.dataTransfer.getData(STORY_DRAG_MIME);
+      if (encoded) {
+        try {
+          return storyDragItem(JSON.parse(encoded));
+        } catch {
+          return null;
         }
-      } catch {
-        // Fall through to the in-memory value for older embedded webviews.
       }
     }
-    return draggedItemRef.current ?? draggedItem;
+    return draggedItemRef.current;
   };
-  const clearDrag = () => {
-    draggedItemRef.current = null;
-    setDraggedItem(null);
+  const allowDrop = (event: DragEvent<HTMLElement>): StoryDragItem | null => {
+    if (!editable) {
+      clearDrag();
+      return null;
+    }
+    const item = readDraggedItem(event);
+    if (!item || !dragItemExists(item)) {
+      clearDrag();
+      return null;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    return item;
+  };
+  const previewScenePlacement = (sceneId: string, placement: BoardScenePlacement) => {
+    const next = applyBoardScenePlacement(customStructure, sceneId, placement);
+    const preview = next === customStructure ? null : { sceneId, placement };
+    if (sameBoardScenePreview(scenePreviewRef.current, preview)) return;
+    scenePreviewRef.current = preview;
+    setScenePreview(preview);
+  };
+  const previewOnScene = (event: DragEvent<HTMLElement>, sequenceId: string, sceneId: string) => {
+    const item = allowDrop(event);
+    if (!item) return;
+    if (item.kind === "sequence") {
+      clearScenePreview();
+      return;
+    }
+    event.stopPropagation();
+    if (item.kind !== "scene") {
+      clearScenePreview();
+      return;
+    }
+    const bounds = event.currentTarget.getBoundingClientRect();
+    previewScenePlacement(item.id, resolveBoardPointerPlacement({
+      sequenceId,
+      targetSceneId: sceneId,
+      targetTop: bounds.top,
+      targetHeight: bounds.height,
+      pointerY: event.clientY,
+      sequenceSceneCount: customStructure.sequences.find((sequence) => sequence.id === sequenceId)?.sceneIds.length ?? 0,
+    }));
+  };
+  const previewOnSequence = (event: DragEvent<HTMLElement>, sequenceId: string) => {
+    const item = allowDrop(event);
+    if (!item) return;
+    if (item.kind !== "scene") {
+      clearScenePreview();
+      return;
+    }
+    event.stopPropagation();
+    const sequenceSceneCount = customStructure.sequences.find((sequence) => sequence.id === sequenceId)?.sceneIds.length ?? 0;
+    previewScenePlacement(item.id, resolveBoardPointerPlacement({ sequenceId, sequenceSceneCount }));
+  };
+  const previewOnUnassigned = (event: DragEvent<HTMLElement>) => {
+    const item = allowDrop(event);
+    if (!item) return;
+    if (item.kind !== "scene") {
+      clearScenePreview();
+      return;
+    }
+    event.stopPropagation();
+    previewScenePlacement(item.id, { kind: "unassigned" });
+  };
+  const commitScenePlacement = (sceneId: string, placement: BoardScenePlacement) => {
+    if (!editable) return;
+    const next = applyBoardScenePlacement(customStructure, sceneId, placement);
+    if (next === customStructure) {
+      announceBoard("Scene position unchanged.");
+      return;
+    }
+    const scene = sceneById.get(sceneId);
+    const anchorScene = placement.kind === "before" || placement.kind === "after" ? sceneById.get(placement.anchorSceneId) : undefined;
+    const describedPlacement = placement.kind === "before" || placement.kind === "after"
+      ? { ...placement, anchorSceneId: anchorScene ? `Scene ${sceneReference(anchorScene)}` : placement.anchorSceneId }
+      : placement;
+    save(next);
+    announceBoard(describeBoardPlacement(customStructure, scene ? `Scene ${sceneReference(scene)}` : sceneId, describedPlacement));
+  };
+  const matchingPreview = (sceneId: string, predicate: (placement: BoardScenePlacement) => boolean) => {
+    const preview = scenePreviewRef.current;
+    return preview?.sceneId === sceneId && predicate(preview.placement) ? preview.placement : undefined;
   };
   const dropOnAct = (event: DragEvent<HTMLElement>, actId: string) => {
-    event.preventDefault();
-    const item = readDraggedItem(event);
+    const item = allowDrop(event);
     if (item?.kind === "sequence") moveSequence(item.id, actId);
     clearDrag();
   };
   const dropOnSequence = (event: DragEvent<HTMLElement>, sequenceId: string, actId: string) => {
-    event.preventDefault();
     event.stopPropagation();
-    const item = readDraggedItem(event);
+    const item = allowDrop(event);
     if (item?.kind === "sequence") moveSequence(item.id, actId, sequenceId);
-    else if (item?.kind === "scene") moveSceneOnBoard(item.id, sequenceId);
+    else if (item?.kind === "scene") {
+      const sequenceSceneCount = customStructure.sequences.find((sequence) => sequence.id === sequenceId)?.sceneIds.length ?? 0;
+      const displayedPlacement = event.currentTarget.dataset.dropPlacement;
+      const placement: BoardScenePlacement = displayedPlacement === "append" || displayedPlacement === "empty"
+        ? { kind: displayedPlacement, sequenceId }
+        : matchingPreview(item.id, (candidate) => candidate.kind !== "unassigned" && candidate.sequenceId === sequenceId && (candidate.kind === "append" || candidate.kind === "empty"))
+        ?? resolveBoardPointerPlacement({ sequenceId, sequenceSceneCount });
+      commitScenePlacement(item.id, placement);
+    }
     clearDrag();
   };
   const dropOnScene = (event: DragEvent<HTMLElement>, sequenceId: string, sceneId: string) => {
-    event.preventDefault();
     event.stopPropagation();
-    const item = readDraggedItem(event);
-    if (item?.kind === "scene") moveSceneOnBoard(item.id, sequenceId, sceneId);
+    const item = allowDrop(event);
+    if (item?.kind === "scene") {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const sequenceSceneCount = customStructure.sequences.find((sequence) => sequence.id === sequenceId)?.sceneIds.length ?? 0;
+      const displayedPlacement = event.currentTarget.dataset.dropPlacement;
+      const placement: BoardScenePlacement = displayedPlacement === "before" || displayedPlacement === "after"
+        ? { kind: displayedPlacement, sequenceId, anchorSceneId: sceneId }
+        : matchingPreview(item.id, (candidate) => (candidate.kind === "before" || candidate.kind === "after") && candidate.sequenceId === sequenceId && candidate.anchorSceneId === sceneId)
+        ?? resolveBoardPointerPlacement({ sequenceId, targetSceneId: sceneId, targetTop: bounds.top, targetHeight: bounds.height, pointerY: event.clientY, sequenceSceneCount });
+      commitScenePlacement(item.id, placement);
+    }
     else if (item?.kind === "beat") updateBeat(item.id, { sceneId, sequenceId: undefined });
     clearDrag();
   };
   const dropOnUnassigned = (event: DragEvent<HTMLElement>) => {
-    event.preventDefault();
-    const item = readDraggedItem(event);
-    if (item?.kind === "scene") moveSceneOnBoard(item.id, undefined);
+    event.stopPropagation();
+    const item = allowDrop(event);
+    if (item?.kind === "scene") commitScenePlacement(item.id, { kind: "unassigned" });
     else if (item?.kind === "beat") updateBeat(item.id, { sceneId: undefined, sequenceId: undefined });
     clearDrag();
   };
-  const renderBoardBeat = (beat: CustomStoryStructure["beats"][number], extraClass = "") => {
+  const leaveVisualBoard = (event: DragEvent<HTMLElement>) => {
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+    clearDrag();
+  };
+  useEffect(() => {
+    const cancelDrag = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || (!draggedItemRef.current && !scenePreviewRef.current)) return;
+      event.preventDefault();
+      clearDrag();
+      announceBoard("Story board move cancelled.");
+    };
+    window.addEventListener("keydown", cancelDrag);
+    return () => window.removeEventListener("keydown", cancelDrag);
+  }, []);
+  useEffect(() => {
+    const item = draggedItemRef.current;
+    if (!item || dragItemExists(item)) return;
+    clearDrag();
+    announceBoard("Story board move cancelled because its source is no longer available.");
+  }, [customStructure, scenes]);
+  useEffect(() => {
+    if (view === "board") return;
+    cancelPendingSceneClick();
+    if (draggedItemRef.current || scenePreviewRef.current) clearDrag();
+    setBeatEditor(null);
+    setSceneContextMenu(null);
+    setSceneLabelEditor(null);
+  }, [view]);
+  useEffect(() => () => cancelPendingSceneClick(), []);
+  useEffect(() => {
+    const repaired = reconcileStorySelection({ ...(selectedSceneId ? { selectedSceneId } : {}) }, customStructure, scenes).selectedSceneId;
+    if (repaired === selectedSceneId) return;
+    changeSelectedScene(repaired);
+  }, [customStructure, scenes, selectedSceneId]);
+  useEffect(() => {
+    if (beatEditor && !customStructure.beats.some((beat) => beat.id === beatEditor.beatId)) setBeatEditor(null);
+    if (sceneContextMenu && !scenes.some((scene) => scene.id === sceneContextMenu.sceneId)) setSceneContextMenu(null);
+    if (sceneLabelEditor && !scenes.some((scene) => scene.id === sceneLabelEditor.sceneId)) setSceneLabelEditor(null);
+  }, [beatEditor, customStructure.beats, sceneContextMenu, sceneLabelEditor, scenes]);
+
+  const closeSceneContextMenu = (restoreFocus = true) => {
+    const trigger = sceneContextMenu?.trigger;
+    setSceneContextMenu(null);
+    if (restoreFocus && trigger) window.requestAnimationFrame(() => trigger.isConnected && trigger.focus());
+  };
+  const openSceneContextMenu = (sceneId: string, trigger: HTMLElement, x: number, y: number) => {
+    cancelPendingSceneClick();
+    setSceneContextMenu({
+      sceneId,
+      x: Math.max(8, Math.min(x, window.innerWidth - 272)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 360)),
+      trigger,
+    });
+  };
+  const openSceneContextFromPointer = (event: ReactMouseEvent<HTMLElement>, sceneId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openSceneContextMenu(sceneId, event.currentTarget, event.clientX, event.clientY);
+  };
+  const openSceneContextFromKeyboard = (event: ReactKeyboardEvent<HTMLElement>, sceneId: string) => {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    openSceneContextMenu(sceneId, event.currentTarget, bounds.left + Math.min(bounds.width, 36), bounds.top + Math.min(bounds.height, 28));
+  };
+  const handleSceneContextMenuKeys = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const menu = sceneContextMenuRef.current;
+    if (!menu) return;
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSceneContextMenu();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End" || event.key === "Tab") {
+      event.preventDefault();
+      if (!items.length) return;
+      const next = event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : (current + ((event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey)) ? -1 : 1) + items.length) % items.length;
+      items[next].focus();
+    }
+  };
+  useEffect(() => {
+    if (!sceneContextMenu) return;
+    const frame = window.requestAnimationFrame(() => sceneContextMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus());
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && sceneContextMenuRef.current?.contains(event.target)) return;
+      closeSceneContextMenu();
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("pointerdown", dismiss, true);
+    };
+  }, [sceneContextMenu]);
+
+  const beginSceneLabelEdit = (scene: Scene) => {
+    if (!editable) return;
+    setSceneLabelEditor({
+      sceneId: scene.id,
+      value: customStructure.sceneLabels?.[scene.id] ?? scene.sceneNumber ?? String(scene.number),
+      ...(sceneContextMenu?.trigger ? { restoreFocus: sceneContextMenu.trigger } : {}),
+    });
+    closeSceneContextMenu(false);
+  };
+  const closeSceneLabelEditor = (restoreFocus = true) => {
+    const trigger = sceneLabelEditor?.restoreFocus;
+    setSceneLabelEditor(null);
+    if (restoreFocus && trigger) window.requestAnimationFrame(() => trigger.isConnected && trigger.focus());
+  };
+  const saveSceneLabel = () => {
+    if (!editable || !sceneLabelEditor) return;
+    const labels = { ...(customStructure.sceneLabels ?? {}) };
+    const value = sceneLabelEditor.value.trim();
+    if (value) labels[sceneLabelEditor.sceneId] = value;
+    else delete labels[sceneLabelEditor.sceneId];
+    save({ ...customStructure, sceneLabels: labels });
+    closeSceneLabelEditor();
+    announceBoard(value ? `Updated the board label to ${value}.` : "Cleared the custom board label.");
+  };
+  const renderSceneLabelEditor = (scene: Scene) => sceneLabelEditor?.sceneId === scene.id && <form
+    className="story-board-label-editor"
+    onSubmit={(event) => { event.preventDefault(); saveSceneLabel(); }}
+    onKeyDown={(event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeSceneLabelEditor();
+    }}
+  >
+    <label>Board label<input autoFocus value={sceneLabelEditor.value} onChange={(event) => setSceneLabelEditor({ ...sceneLabelEditor, value: event.target.value })} /></label>
+    <span className="btn-row"><button type="submit" className="link-btn">Save label</button><button type="button" className="link-btn" onClick={() => closeSceneLabelEditor()}>Cancel</button></span>
+  </form>;
+
+  const restoreBeatFocus = (beatId: string) => window.requestAnimationFrame(() => beatCardRefs.current.get(beatId)?.focus());
+  const beginBeatEdit = (beat: StoryBeat) => {
+    if (!editable) return;
+    setBeatEditor({ beatId: beat.id, draft: { ...beat, moments: beat.moments.map((moment) => ({ ...moment })) } });
+  };
+  const changeBeatDraft = (patch: Partial<StoryBeat>) => setBeatEditor((current) => current
+    ? { ...current, draft: { ...current.draft, ...patch }, error: undefined }
+    : current);
+  const cancelBeatEdit = () => {
+    if (!beatEditor) return;
+    const beatId = beatEditor.beatId;
+    setBeatEditor(null);
+    restoreBeatFocus(beatId);
+    announceBoard("Beat edit cancelled.");
+  };
+  const saveBeatEdit = () => {
+    if (!editable || !beatEditor) return;
+    const original = customStructure.beats.find((beat) => beat.id === beatEditor.beatId);
+    if (!original) {
+      setBeatEditor(null);
+      return;
+    }
+    if (!beatEditor.draft.title?.trim() && !beatEditor.draft.text.trim()) {
+      setBeatEditor({ ...beatEditor, error: "A beat needs a title or body." });
+      return;
+    }
+    const normalized = normalizeBeatEdit(original, beatEditor.draft, customStructure, scenes);
+    save({ ...customStructure, beats: customStructure.beats.map((beat) => beat.id === normalized.id ? normalized : beat) });
+    setBeatEditor(null);
+    restoreBeatFocus(normalized.id);
+    announceBoard(`Saved ${normalized.title || normalized.text || "beat"}.`);
+  };
+  const setBeatPlacement = (value: string) => {
+    const separator = value.indexOf(":");
+    const kind = separator < 0 ? "" : value.slice(0, separator);
+    const id = separator < 0 ? "" : value.slice(separator + 1);
+    changeBeatDraft({ sceneId: kind === "scene" ? id : undefined, sequenceId: kind === "sequence" ? id : undefined });
+  };
+  const renderBeatEditor = (editor: BeatEditorState) => {
+    const beat = editor.draft;
+    const placement = beat.sceneId ? `scene:${beat.sceneId}` : beat.sequenceId ? `sequence:${beat.sequenceId}` : "";
+    return <form className="story-board-beat-editor" onSubmit={(event) => { event.preventDefault(); saveBeatEdit(); }} onKeyDown={(event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelBeatEdit();
+      } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        saveBeatEdit();
+      }
+    }}>
+      <label>Title<input autoFocus value={beat.title ?? ""} onChange={(event) => changeBeatDraft({ title: event.target.value })} /></label>
+      <label>Body<textarea value={beat.text} onChange={(event) => changeBeatDraft({ text: event.target.value })} /></label>
+      <div className="story-board-beat-editor-grid">
+        <label>Status<select value={beat.status} onChange={(event) => {
+          const status = event.target.value;
+          if (status === "idea" || status === "drafted" || status === "complete") changeBeatDraft({ status });
+        }}><option value="idea">Idea</option><option value="drafted">Drafted</option><option value="complete">Complete</option></select></label>
+        <label>Color<input value={beat.color ?? ""} placeholder="#F5C451 or blue" onChange={(event) => changeBeatDraft({ color: event.target.value || undefined })} /></label>
+      </div>
+      <label>Placement<select value={placement} onChange={(event) => setBeatPlacement(event.target.value)}><option value="">Unassigned</option><optgroup label="Scenes">{scenes.map((scene) => <option value={`scene:${scene.id}`} key={scene.id}>{sceneBoardLabel(scene)}</option>)}</optgroup><optgroup label="Sequences">{customStructure.sequences.map((sequence) => <option value={`sequence:${sequence.id}`} key={sequence.id}>{sequence.title || "Untitled sequence"}</option>)}</optgroup></select></label>
+      <fieldset className="story-board-moments"><legend>Moments</legend>{beat.moments.map((moment, index) => <div key={moment.id}><input aria-label={`Moment ${index + 1}`} value={moment.text} onChange={(event) => changeBeatDraft({ moments: beat.moments.map((item) => item.id === moment.id ? { ...item, text: event.target.value } : item) })} /><button type="button" className="link-btn" aria-label={`Remove moment ${index + 1}`} onClick={() => changeBeatDraft({ moments: beat.moments.filter((item) => item.id !== moment.id) })}>Remove</button></div>)}<button type="button" className="link-btn" onClick={() => changeBeatDraft({ moments: [...beat.moments, { id: `moment-${crypto.randomUUID()}`, text: "New moment" }] })}>Add moment</button></fieldset>
+      {editor.error && <p className="story-board-editor-error" role="alert">{editor.error}</p>}
+      <div className="btn-row"><button type="submit" className="btn">Save beat</button><button type="button" className="btn btn-ghost" onClick={cancelBeatEdit}>Cancel</button><span className="insp-card-meta">Ctrl/⌘+Enter saves · Escape cancels</span></div>
+    </form>;
+  };
+  const renderSceneContextMenu = () => {
+    if (!sceneContextMenu) return null;
+    const scene = sceneById.get(sceneContextMenu.sceneId);
+    if (!scene) return null;
+    const earlier = neighboringBoardPlacement(customStructure, scene.id, -1);
+    const later = neighboringBoardPlacement(customStructure, scene.id, 1);
+    const placements = boardPlacementOptions(customStructure, scene.id);
+    const selected = selectedSceneId === scene.id;
+    const selectScene = () => {
+      changeSelectedScene(selected ? undefined : scene.id);
+      announceBoard(selected ? `Deselected Scene ${sceneReference(scene)}.` : `Selected Scene ${sceneReference(scene)} for board operations.`);
+      closeSceneContextMenu();
+    };
+    const copyReference = () => {
+      const text = `Scene ${sceneReference(scene)}: ${scene.heading}`;
+      closeSceneContextMenu();
+      if (!navigator.clipboard?.writeText) {
+        announceBoard("The scene reference could not be copied.");
+        return;
+      }
+      void navigator.clipboard.writeText(text)
+        .then(() => announceBoard(`Copied ${text}.`))
+        .catch(() => announceBoard("The scene reference could not be copied."));
+    };
+    return <div
+      ref={sceneContextMenuRef}
+      className="story-board-context-menu"
+      role="menu"
+      aria-label={`Scene ${sceneReference(scene)} options`}
+      style={{ left: sceneContextMenu.x, top: sceneContextMenu.y }}
+      onKeyDown={handleSceneContextMenuKeys}
+    >
+      <button type="button" role="menuitem" onClick={selectScene}>{selected ? "Deselect Scene" : "Select Scene"}</button>
+      <button type="button" role="menuitem" onClick={() => { closeSceneContextMenu(false); openSceneInWrite(scene.id); }}>Open in Write</button>
+      <button type="button" role="menuitem" disabled={!editable} onClick={() => { addBeatForTarget(resolveNewBeatTarget(scene.id, undefined, scenes)); closeSceneContextMenu(); }}>Add Beat to Scene</button>
+      <button type="button" role="menuitem" disabled={!editable} onClick={() => beginSceneLabelEdit(scene)}>Edit Board Label</button>
+      <div role="separator" />
+      <button type="button" role="menuitem" disabled={!editable || !earlier} onClick={() => { if (earlier) commitScenePlacement(scene.id, earlier); closeSceneContextMenu(); }}>Move Before Previous Scene</button>
+      <button type="button" role="menuitem" disabled={!editable || !later} onClick={() => { if (later) commitScenePlacement(scene.id, later); closeSceneContextMenu(); }}>Move After Next Scene</button>
+      {placements.map((option) => <button type="button" role="menuitem" key={option.id} disabled={!editable || option.disabled} onClick={() => { commitScenePlacement(scene.id, option.placement); closeSceneContextMenu(); }}>{option.label}</button>)}
+      <div role="separator" />
+      <button type="button" role="menuitem" onClick={copyReference}>Copy Scene Reference</button>
+    </div>;
+  };
+  const renderSceneMoveControls = (scene: Scene) => {
+    const label = `Scene ${sceneReference(scene)}`;
+    const earlier = neighboringBoardPlacement(customStructure, scene.id, -1);
+    const later = neighboringBoardPlacement(customStructure, scene.id, 1);
+    const options = boardPlacementOptions(customStructure, scene.id);
+    return <details className="story-board-move-menu">
+      <summary className="link-btn">Move {label}…</summary>
+      <div className="story-board-move-options" role="group" aria-label={`Move options for ${label}`}>
+        <button type="button" className="link-btn" disabled={!editable || !earlier} onClick={() => { if (earlier) commitScenePlacement(scene.id, earlier); }}>Move before previous scene</button>
+        <button type="button" className="link-btn" disabled={!editable || !later} onClick={() => { if (later) commitScenePlacement(scene.id, later); }}>Move after next scene</button>
+        {options.map((option) => <button type="button" className="link-btn" key={option.id} disabled={!editable || option.disabled} onClick={() => commitScenePlacement(scene.id, option.placement)}>{option.label}</button>)}
+      </div>
+    </details>;
+  };
+  const renderBoardBeat = (beat: StoryBeat, extraClass = "") => {
     const beatIndex = customStructure.beats.findIndex((item) => item.id === beat.id);
-    const label = beat.title || beat.text;
-    return <div className={`story-board-beat ${extraClass}`.trim()} key={beat.id} style={storyCssColor(beat.color) ? { borderColor: storyCssColor(beat.color) } : undefined} draggable onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "beat", id: beat.id }); }} onDragEnd={clearDrag}>
-      <span>{label}</span>
-      <span className="story-board-reorder" role="group" aria-label={`Reorder ${label}`}>
-        <button className="link-btn" aria-label={`Move ${label} earlier`} disabled={beatIndex <= 0} onClick={(event) => { event.stopPropagation(); moveBeat(beat.id, beatIndex - 1); }}>↑</button>
-        <button className="link-btn" aria-label={`Move ${label} later`} disabled={beatIndex < 0 || beatIndex === customStructure.beats.length - 1} onClick={(event) => { event.stopPropagation(); moveBeat(beat.id, beatIndex + 1); }}>↓</button>
-      </span>
+    const label = beat.title || beat.text || "Untitled beat";
+    const editing = beatEditor?.beatId === beat.id;
+    return <div
+      className={`story-board-beat ${extraClass}${editing ? " is-editing" : ""}`.trim()}
+      key={beat.id}
+      ref={(element) => { if (element) beatCardRefs.current.set(beat.id, element); else beatCardRefs.current.delete(beat.id); }}
+      style={storyCssColor(editing ? beatEditor.draft.color : beat.color) ? { borderColor: storyCssColor(editing ? beatEditor.draft.color : beat.color) } : undefined}
+      draggable={editable && !editing}
+      tabIndex={0}
+      role="group"
+      aria-label={`${label}. Double-click or press Enter to edit.`}
+      onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "beat", id: beat.id }); }}
+      onDragEnd={clearDrag}
+      onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); beginBeatEdit(beat); }}
+      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); beginBeatEdit(beat); }}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== "F2")) return;
+        event.preventDefault();
+        beginBeatEdit(beat);
+      }}
+    >
+      {editing ? renderBeatEditor(beatEditor) : <>
+        <span>{label}</span>
+        <span className="story-board-reorder" role="group" aria-label={`Actions for ${label}`}>
+          <button type="button" className="link-btn" aria-label={`Edit ${label}`} disabled={!editable} onClick={(event) => { event.stopPropagation(); beginBeatEdit(beat); }}>Edit</button>
+          <button type="button" className="link-btn" aria-label={`Move ${label} earlier`} disabled={!editable || beatIndex <= 0} onClick={(event) => { event.stopPropagation(); moveBeat(beat.id, beatIndex - 1); }}>↑</button>
+          <button type="button" className="link-btn" aria-label={`Move ${label} later`} disabled={!editable || beatIndex < 0 || beatIndex === customStructure.beats.length - 1} onClick={(event) => { event.stopPropagation(); moveBeat(beat.id, beatIndex + 1); }}>↓</button>
+        </span>
+      </>}
     </div>;
   };
 
   return <div className="insp-stack">
+    <span className="sr-only" role="status" aria-live="polite" aria-atomic="true"><span key={boardAnnouncement.nonce}>{boardAnnouncement.message}</span></span>
     <Hint>Use the grip to organize the outline. The draft stays unchanged until you choose Make Draft Match Outline.</Hint>
     <div className="btn-row">
       <button className="btn" disabled={!outlineDiffersFromDraft} onClick={applyOutlineToDraft}>Make Draft Match Outline</button>
@@ -384,28 +856,104 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
       )}
     </div>
     {view === "board" && <>
-      <div className="btn-row"><button className="btn" onClick={addAct}>Add Act</button><button className="btn btn-ghost" onClick={addSequence}>Add Sequence</button><button className="btn btn-ghost" onClick={addBeat}>Add Beat</button></div>
-      <div className="story-board" aria-label="Visual story board">
-        {customStructure.acts.map((act) => <section className="story-board-act" key={act.id} aria-label={`${act.title} drop zone`} onDragOver={allowDrop} onDrop={(event) => dropOnAct(event, act.id)}>
+      <div className="btn-row"><button className="btn" onClick={addAct}>Add Act</button><button className="btn btn-ghost" onClick={addSequence}>Add Sequence</button><button className="btn btn-ghost" onClick={addBeat}>Add Beat</button><span className="story-board-beat-target">New beat target: {newBeatTarget.label}</span></div>
+      <div className="story-board" aria-label="Visual story board" onDragLeave={leaveVisualBoard}>
+        {customStructure.acts.map((act) => <section className="story-board-act" key={act.id} aria-label={`${act.title} drop zone`} onDragOver={(event) => { allowDrop(event); clearScenePreview(); }} onDrop={(event) => dropOnAct(event, act.id)}>
           <header><input aria-label="Act title" value={act.title} onChange={(event) => updateAct(act.id, event.target.value)} /><span>{customStructure.sequences.filter((sequence) => sequence.actId === act.id).length} sequences</span></header>
           <div className="story-board-lane">
-            {customStructure.sequences.filter((sequence) => sequence.actId === act.id).map((sequence) => <article className={`story-board-sequence ${draggedItem?.kind === "sequence" && draggedItem.id === sequence.id ? "is-dragging" : ""}`} key={sequence.id} draggable onDragStart={(event) => beginDrag(event, { kind: "sequence", id: sequence.id })} onDragEnd={clearDrag} onDragOver={allowDrop} onDrop={(event) => dropOnSequence(event, sequence.id, act.id)}>
-              <div className="story-board-sequence-header"><span className="story-board-drag-handle" draggable role="img" aria-label={`Drag handle for ${sequence.title || "sequence"}`} title={`Drag ${sequence.title || "sequence"}`} onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "sequence", id: sequence.id }); }} onDragEnd={clearDrag}>⠿</span><input aria-label="Sequence title" value={sequence.title} onChange={(event) => updateSequence(sequence.id, { title: event.target.value })} /></div>
-              <div className="story-board-reorder" role="group" aria-label={`Reorder ${sequence.title || "sequence"}`}><button className="link-btn" aria-label={`Move ${sequence.title || "sequence"} earlier`} disabled={!canMoveSequenceWithinAct(sequence.id, -1)} onClick={(event) => { event.stopPropagation(); moveSequenceWithinAct(sequence.id, -1); }}>←</button><button className="link-btn" aria-label={`Move ${sequence.title || "sequence"} later`} disabled={!canMoveSequenceWithinAct(sequence.id, 1)} onClick={(event) => { event.stopPropagation(); moveSequenceWithinAct(sequence.id, 1); }}>→</button></div>
-              <div className="story-board-scenes">
-                {customStructure.sceneOrder.filter((sceneId) => sequence.sceneIds.includes(sceneId)).map((sceneId) => { const scene = sceneById.get(sceneId); if (!scene) return null; return <div className="story-board-scene" key={scene.id} draggable onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "scene", id: scene.id }); }} onDragEnd={clearDrag} onDragOver={allowDrop} onDrop={(event) => dropOnScene(event, sequence.id, scene.id)}>
-                  <button className="link-btn" onClick={() => onJumpToScene(scene.id)}>{sceneBoardLabel(scene)}</button>
-                  {customStructure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => renderBoardBeat(beat))}
-                </div>; })}
-                {!sequence.sceneIds.length && <span className="story-board-empty">Drop scenes here</span>}
-              </div>
-              {customStructure.beats.filter((beat) => beat.sequenceId === sequence.id && !beat.sceneId).map((beat) => renderBoardBeat(beat, "sequence-beat"))}
-            </article>)}
+            {customStructure.sequences.filter((sequence) => sequence.actId === act.id).map((sequence) => {
+              const sequencePreview = scenePreview?.placement.kind !== "unassigned" && scenePreview?.placement.sequenceId === sequence.id
+                ? scenePreview.placement
+                : undefined;
+              const appendPreview = sequencePreview?.kind === "append" || sequencePreview?.kind === "empty" ? sequencePreview.kind : undefined;
+              return <article
+                className={`story-board-sequence ${draggedItem?.kind === "sequence" && draggedItem.id === sequence.id ? "is-dragging" : ""}`}
+                data-drop-placement={appendPreview}
+                key={sequence.id}
+                draggable={editable}
+                onDragStart={(event) => beginDrag(event, { kind: "sequence", id: sequence.id })}
+                onDragEnd={clearDrag}
+                onDragOver={(event) => previewOnSequence(event, sequence.id)}
+                onDrop={(event) => dropOnSequence(event, sequence.id, act.id)}
+              >
+                <div className="story-board-sequence-header"><span className="story-board-drag-handle" draggable={editable} role="img" aria-label={`Drag handle for ${sequence.title || "sequence"}`} title={`Drag ${sequence.title || "sequence"}`} onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "sequence", id: sequence.id }); }} onDragEnd={clearDrag}>⠿</span><input aria-label="Sequence title" value={sequence.title} onChange={(event) => updateSequence(sequence.id, { title: event.target.value })} /></div>
+                <div className="story-board-reorder" role="group" aria-label={`Reorder ${sequence.title || "sequence"}`}><button className="link-btn" aria-label={`Move ${sequence.title || "sequence"} earlier`} disabled={!canMoveSequenceWithinAct(sequence.id, -1)} onClick={(event) => { event.stopPropagation(); moveSequenceWithinAct(sequence.id, -1); }}>←</button><button className="link-btn" aria-label={`Move ${sequence.title || "sequence"} later`} disabled={!canMoveSequenceWithinAct(sequence.id, 1)} onClick={(event) => { event.stopPropagation(); moveSequenceWithinAct(sequence.id, 1); }}>→</button></div>
+                <div
+                  className={`story-board-append-zone${appendPreview ? " is-drop-target" : ""}`}
+                  data-drop-placement={appendPreview}
+                  aria-label={`${sequence.sceneIds.length ? "Append scene to" : "Drop scene into empty"} ${sequence.title || "sequence"}`}
+                  onDragOver={(event) => previewOnSequence(event, sequence.id)}
+                  onDrop={(event) => dropOnSequence(event, sequence.id, act.id)}
+                >{appendPreview === "empty" ? "Drop into empty sequence" : appendPreview === "append" ? "Drop at end of sequence" : sequence.sceneIds.length ? "Drop at end" : "Drop scenes here"}</div>
+                <div className="story-board-scenes" role="listbox" aria-label={`Scenes in ${sequence.title || "sequence"}`} data-drop-placement={appendPreview}>
+                  {customStructure.sceneOrder.filter((sceneId) => sequence.sceneIds.includes(sceneId)).map((sceneId) => {
+                    const scene = sceneById.get(sceneId);
+                    if (!scene) return null;
+                    const sceneDropPosition = sequencePreview?.kind === "before" || sequencePreview?.kind === "after"
+                      ? sequencePreview.anchorSceneId === scene.id ? sequencePreview.kind : undefined
+                      : undefined;
+                    return <div
+                      className={`story-board-scene${selectedSceneId === scene.id ? " is-selected" : ""}${draggedItem?.kind === "scene" && draggedItem.id === scene.id ? " is-dragging" : ""}${sceneDropPosition ? ` is-drop-${sceneDropPosition}` : ""}`}
+                      data-scene-id={scene.id}
+                      data-drop-placement={sceneDropPosition}
+                      key={scene.id}
+                      draggable={editable}
+                      role="option"
+                      aria-selected={selectedSceneId === scene.id}
+                      tabIndex={0}
+                      onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "scene", id: scene.id }); }}
+                      onDragEnd={clearDrag}
+                      onDragOver={(event) => previewOnScene(event, sequence.id, scene.id)}
+                      onDrop={(event) => dropOnScene(event, sequence.id, scene.id)}
+                      onDoubleClick={(event) => handleSceneDoubleClick(event, scene)}
+                      onContextMenu={(event) => openSceneContextFromPointer(event, scene.id)}
+                      onKeyDown={(event) => openSceneContextFromKeyboard(event, scene.id)}
+                    >
+                      {sceneDropPosition && <span className={`story-board-drop-indicator is-${sceneDropPosition}`} aria-hidden="true">Drop {sceneDropPosition}</span>}
+                      <div className="story-board-scene-heading"><button className="link-btn story-board-scene-open" onClick={() => handleSceneClick(scene.id)}>{sceneBoardLabel(scene)}</button><button type="button" className="link-btn story-board-scene-menu-trigger" aria-label={`Scene options for Scene ${sceneReference(scene)}`} aria-haspopup="menu" onClick={(event) => { event.stopPropagation(); const bounds = event.currentTarget.getBoundingClientRect(); openSceneContextMenu(scene.id, event.currentTarget, bounds.right, bounds.bottom); }}>⋯</button></div>
+                      {renderSceneLabelEditor(scene)}
+                      {customStructure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => renderBoardBeat(beat))}
+                      {renderSceneMoveControls(scene)}
+                    </div>;
+                  })}
+                </div>
+                {customStructure.beats.filter((beat) => beat.sequenceId === sequence.id && !beat.sceneId).map((beat) => renderBoardBeat(beat, "sequence-beat"))}
+              </article>;
+            })}
             {!customStructure.sequences.some((sequence) => sequence.actId === act.id) && <div className="story-board-empty">Drop a sequence into this act</div>}
           </div>
         </section>)}
-        <section className="story-board-unassigned" aria-label="Unassigned scenes and beats" onDragOver={allowDrop} onDrop={dropOnUnassigned}><strong>Unassigned scenes</strong>{orderedScenes.filter((scene) => !assignedSceneIds.has(scene.id)).map((scene) => <div className="story-board-unassigned-scene" key={scene.id}><span className="story-board-drag-handle" draggable role="img" aria-label={`Drag handle for Scene ${sceneReference(scene)}`} title={`Drag Scene ${sceneReference(scene)}`} onDragStart={(event) => beginDrag(event, { kind: "scene", id: scene.id })} onDragEnd={clearDrag}>⠿</span><button className="story-board-scene link-btn" draggable onDragStart={(event) => beginDrag(event, { kind: "scene", id: scene.id })} onDragEnd={clearDrag} onClick={() => onJumpToScene(scene.id)}>{sceneBoardLabel(scene)}</button></div>)}<strong>Unplaced beats</strong>{customStructure.beats.filter((beat) => !beat.sceneId && !beat.sequenceId).map((beat) => renderBoardBeat(beat))}</section>
+        <section className={`story-board-unassigned${scenePreview?.placement.kind === "unassigned" ? " is-drop-target" : ""}`} data-drop-placement={scenePreview?.placement.kind === "unassigned" ? "unassigned" : undefined} aria-label="Unassigned scenes and beats" onDragOver={previewOnUnassigned} onDrop={dropOnUnassigned}>
+          <strong>Unassigned scenes</strong>
+          {scenePreview?.placement.kind === "unassigned" && <div className="story-board-drop-slot is-unassigned" aria-hidden="true">Drop into Unassigned</div>}
+          <div className="story-board-unassigned-scenes" role="listbox" aria-label="Unassigned scenes">
+            {orderedScenes.filter((scene) => !assignedSceneIds.has(scene.id)).map((scene) => <div className="story-board-unassigned-scene" key={scene.id}>
+              <span className="story-board-drag-handle" draggable={editable} role="img" aria-label={`Drag handle for Scene ${sceneReference(scene)}`} title={`Drag Scene ${sceneReference(scene)}`} onDragStart={(event) => { event.stopPropagation(); beginDrag(event, { kind: "scene", id: scene.id }); }} onDragEnd={clearDrag}>⠿</span>
+              <div
+                className={`story-board-scene${selectedSceneId === scene.id ? " is-selected" : ""}${draggedItem?.kind === "scene" && draggedItem.id === scene.id ? " is-dragging" : ""}`}
+                data-scene-id={scene.id}
+                draggable={editable}
+                role="option"
+                aria-selected={selectedSceneId === scene.id}
+                tabIndex={0}
+                onDragStart={(event) => beginDrag(event, { kind: "scene", id: scene.id })}
+                onDragEnd={clearDrag}
+                onDoubleClick={(event) => handleSceneDoubleClick(event, scene)}
+                onContextMenu={(event) => openSceneContextFromPointer(event, scene.id)}
+                onKeyDown={(event) => openSceneContextFromKeyboard(event, scene.id)}
+              >
+                <div className="story-board-scene-heading"><button className="link-btn story-board-scene-open" onClick={() => handleSceneClick(scene.id)}>{sceneBoardLabel(scene)}</button><button type="button" className="link-btn story-board-scene-menu-trigger" aria-label={`Scene options for Scene ${sceneReference(scene)}`} aria-haspopup="menu" onClick={(event) => { event.stopPropagation(); const bounds = event.currentTarget.getBoundingClientRect(); openSceneContextMenu(scene.id, event.currentTarget, bounds.right, bounds.bottom); }}>⋯</button></div>
+                {renderSceneLabelEditor(scene)}
+                {customStructure.beats.filter((beat) => beat.sceneId === scene.id).map((beat) => renderBoardBeat(beat))}
+                {renderSceneMoveControls(scene)}
+              </div>
+            </div>)}
+          </div>
+          <strong>Unplaced beats</strong>
+          {customStructure.beats.filter((beat) => !beat.sceneId && !beat.sequenceId).map((beat) => renderBoardBeat(beat))}
+        </section>
       </div>
+      {renderSceneContextMenu()}
       {!!customStructure.connections?.length && <div className="story-board-connections"><strong>Beat connections</strong>{customStructure.connections.map((connection) => <span key={connection.id}><i style={storyCssColor(connection.color) ? { background: storyCssColor(connection.color) } : undefined} />{customStructure.beats.find((beat) => beat.id === connection.fromId)?.title || customStructure.beats.find((beat) => beat.id === connection.fromId)?.text || "Beat"} → {customStructure.beats.find((beat) => beat.id === connection.toId)?.title || customStructure.beats.find((beat) => beat.id === connection.toId)?.text || "Beat"}</span>)}</div>}
     </>}
     {view === "act" && <>
@@ -436,14 +984,14 @@ function StoryWorkspaceTab({ customStructure, scenes, workspace, onWorkspace, on
       })}
     </>}
     {view === "scene" && <div className="story-card-grid">
-      {orderedScenes.map((scene, index) => <div className="insp-card" key={scene.id} draggable onDragStart={() => setDraggedItem({ kind: "scene", id: scene.id })} onDragEnd={clearDrag} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedItem?.kind === "scene" && draggedItem.id !== scene.id) save(moveStoryScene(customStructure, draggedItem.id, index)); clearDrag(); }}>
+      {orderedScenes.map((scene, index) => <div className="insp-card" key={scene.id} draggable={editable} onDragStart={(event) => beginDrag(event, { kind: "scene", id: scene.id })} onDragEnd={clearDrag} onDragOver={(event) => { allowDrop(event); }} onDrop={(event) => { const item = allowDrop(event); if (item?.kind === "scene" && item.id !== scene.id) save(moveStoryScene(customStructure, item.id, index)); clearDrag(); }}>
         <button className="link-btn insp-card-title" onClick={() => onJumpToScene(scene.id)}>{sceneBoardLabel(scene)}</button>
         <div className="insp-card-meta">{workspace.sceneMeta?.[scene.id]?.summary || "No summary"}</div>
         <div className="insp-card-meta">Drag to reorder this scene in the outline.</div><div className="btn-row"><button className="btn btn-ghost" disabled={index === 0} onClick={() => save(moveStoryScene(customStructure, scene.id, index - 1))}>↑</button><button className="btn btn-ghost" disabled={index === orderedScenes.length - 1} onClick={() => save(moveStoryScene(customStructure, scene.id, index + 1))}>↓</button></div>
       </div>)}
     </div>}
     {view === "beat" && <>
-      <button className="btn" onClick={addBeat}>Add Beat</button>
+      <div className="btn-row"><button className="btn" onClick={addBeat}>Add Beat</button><span className="story-board-beat-target">New beat target: {newBeatTarget.label}</span></div>
       {customStructure.beats.map((beat, beatIndex) => <div className="insp-card" key={beat.id}>
         <input aria-label="Beat title" className="insp-notes-input" value={beat.title ?? ""} placeholder="Beat title" onChange={(event) => updateBeat(beat.id, { title: event.target.value })} />
         <textarea className="insp-notes-input" value={beat.text} onChange={(event) => updateBeat(beat.id, { text: event.target.value })} />
@@ -579,7 +1127,7 @@ function EntityDetails({ entityId, focused, defaultOpen, summary, children }: {
   </details>;
 }
 
-function CastTab({ analysis, workspace, onWorkspace, entityFocusRequest }: InspectorProps) {
+function CastTab({ analysis, workspace, onWorkspace, entityFocusRequest, activeDocumentId, onOpenScriptTarget }: InspectorProps) {
   const characters = analysis.entities.characters;
   const scenesById = new Map(analysis.scenes.map((scene) => [scene.id, scene]));
   if (!characters.length) return <Hint>No character cues detected.</Hint>;
@@ -594,12 +1142,18 @@ function CastTab({ analysis, workspace, onWorkspace, entityFocusRequest }: Inspe
     <h4>Scenes and dialogue</h4>
     {character.appearances.map((appearance) => <div className="entity-scene-breakdown" key={appearance.sceneId}>
       <div className="insp-card-meta"><strong>Scene {appearance.sceneNumber} · {scenesById.get(appearance.sceneId)?.heading ?? "Untitled scene"}</strong> · {appearance.cueCount} cues · {appearance.dialogueCount} dialogue blocks · {appearance.dialogueWords} words</div>
-      {character.dialogueLines.filter((line) => line.sceneId === appearance.sceneId).map((line) => <p key={line.blockId} className="insp-card-desc">{line.text}</p>)}
+      {character.dialogueLines.filter((line) => line.sceneId === appearance.sceneId).map((line, index) => <button
+        type="button"
+        className="link-btn script-reference-link"
+        key={line.blockId}
+        onClick={() => onOpenScriptTarget(scriptTarget(activeDocumentId, line.sceneId, line.blockId, line, "character-dialogue", `Open ${character.name} dialogue`))}
+        aria-label={`Open ${character.name} dialogue ${index + 1} in Scene ${line.sceneNumber}`}
+      >{line.text || "(empty dialogue)"}</button>)}
     </div>)}
   </EntityDetails>)}</div>;
 }
 
-function PropsTab({ analysis, workspace, onWorkspace }: InspectorProps) {
+function PropsTab({ analysis, workspace, onWorkspace, activeDocumentId, onOpenScriptTarget }: InspectorProps) {
   const objects = analysis.entities.objects;
   const [manualName, setManualName] = useState("");
   const [manualCategory, setManualCategory] = useState("prop");
@@ -618,11 +1172,33 @@ function PropsTab({ analysis, workspace, onWorkspace }: InspectorProps) {
     {!!object.associations.length && <p className="insp-card-desc">Associations: {object.associations.map((item) => `${item.character} (${item.reason})`).join(", ")}</p>}
     <EntityNote entityId={object.id} workspace={workspace} onWorkspace={onWorkspace} />
     <EntityControls kind="object" entity={object} peers={objects} workspace={workspace} onWorkspace={onWorkspace} />
-    <details><summary className="link-btn">Continuity ({object.continuity.length})</summary>{object.continuity.map((entry) => <p key={entry.blockId} className="insp-card-desc"><strong>Scene {entry.sceneNumber}:</strong> {entry.excerpt}{entry.ownershipCharacters.length ? ` · owner signal: ${entry.ownershipCharacters.join(", ")}` : ""}</p>)}</details>
+    <details><summary className="link-btn">Continuity ({object.continuity.length})</summary>{object.continuity.map((entry) => <div key={entry.blockId} className="script-reference-row">
+      <p className="insp-card-desc"><strong>Scene {entry.sceneNumber}:</strong> {entry.excerpt}{entry.ownershipCharacters.length ? ` · owner signal: ${entry.ownershipCharacters.join(", ")}` : ""}</p>
+      <div className="script-reference-actions" aria-label={`${object.name} occurrences in Scene ${entry.sceneNumber}`}>
+        {entry.occurrences.map((occurrence) => <button
+          type="button"
+          className="link-btn script-reference-link"
+          key={`${entry.blockId}-${occurrence.startOffset}-${occurrence.endOffset}`}
+          onClick={() => onOpenScriptTarget(scriptTarget(activeDocumentId, entry.sceneId, entry.blockId, occurrence, "object-continuity", `Open ${object.name} continuity occurrence`))}
+          aria-label={`Open ${object.name} occurrence ${occurrence.occurrence + 1} in Scene ${entry.sceneNumber}`}
+        >{occurrence.matchedText} · occurrence {occurrence.occurrence + 1}</button>)}
+      </div>
+    </div>)}</details>
   </details>)}</div>;
 }
 
-function PlacesTab({ analysis, workspace, onWorkspace, entityFocusRequest }: InspectorProps) {
+function scriptTarget(
+  documentId: string,
+  sceneId: string,
+  blockId: string,
+  occurrence: { startOffset: number; endOffset: number; matchedText: string; occurrence: number },
+  source: ScriptTarget["source"],
+  reason: string,
+): ScriptTarget {
+  return { documentId, sceneId, blockId, ...occurrence, source, reason };
+}
+
+function PlacesTab({ analysis, workspace, onWorkspace, entityFocusRequest, activeDocumentId, onOpenScriptTarget }: InspectorProps) {
   const locations = analysis.entities.locations;
   if (!locations.length) return <Hint>No locations detected.</Hint>;
   return <div className="insp-stack"><Hint>Location sheets normalize repeated headings while preserving aliases and usage details.</Hint>{locations.map((location) => <EntityDetails key={location.id} entityId={location.id} focused={entityFocusRequest?.kind === "location" && entityFocusRequest.id === location.id} defaultOpen={locations.length <= 3 && location.status !== "rejected"} summary={<>{location.name} <small>· {location.status}</small></>}>
@@ -631,7 +1207,12 @@ function PlacesTab({ analysis, workspace, onWorkspace, entityFocusRequest }: Ins
     <EntityNote entityId={location.id} workspace={workspace} onWorkspace={onWorkspace} />
     <EntityControls kind="location" entity={location} peers={locations} workspace={workspace} onWorkspace={onWorkspace} />
     <h4>Scene appearances</h4>
-    {location.appearances.map((entry) => <p key={entry.sceneId} className="insp-card-desc"><strong>Scene {entry.sceneNumber}:</strong> {entry.heading}</p>)}
+    {location.appearances.map((entry) => <p key={entry.sceneId} className="insp-card-desc"><strong>Scene {entry.sceneNumber}:</strong>{" "}<button
+      type="button"
+      className="link-btn script-reference-link"
+      onClick={() => onOpenScriptTarget(scriptTarget(activeDocumentId, entry.sceneId, entry.blockId, entry, "location-appearance", `Open ${location.name} location appearance`))}
+      aria-label={`Open ${location.name} appearance in Scene ${entry.sceneNumber}`}
+    >{entry.heading}</button></p>)}
   </EntityDetails>)}</div>;
 }
 
@@ -791,8 +1372,23 @@ const PRODUCTION_CATEGORY_LABELS: Record<ProductionCategory, string> = {
   highComplexityScenes: "High-complexity scenes",
 };
 
-function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown, onOpenEntityBreakdown }: InspectorProps) {
+const BREAKDOWN_SECTION_IDS = Object.keys(DEFAULT_BREAKDOWN_SECTION_STATE) as BreakdownSectionId[];
+
+function BreakdownTab({
+  analysis,
+  workspace,
+  onWorkspace,
+  onExportBreakdown,
+  onOpenEntityBreakdown,
+  activeDocumentId,
+  onOpenScriptTarget,
+  breakdownSections,
+  onBreakdownSectionsChange,
+  onResetBreakdownSections,
+  editable,
+}: InspectorProps) {
   const [csvSection, setCsvSection] = useState<AnalysisCsvSection>("all");
+  const [bulkMessage, setBulkMessage] = useState("");
   const threads = workspace.plotThreads ?? [];
   const updateThread = (id: string, patch: Partial<(typeof threads)[number]>) => onWorkspace({ plotThreads: threads.map((thread) => thread.id === id ? { ...thread, ...patch } : thread) });
   const toggleThreadTarget = (id: string, field: "sceneIds" | "beatIds", targetId: string) => {
@@ -803,44 +1399,106 @@ function BreakdownTab({ analysis, workspace, onWorkspace, onExportBreakdown, onO
   };
   const resolvedBeatIds = workspace.resolvedBeatIds ?? [];
   const productionEntries = Object.entries(analysis.production) as [ProductionCategory, (typeof analysis.production)[ProductionCategory]][];
+  const characterCount = analysis.entities.characters.filter((item) => item.status !== "rejected" && item.status !== "merged").length;
+  const locationCount = analysis.entities.locations.filter((item) => item.status !== "rejected" && item.status !== "merged").length;
+  const openThreadCount = threads.filter((thread) => !thread.resolved).length;
+  const productionCueCount = productionEntries.reduce((total, [, rows]) => total + rows.length, 0);
   const facts: [string, string | number][] = [
     ["Scenes", analysis.scenes.length], ["Pages", `~${analysis.pageEstimate}`], ["Runtime", `~${analysis.episode.runtimeMinutes} min`], ["Words", analysis.wordCount],
-    ["Dialogue", `${analysis.dialogueWords} words (${Math.round(analysis.dialogueDensity * 100)}%)`], ["Characters", analysis.entities.characters.filter((item) => item.status !== "rejected" && item.status !== "merged").length],
-    ["Locations", analysis.entities.locations.filter((item) => item.status !== "rejected" && item.status !== "merged").length], ["Acts / sequences / beats", `${analysis.structure.acts.length} / ${analysis.structure.sequences.length} / ${analysis.structure.beats.length}`],
+    ["Dialogue", `${analysis.dialogueWords} words (${Math.round(analysis.dialogueDensity * 100)}%)`], ["Characters", characterCount],
+    ["Locations", locationCount], ["Acts / sequences / beats", `${analysis.structure.acts.length} / ${analysis.structure.sequences.length} / ${analysis.structure.beats.length}`],
   ];
+  const setSection = (id: BreakdownSectionId, open: boolean) => onBreakdownSectionsChange({ ...breakdownSections, [id]: open });
+  const setAllSections = (open: boolean) => {
+    onBreakdownSectionsChange(Object.fromEntries(BREAKDOWN_SECTION_IDS.map((id) => [id, open])) as BreakdownSectionState);
+    setBulkMessage(open ? "All breakdown sections expanded." : "All breakdown sections collapsed.");
+  };
+  const resetSections = () => {
+    onResetBreakdownSections();
+    setBulkMessage("Breakdown sections reset to their defaults.");
+  };
   return <div className="insp-stack">
-    <dl className="insp-facts">{facts.map(([label, value]) => <div className="fact-row" key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-    <p className="insp-card-desc">{analysis.episode.summary}</p>
-    <h4>Plot threads</h4>
-    <button className="btn" onClick={() => onWorkspace({ plotThreads: [...threads, { id: `thread-${crypto.randomUUID()}`, label: "New thread", keywords: [], sceneIds: [], beatIds: [], resolved: false }] })}>Add Plot Thread</button>
-    {threads.map((thread) => <div className="insp-card" key={thread.id}>
-      <input aria-label="Plot thread name" className="insp-notes-input" value={thread.label} onChange={(event) => updateThread(thread.id, { label: event.target.value })} />
-      <input aria-label="Plot thread keywords" className="insp-notes-input" value={(thread.keywords ?? []).join(", ")} placeholder="Keywords, comma separated" onChange={(event) => updateThread(thread.id, { keywords: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} />
-      <label className="check-row"><input type="checkbox" checked={thread.resolved ?? false} onChange={(event) => updateThread(thread.id, { resolved: event.target.checked })} /> Resolved</label>
-      <details><summary className="link-btn">Link scenes and beats</summary>{analysis.scenes.map((scene) => <label className="check-row" key={scene.id}><input type="checkbox" checked={thread.sceneIds?.includes(scene.id) ?? false} onChange={() => toggleThreadTarget(thread.id, "sceneIds", scene.id)} /> Scene {scene.number}: {scene.heading}</label>)}{analysis.structure.beats.map((beat) => <label className="check-row" key={beat.id}><input type="checkbox" checked={thread.beatIds?.includes(beat.id) ?? false} onChange={() => toggleThreadTarget(thread.id, "beatIds", beat.id)} /> Beat: {beat.text}</label>)}</details>
-      <button className="link-btn" onClick={() => onWorkspace({ plotThreads: threads.filter((item) => item.id !== thread.id) })}>Remove</button>
-    </div>)}
-    {!!analysis.plotThreads.length && <ul className="insp-list">{analysis.plotThreads.map((thread) => <li key={thread.id}>{thread.label}: {thread.status}{thread.resolved ? " · resolved" : ""}</li>)}</ul>}
-    <h4>Structure and coverage</h4>
-    {analysis.structure.acts.map((act) => <div className="insp-card" key={act.id}><div className="insp-card-title">{act.title}</div><div className="insp-card-meta">{act.sceneCount} scenes · ~{act.estimatedPages} pages</div><p className="insp-card-desc">{act.summary}</p></div>)}
-    {!!analysis.treatmentCoverage.length && <><h4>Treatment coverage</h4><ul className="insp-list">{analysis.treatmentCoverage.map((item) => <li key={item.id}>{item.label}: {item.status}</li>)}</ul></>}
-    {!!analysis.unresolvedBeats.length && <><h4>Unresolved beats</h4>{analysis.unresolvedBeats.map((beat) => <div className="insp-card" key={beat.id}><div className="insp-card-desc">{beat.text}</div><button className="btn btn-ghost" onClick={() => onWorkspace({ resolvedBeatIds: [...resolvedBeatIds, beat.id] })}>Mark resolved</button></div>)}</>}
-    {!!analysis.characterArcs.length && <details><summary className="insp-card-title">Character arcs</summary>{analysis.characterArcs.map((arc) => <p className="insp-card-desc" key={arc.character}><strong>{arc.character}:</strong> {arc.summary}</p>)}</details>}
-    {!!analysis.pacingWarnings.length && <><h4>Pacing checks</h4><ul className="insp-list">{analysis.pacingWarnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{warning.message}</li>)}</ul></>}
-    <h4>Production reports</h4>
-    {productionEntries.map(([category, rows]) => <details className="insp-card" key={category}><summary className="insp-card-title">{PRODUCTION_CATEGORY_LABELS[category]} ({rows.length})</summary>{rows.map((row, index) => {
-      const entityKind = category === "cast" ? "character" : category === "locations" ? "location" : null;
-      return <p className="insp-card-desc" key={`${row.sceneId}-${row.item}-${index}`}>
-        {entityKind && row.entityId
-          ? <button className="link-btn" data-entity-id={row.entityId} onClick={() => onOpenEntityBreakdown(entityKind, row.entityId!)}>{row.item}</button>
-          : <strong>Scene {row.sceneNumber} · {row.item}</strong>}
-        {": "}{row.evidence}
-      </p>;
-    })}</details>)}
-    <h4>Detailed scenes</h4>
-    {analysis.scenes.map((scene) => <details className="insp-card" key={scene.id}><summary className="insp-card-title">Scene {scene.sceneNumber ?? scene.number} · {scene.heading}</summary><div className="insp-card-meta">~{scene.estimatedPages} pages · {scene.dialogueWords} dialogue words · complexity {scene.complexityScore}/5</div><p className="insp-card-desc">Cast: {scene.characters.join(", ") || "-"}<br />Objects: {scene.objects.join(", ") || "-"}</p></details>)}
-    <h4>Export</h4>
-    <div className="btn-row"><button className="btn btn-ghost" onClick={() => onExportBreakdown("md")}>Markdown</button><select aria-label="CSV report" className="element-select" value={csvSection} onChange={(event) => setCsvSection(event.target.value as AnalysisCsvSection)}>{(["all", "summary", "scenes", "characters", "locations", "objects", "structure", "arcs", "coverage", "warnings", "revision", "production"] as const).map((section) => <option key={section} value={section}>{section}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportBreakdown("csv", csvSection)}>CSV</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("json")}>JSON</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("pdf")}>Print PDF</button></div>
+    <div className="breakdown-disclosure-toolbar" role="group" aria-label="Breakdown section controls">
+      <button type="button" className="btn btn-ghost" onClick={() => setAllSections(true)}>Expand All</button>
+      <button type="button" className="btn btn-ghost" onClick={() => setAllSections(false)}>Collapse All</button>
+      <button type="button" className="link-btn" onClick={resetSections}>Reset Sections</button>
+      <span className="sr-only" role="status" aria-live="polite">{bulkMessage}</span>
+    </div>
+
+    <CollapsibleSection id="breakdown-overview" title="Overview" summary={`${analysis.scenes.length} scenes · ~${analysis.pageEstimate} pages`} open={breakdownSections.overview} onOpenChange={(open) => setSection("overview", open)}>
+      <dl className="insp-facts">{facts.map(([label, value]) => <div className="fact-row" key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+      <p className="insp-card-desc">{analysis.episode.summary}</p>
+    </CollapsibleSection>
+
+    <CollapsibleSection id="breakdown-plot-threads" title={`Plot threads (${threads.length})`} summary={openThreadCount ? `${openThreadCount} open` : "Clear"} summaryTone={openThreadCount ? "warning" : "success"} open={breakdownSections["plot-threads"]} onOpenChange={(open) => setSection("plot-threads", open)}>
+      <button className="btn" disabled={!editable} onClick={() => onWorkspace({ plotThreads: [...threads, { id: `thread-${crypto.randomUUID()}`, label: "New thread", keywords: [], sceneIds: [], beatIds: [], resolved: false }] })}>Add Plot Thread</button>
+      {!threads.length && <Hint>No plot threads yet.</Hint>}
+      {threads.map((thread) => <div className="insp-card" key={thread.id}>
+        <input disabled={!editable} aria-label="Plot thread name" className="insp-notes-input" value={thread.label} onChange={(event) => updateThread(thread.id, { label: event.target.value })} />
+        <input disabled={!editable} aria-label="Plot thread keywords" className="insp-notes-input" value={(thread.keywords ?? []).join(", ")} placeholder="Keywords, comma separated" onChange={(event) => updateThread(thread.id, { keywords: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} />
+        <label className="check-row"><input disabled={!editable} type="checkbox" checked={thread.resolved ?? false} onChange={(event) => updateThread(thread.id, { resolved: event.target.checked })} /> Resolved</label>
+        <details><summary className="link-btn">Link scenes and beats</summary>{analysis.scenes.map((scene) => <label className="check-row" key={scene.id}><input disabled={!editable} type="checkbox" checked={thread.sceneIds?.includes(scene.id) ?? false} onChange={() => toggleThreadTarget(thread.id, "sceneIds", scene.id)} /> Scene {scene.number}: {scene.heading}</label>)}{analysis.structure.beats.map((beat) => <label className="check-row" key={beat.id}><input disabled={!editable} type="checkbox" checked={thread.beatIds?.includes(beat.id) ?? false} onChange={() => toggleThreadTarget(thread.id, "beatIds", beat.id)} /> Beat: {beat.text}</label>)}</details>
+        <button className="link-btn" disabled={!editable} onClick={() => onWorkspace({ plotThreads: threads.filter((item) => item.id !== thread.id) })}>Remove</button>
+      </div>)}
+      {!!analysis.plotThreads.length && <ul className="insp-list">{analysis.plotThreads.map((thread) => <li key={thread.id}>{thread.label}: {thread.status}{thread.resolved ? " · resolved" : ""}</li>)}</ul>}
+    </CollapsibleSection>
+
+    <CollapsibleSection id="breakdown-structure" title="Structure and coverage" summary={`${analysis.structure.acts.length} acts · ${analysis.structure.sequences.length} sequences`} open={breakdownSections["structure-coverage"]} onOpenChange={(open) => setSection("structure-coverage", open)}>
+      {analysis.structure.acts.map((act) => <div className="insp-card" key={act.id}><div className="insp-card-title">{act.title}</div><div className="insp-card-meta">{act.sceneCount} scenes · ~{act.estimatedPages} pages</div><p className="insp-card-desc">{act.summary}</p></div>)}
+      {!analysis.structure.acts.length && <Hint>No act structure is available.</Hint>}
+    </CollapsibleSection>
+
+    <CollapsibleSection id="breakdown-treatment" title={`Treatment coverage (${analysis.treatmentCoverage.length})`} summary={analysis.treatmentCoverage.length ? "Tracked" : "Empty"} open={breakdownSections["treatment-coverage"]} onOpenChange={(open) => setSection("treatment-coverage", open)}>
+      {analysis.treatmentCoverage.length ? <ul className="insp-list">{analysis.treatmentCoverage.map((item) => <li key={item.id}>{item.label}: {item.status}</li>)}</ul> : <Hint>No treatment coverage is available.</Hint>}
+    </CollapsibleSection>
+
+    <CollapsibleSection id="breakdown-unresolved" title={`Unresolved beats (${analysis.unresolvedBeats.length})`} summary={analysis.unresolvedBeats.length ? "Action needed" : "Clear"} summaryTone={analysis.unresolvedBeats.length ? "warning" : "success"} open={breakdownSections["unresolved-beats"]} onOpenChange={(open) => setSection("unresolved-beats", open)}>
+      {analysis.unresolvedBeats.length ? analysis.unresolvedBeats.map((beat) => <div className="insp-card" key={beat.id}><div className="insp-card-desc">{beat.text}</div><button className="btn btn-ghost" disabled={!editable} onClick={() => onWorkspace({ resolvedBeatIds: [...resolvedBeatIds, beat.id] })}>Mark resolved</button></div>) : <Hint>No unresolved beats.</Hint>}
+    </CollapsibleSection>
+
+    <CollapsibleSection id="breakdown-character-arcs" title={`Character arcs (${analysis.characterArcs.length})`} summary={`${characterCount} characters`} open={breakdownSections["character-arcs"]} onOpenChange={(open) => setSection("character-arcs", open)}>
+      {analysis.characterArcs.length ? analysis.characterArcs.map((arc) => <p className="insp-card-desc" key={arc.character}><strong>{arc.character}:</strong> {arc.summary}</p>) : <Hint>No character arcs detected.</Hint>}
+    </CollapsibleSection>
+
+    <CollapsibleSection id="breakdown-pacing" title={`Pacing checks (${analysis.pacingWarnings.length})`} summary={analysis.pacingWarnings.length ? "Warning" : "Clear"} summaryTone={analysis.pacingWarnings.length ? "warning" : "success"} open={breakdownSections["pacing-checks"]} onOpenChange={(open) => setSection("pacing-checks", open)}>
+      {analysis.pacingWarnings.length ? <ul className="insp-list">{analysis.pacingWarnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{warning.message}</li>)}</ul> : <Hint>No pacing warnings.</Hint>}
+    </CollapsibleSection>
+
+    <CollapsibleSection id="breakdown-production" title="Production reports" summary={`${productionCueCount} cues · ${locationCount} locations`} open={breakdownSections["production-reports"]} onOpenChange={(open) => setSection("production-reports", open)}>
+      {productionEntries.map(([category, rows]) => <details className="insp-card" key={category}><summary className="insp-card-title">{PRODUCTION_CATEGORY_LABELS[category]} ({rows.length})</summary>{rows.map((row, index) => {
+        const entityKind = category === "cast" ? "character" : category === "locations" ? "location" : null;
+        const object = row.entityId ? analysis.entities.objects.find((item) => item.id === row.entityId) : undefined;
+        const references = object?.continuity.filter((entry) => entry.sceneId === row.sceneId) ?? [];
+        const targets = references.length
+          ? references.flatMap((entry) => entry.occurrences.map((occurrence) => ({ blockId: entry.blockId, ...occurrence })))
+          : row.occurrences ?? [];
+        return <div className="script-reference-row" key={`${row.sceneId}-${row.item}-${index}`}>
+          <p className="insp-card-desc">
+            {entityKind && row.entityId
+              ? <button className="link-btn" data-entity-id={row.entityId} onClick={() => onOpenEntityBreakdown(entityKind, row.entityId!)}>{row.item}</button>
+              : <strong>Scene {row.sceneNumber} · {row.item}</strong>}
+            {": "}{row.evidence}
+          </p>
+          {!!targets.length && <div className="script-reference-actions" aria-label={`${row.item} production evidence in Scene ${row.sceneNumber}`}>{targets.map((occurrence, occurrenceIndex) => <button
+            type="button"
+            className="link-btn script-reference-link"
+            key={`${occurrence.blockId}-${occurrence.startOffset}-${occurrence.endOffset}`}
+            onClick={() => onOpenScriptTarget(scriptTarget(activeDocumentId, row.sceneId, occurrence.blockId, occurrence, "production-evidence", `Open ${row.item} production evidence`))}
+            aria-label={object
+              ? `Open ${row.item} occurrence ${occurrence.occurrence + 1} in Scene ${row.sceneNumber}`
+              : `Open ${row.item} production evidence ${occurrenceIndex + 1} in Scene ${row.sceneNumber}`}
+          >{occurrence.matchedText} · {object ? `occurrence ${occurrence.occurrence + 1}` : `evidence ${occurrenceIndex + 1}`}</button>)}</div>}
+        </div>;
+      })}</details>)}
+    </CollapsibleSection>
+
+    <CollapsibleSection id="breakdown-scenes" title={`Detailed scenes (${analysis.scenes.length})`} summary={`~${analysis.pageEstimate} pages`} open={breakdownSections["detailed-scenes"]} onOpenChange={(open) => setSection("detailed-scenes", open)}>
+      {analysis.scenes.map((scene) => <details className="insp-card" key={scene.id}><summary className="insp-card-title">Scene {scene.sceneNumber ?? scene.number} · {scene.heading}</summary><div className="insp-card-meta">~{scene.estimatedPages} pages · {scene.dialogueWords} dialogue words · complexity {scene.complexityScore}/5</div><p className="insp-card-desc">Cast: {scene.characters.join(", ") || "-"}<br />Objects: {scene.objects.join(", ") || "-"}</p></details>)}
+    </CollapsibleSection>
+
+    <CollapsibleSection id="breakdown-export" title="Export" summary="Markdown · CSV · JSON · PDF" open={breakdownSections.export} onOpenChange={(open) => setSection("export", open)}>
+      <div className="btn-row"><button className="btn btn-ghost" onClick={() => onExportBreakdown("md")}>Markdown</button><select aria-label="CSV report" className="element-select" value={csvSection} onChange={(event) => setCsvSection(event.target.value as AnalysisCsvSection)}>{(["all", "summary", "scenes", "characters", "locations", "objects", "structure", "arcs", "coverage", "warnings", "revision", "production"] as const).map((section) => <option key={section} value={section}>{section}</option>)}</select><button className="btn btn-ghost" onClick={() => onExportBreakdown("csv", csvSection)}>CSV</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("json")}>JSON</button><button className="btn btn-ghost" onClick={() => onExportBreakdown("pdf")}>Print PDF</button></div>
+    </CollapsibleSection>
   </div>;
 }
 

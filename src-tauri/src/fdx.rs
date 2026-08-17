@@ -49,10 +49,22 @@ pub struct ScreenplayBlock {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct TitlePage {
     pub title: String,
     pub author: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub credit: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub draft_date: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub contact: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub copyright: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub notes: String,
     pub blocks: Vec<TitlePageBlock>,
 }
 
@@ -62,6 +74,9 @@ pub struct TitlePageBlock {
     #[serde(rename = "type")]
     pub block_type: String,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_runs: Vec<TextRun>,
+    #[serde(default)]
     pub metadata: Metadata,
 }
 
@@ -442,6 +457,18 @@ pub fn parse(xml: &[u8], path: &Path) -> Result<ScreenplayDocument, String> {
                     );
                 }
             }
+            Ok(Event::GeneralRef(reference)) => {
+                if let Some(current) = run.as_mut() {
+                    let name = reference
+                        .decode()
+                        .map_err(|e| format!("FDX entity reference could not be decoded: {e}"))?;
+                    let encoded = format!("&{name};");
+                    current.text.push_str(
+                        &quick_xml::escape::unescape(&encoded)
+                            .map_err(|e| format!("FDX entity reference is invalid: {e}"))?,
+                    );
+                }
+            }
             Ok(Event::End(tag)) => {
                 match tag.name().as_ref() {
                     b"Text" => {
@@ -506,7 +533,6 @@ pub fn parse(xml: &[u8], path: &Path) -> Result<ScreenplayDocument, String> {
     } else {
         title_page.title.clone()
     };
-    title_page.title = title.clone();
     let (scenes, characters, locations) = derive_structure(&mut blocks, &mut warnings);
     for beat in &mut beats {
         beat.board = board_rects.remove(&beat.id);
@@ -562,6 +588,37 @@ pub fn parse(xml: &[u8], path: &Path) -> Result<ScreenplayDocument, String> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum TitlePageField {
+    Title,
+    Credit,
+    Author,
+    Source,
+    DraftDate,
+    Contact,
+    Copyright,
+    Notes,
+}
+
+fn canonical_title_page_field(value: &str) -> Option<TitlePageField> {
+    let key = value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    match key.as_str() {
+        "title" => Some(TitlePageField::Title),
+        "credit" => Some(TitlePageField::Credit),
+        "author" | "authors" | "writtenby" => Some(TitlePageField::Author),
+        "source" => Some(TitlePageField::Source),
+        "draftdate" => Some(TitlePageField::DraftDate),
+        "contact" | "contactinfo" | "contactinformation" => Some(TitlePageField::Contact),
+        "copyright" => Some(TitlePageField::Copyright),
+        "note" | "notes" => Some(TitlePageField::Notes),
+        _ => None,
+    }
+}
+
 fn finish_paragraph(
     paragraph: Paragraph,
     title_page: &mut TitlePage,
@@ -577,18 +634,42 @@ fn finish_paragraph(
         .map(|run| run.text.as_str())
         .collect::<String>();
     if paragraph.target == ParagraphTarget::TitlePage || paragraph.in_title_page {
-        if paragraph.original_type.eq_ignore_ascii_case("Title") && title_page.title.is_empty() {
-            title_page.title = text.trim().to_string();
-        } else if matches!(
-            paragraph.original_type.to_ascii_lowercase().as_str(),
-            "author" | "written by"
-        ) && title_page.author.is_empty()
-        {
-            title_page.author = text.trim().to_string();
+        let canonical = canonical_title_page_field(&paragraph.original_type);
+        let imported_type = paragraph.attrs.get("Type").cloned().unwrap_or_default();
+        let value = text.trim();
+        if !value.is_empty() {
+            match canonical {
+                Some(TitlePageField::Title) if title_page.title.is_empty() => {
+                    title_page.title = value.to_string()
+                }
+                Some(TitlePageField::Author) if title_page.author.is_empty() => {
+                    title_page.author = value.to_string()
+                }
+                Some(TitlePageField::Credit) if title_page.credit.is_empty() => {
+                    title_page.credit = value.to_string()
+                }
+                Some(TitlePageField::Source) if title_page.source.is_empty() => {
+                    title_page.source = value.to_string()
+                }
+                Some(TitlePageField::DraftDate) if title_page.draft_date.is_empty() => {
+                    title_page.draft_date = value.to_string()
+                }
+                Some(TitlePageField::Contact) if title_page.contact.is_empty() => {
+                    title_page.contact = value.to_string()
+                }
+                Some(TitlePageField::Copyright) if title_page.copyright.is_empty() => {
+                    title_page.copyright = value.to_string()
+                }
+                Some(TitlePageField::Notes) if title_page.notes.is_empty() => {
+                    title_page.notes = value.to_string()
+                }
+                _ => {}
+            }
         }
         title_page.blocks.push(TitlePageBlock {
-            block_type: paragraph.original_type,
+            block_type: imported_type,
             text,
+            text_runs: paragraph.runs,
             metadata: paragraph.attrs,
         });
         return;
@@ -1256,6 +1337,100 @@ mod tests {
         assert_eq!(
             block.text_runs[1].metadata.get("Style").map(String::as_str),
             Some("Underline+Strikeout")
+        );
+    }
+
+    #[test]
+    fn rich_title_page_preserves_order_fields_runs_and_vendor_attributes() {
+        let doc = parse(
+            &fixture("title-page-rich.fdx"),
+            Path::new("title-page-rich.fdx"),
+        )
+        .unwrap();
+        let page = &doc.title_page;
+        assert_eq!(page.title, "THE CLOCKWORK HORIZON");
+        assert_eq!(page.author, "Ada Example & Ben Sample");
+        assert_eq!(page.credit, "an original screenplay");
+        assert_eq!(page.source, "Inspired by wholly synthetic events");
+        assert_eq!(page.draft_date, "August 17, 2026");
+        assert_eq!(page.contact, "Example Pictures\nwriter@example.test");
+        assert_eq!(page.copyright, "Copyright 2026 Example Pictures");
+        assert_eq!(page.notes, "");
+        assert_eq!(page.blocks.len(), 13);
+        assert_eq!(
+            page.blocks
+                .iter()
+                .map(|block| block.block_type.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Title",
+                "Credit",
+                "Authors",
+                "Author",
+                "Written By",
+                "Source",
+                "Draft Date",
+                "Contact",
+                "Copyright",
+                "Notes",
+                "Custom Dedication",
+                "",
+                "Empty Optional",
+            ]
+        );
+        assert_eq!(page.blocks[0].text_runs.len(), 2);
+        assert!(page.blocks[0].text_runs[0].bold);
+        assert!(page.blocks[0].text_runs[1].italic);
+        assert_eq!(
+            page.blocks[0].text_runs[1].revision_id.as_deref(),
+            Some("7")
+        );
+        assert_eq!(
+            page.blocks[7]
+                .metadata
+                .get("VendorContactLayout")
+                .map(String::as_str),
+            Some("stacked")
+        );
+        assert_eq!(page.blocks[9].text, "");
+        assert_eq!(page.blocks[11].text, "Untyped vendor content");
+        assert_eq!(
+            page.blocks[11]
+                .metadata
+                .get("VendorNoType")
+                .map(String::as_str),
+            Some("yes")
+        );
+        assert_eq!(page.blocks[12].text_runs.len(), 0);
+        assert_eq!(
+            page.blocks[10]
+                .metadata
+                .get("VendorFlag")
+                .map(String::as_str),
+            Some("preserve-me")
+        );
+    }
+
+    #[test]
+    fn filename_fallback_does_not_invent_imported_title_page_content() {
+        let doc = parse(&fixture("empty.fdx"), Path::new("fallback-name.fdx")).unwrap();
+        assert_eq!(doc.title, "fallback-name");
+        assert_eq!(doc.title_page.title, "");
+        assert!(doc.title_page.blocks.is_empty());
+    }
+
+    #[test]
+    fn legacy_title_page_json_defaults_new_fields_and_text_runs() {
+        let page: TitlePage = serde_json::from_str(
+            r#"{"title":"Legacy","author":"Writer","blocks":[{"type":"Contact","text":"old@example.test","metadata":{"Align":"Center"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(page.title, "Legacy");
+        assert_eq!(page.credit, "");
+        assert!(page.blocks[0].text_runs.is_empty());
+        assert_eq!(
+            page.blocks[0].metadata.get("Align").map(String::as_str),
+            Some("Center")
         );
     }
 
