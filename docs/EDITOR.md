@@ -23,7 +23,7 @@ The full key reference is in `docs/KEYBOARD_SHORTCUTS.md`.
 
 ## Fountain source
 
-The toolbar's Formatted / Fountain Source switch exposes the whole document as Fountain-inspired text; returning to Formatted re-parses it while preserving development metadata.
+The toolbar's Formatted / Fountain Source switch exposes the whole document as Fountain-inspired text; returning to Formatted re-parses it while preserving development metadata. Source text, selection, and mode are window/document-local until the buffer is submitted. A native window waits for coordinator acknowledgement before switching documents, returning to Formatted, following an import warning, or closing. If the accepted screenplay and the local buffer both changed, SCS keeps both complete texts and asks **Use accepted draft** or **Keep my source** instead of guessing a merge. If another window removed that screenplay, the orphaned buffer becomes read-only and can be downloaded before it is explicitly discarded.
 
 ## Current limitations
 

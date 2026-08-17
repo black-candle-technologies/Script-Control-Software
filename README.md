@@ -5,14 +5,17 @@ SCS is a local-first desktop workspace for screenwriting and film/television dev
 ## What works
 
 - Tauri 2 + React/TypeScript + Rust desktop app.
-- Editable FDX import, clean FDX export, Fountain source/export, and print-to-PDF.
+- Editable FDX import, clean FDX export, Fountain source/export, print-to-PDF, and rich title pages that retain ordered, duplicate, custom, styled, and positioned FDX paragraphs where the target format permits.
 - Screenplay keyboard flow, undo/redo, element switching, completion, smart uppercase, and visible page boundaries.
-- Drag-reorderable scenes with act/sequence/scene/beat hierarchy, summaries, tags, status, notes, and Markdown treatments.
+- Drag-reorderable scenes with precise before/after/empty/unassigned previews, keyboard move commands, an accessible Act/Sequence/Scene/Beat tree, selected-scene beat creation, inline beat editing, summaries, tags, status, notes, and Markdown treatments. Outline moves do not rewrite the screenplay until **Make Draft Match Outline** is chosen.
 - Deterministic character, location, object, production-category, dialogue, pacing, and shooting-complexity analysis.
 - Whole-project/episode/season/show-bible snapshots, Alternate Draft branches, milestones, scoped restore, readable semantic comparisons, and previewed per-conflict three-way merges.
 - Feature and television projects with episode tabs, shared cast/locations, show bible, season arcs, and continuity notes.
 - Revision colors, locked-page records, omitted scenes, draft labels, department notes, and Markdown/CSV/JSON/PDF report output.
-- A mode-based shell (Write, Outline, Treatment, Reference, Series, Breakdown, Drafts, Team, Companion) with a hierarchical scene navigator, contextual inspector, focus mode, targeted draft/episode/entity/bible/arc/history/timeline references, project-wide search, command palette, and customizable shortcuts.
+- A mode-based shell (Write, Outline, Treatment, Reference, Series, Breakdown, Drafts, Team, Companion) with generic screenplay tabs, a hierarchical scene navigator, contextual inspector, focus mode, targeted draft/episode/entity/bible/arc/history/timeline references, project-wide search, command palette, and customizable shortcuts.
+- Collapsible Breakdown reports with per-project/document device-local disclosure state, plus exact object, character, location, production, warning, and search links that activate the correct screenplay and highlight the intended occurrence without changing script text or undo history.
+- Built-in mode presets plus validated custom nested dock layouts, hidden/floating panel recovery, a Window/Layout manager, and native Tauri workspace windows coordinated through one revisioned project session. Logical saved layouts are portable; open tabs, active mode/layout, and editor selections persist locally, while physical window placement is currently live native state rather than restart-restored project data.
+- A single font-independent SVG `BrandMark` is shared by the launcher, loading state, title bar, and public icon asset; redundant marks are decorative while product names remain accessible.
 - Linked-FDX watch folders, external-editor handoff, two-sided change detection, metadata-preserving re-import, and Companion mode.
 - Nine collaboration roles, scoped comments/suggestions, version approvals, writer-room tasks, provider-folder sync, per-conflict merge choices, and optional safe HTTPS Git sync.
 - Portable `.scs` folders with crash-recoverable, stale-write-protected manifests, open screenplay fallbacks, and machine-local recovery.
@@ -29,11 +32,20 @@ pnpm tauri dev
 Verification:
 
 ```sh
+pnpm install --frozen-lockfile
 pnpm check
+pnpm lint
+pnpm test
+pnpm exec playwright install chromium
 pnpm test:e2e
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 pnpm build
 ```
+
+For a release, also attempt `pnpm tauri build --debug` and perform the native multi-window checklist in [docs/TESTING.md](docs/TESTING.md). Chromium tests and Rust unit tests do not by themselves prove OS windows, native capabilities, file dialogs, monitor placement, or external-editor handoff.
 
 ## Portable project format
 
