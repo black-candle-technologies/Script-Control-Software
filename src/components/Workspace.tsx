@@ -147,6 +147,7 @@ import { saveSession } from "../storage.ts";
 import { useCoordinatedSession, type CoordinatedSaveContext } from "../hooks/useCoordinatedSession.ts";
 import { useNativeInternalDrag } from "../hooks/useNativeInternalDrag.ts";
 import type { InternalDragSession } from "../services/nativeWorkspaceService.ts";
+import type { BeforeReplace } from "../services/fdxImportGate.ts";
 import {
   chooseAndParseFdx,
   chooseWatchFolder,
@@ -167,7 +168,7 @@ import { chooseAndImportTreatment, saveTreatmentExport, type TreatmentFileFormat
 
 interface WorkspaceProps {
   initialSession: ProjectSession;
-  onOpenFdx: (beforeReplace?: () => Promise<boolean>) => void;
+  onOpenFdx: (beforeReplace?: BeforeReplace) => void;
   onExit: () => void;
 }
 

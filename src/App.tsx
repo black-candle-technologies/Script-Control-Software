@@ -6,6 +6,7 @@ import { createProjectSession, defaultAppInfo, emptyDocument, type AppInfo, type
 import { sampleScreenplay } from "./domain/sample.ts";
 import { loadSession } from "./storage.ts";
 import { chooseAndOpenProject, chooseAndParseFdx, messageFrom } from "./services/fdxService.ts";
+import { passesBeforeReplace, type BeforeReplace } from "./services/fdxImportGate.ts";
 import { getCoordinatorSnapshot } from "./services/nativeWorkspaceService.ts";
 import { nativeWorkspaceAvailable, parseWorkspaceBootstrap } from "./services/workspaceIdentity.ts";
 import "./App.css";
@@ -59,14 +60,14 @@ function App() {
 
   const savedTitle = view === "launcher" ? loadSession()?.name || null : null;
 
-  const openFdx = async (beforeReplace?: () => Promise<boolean>) => {
+  const openFdx = async (beforeReplace?: BeforeReplace) => {
     if (!confirmProjectReplacement(Boolean(session))) return;
     setImporting(true);
     setImportError(null);
     try {
       const imported = await chooseAndParseFdx();
       if (!imported) return;
-      if (beforeReplace && !(await beforeReplace())) return;
+      if (!(await passesBeforeReplace(beforeReplace))) return;
       setSession(createProjectSession(imported));
       setDocNonce((n) => n + 1);
       setView("write");

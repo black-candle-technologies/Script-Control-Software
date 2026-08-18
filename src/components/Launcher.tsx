@@ -59,7 +59,7 @@ export default function Launcher({ appInfo, savedTitle, onOpen, onOpenFdx, onOpe
                 <span>Open a portable scs.project.json folder.</span>
               </span>
             </button>
-            <button className="launcher-action" onClick={onOpenFdx} disabled={importing}>
+            <button className="launcher-action" onClick={() => onOpenFdx()} disabled={importing}>
               {importing ? <BrandMark size={18} loading decorative /> : <Icon name="companion" />}
               <span className="launcher-action-text">
                 <strong aria-live="polite">{importing ? "Importing…" : "Import Final Draft (FDX)"}</strong>
