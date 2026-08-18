@@ -32,7 +32,7 @@
 }
 
 .nav-sequence-label.nav-tree-branch:hover { background: var(--bg-hover); }
-.nav-sequence-label.nav-tree-branch > span { flex: 1; }
+.nav-sequence-label.nav-tree-branch > .nav-sequence-title { flex: 1; }
 
 .nav-tree-empty {
   padding: 0.32rem 0.45rem 0.4rem 1.3rem;

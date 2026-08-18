@@ -29,7 +29,12 @@ type IconName =
   | "check"
   | "back"
   | "sun"
-  | "moon";
+  | "moon"
+  | "act"
+  | "sequence"
+  | "scene"
+  | "window"
+  | "screenplay";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   write: <><path d="M11.3 2.7a1.7 1.7 0 0 1 2.4 2.4l-7.6 7.6-3.3.9.9-3.3z" /><path d="M9.8 4.2l2.4 2.4" /></>,
@@ -56,6 +61,11 @@ const PATHS: Record<IconName, React.ReactNode> = {
   back: <><path d="M9.8 3.5L5.3 8l4.5 4.5" /></>,
   sun: <><circle cx="8" cy="8" r="3" /><path d="M8 1.4v1.7" /><path d="M8 12.9v1.7" /><path d="M1.4 8h1.7" /><path d="M12.9 8h1.7" /><path d="M3.3 3.3l1.2 1.2" /><path d="M11.5 11.5l1.2 1.2" /><path d="M12.7 3.3l-1.2 1.2" /><path d="M4.5 11.5l-1.2 1.2" /></>,
   moon: <path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z" />,
+  act: <><path d="M8 1.9l5.6 2.9L8 7.7 2.4 4.8z" /><path d="M2.4 8L8 10.9 13.6 8" /><path d="M2.4 11.2L8 14.1l5.6-2.9" /></>,
+  sequence: <><path d="M2.2 4.4a1 1 0 0 1 1-1h2.5l1.3 1.6h5.8a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1h-9.6a1 1 0 0 1-1-1z" /></>,
+  scene: <><rect x="2.2" y="3.4" width="11.6" height="9.2" rx="1" /><path d="M2.2 6.4h11.6" /><path d="M5.6 3.4v3" /><path d="M9.4 3.4v3" /></>,
+  window: <><rect x="1.9" y="3" width="9.2" height="8.1" rx="1" /><path d="M1.9 5.6h9.2" /><path d="M5.6 13h7.5a1 1 0 0 0 1-1V5.9" /></>,
+  screenplay: <><path d="M3.6 2.2h6l3 3v8.6h-9z" /><path d="M9.6 2.2v3h3" /><path d="M5.8 8.2h4.4" /><path d="M5.8 10.6h2.9" /></>,
 };
 
 export default function Icon({ name, size = 16, ...rest }: { name: IconName; size?: number } & SVGProps<SVGSVGElement>) {

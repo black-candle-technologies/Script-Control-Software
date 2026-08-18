@@ -1,59 +1,326 @@
+/* ==========================================================================
+   Workspace chrome: screenplay tabs, dock layout, window menu, layout manager.
+
+   These surfaces are part of the same bevelled system as the rest of the app,
+   so they use the tokens declared in App.css and never their own colors.
+   ========================================================================== */
+
+/* ── Dock layout ─────────────────────────────────────────────────────────── */
 .dock-layout { position: relative; min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; }
 .dock-layout-root, .dock-split, .dock-split-child, .dock-tabs { min-width: 0; min-height: 0; width: 100%; height: 100%; }
 .dock-split { display: flex; }
 .dock-split-horizontal { flex-direction: row; }
 .dock-split-vertical { flex-direction: column; }
 .dock-split-child { flex: 0 1 auto; overflow: hidden; }
-.dock-divider { flex: 0 0 5px; background: color-mix(in srgb, var(--border, #888) 50%, transparent); position: relative; z-index: 2; }
+
+.dock-divider { flex: 0 0 5px; background: var(--bg-shell); box-shadow: var(--bevel-up-1); position: relative; z-index: 2; }
 .dock-divider-horizontal { cursor: col-resize; }
 .dock-divider-vertical { cursor: row-resize; }
-.dock-divider:focus-visible { outline: 2px solid var(--accent, #4e7fff); outline-offset: -1px; }
-.dock-tabs { display: grid; grid-template-rows: auto minmax(0, 1fr); border: 1px solid var(--border, #888); background: var(--panel, #fff); }
-.dock-tablist { display: flex; align-items: center; min-width: 0; overflow-x: auto; border-bottom: 1px solid var(--border, #888); }
-.dock-tablist > [role="tab"] { border: 0; border-right: 1px solid var(--border, #888); padding: .4rem .65rem; background: transparent; white-space: nowrap; }
-.dock-tablist > [role="tab"][aria-selected="true"] { background: var(--surface, #eee); box-shadow: inset 0 -2px var(--accent, #4e7fff); }
-.dock-tab-actions { display: flex; gap: .25rem; margin-inline-start: auto; padding-inline: .25rem; }
+.dock-divider:hover { background: var(--bg-raised); }
+.dock-divider:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.dock-tabs { display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--bg-panel); box-shadow: var(--bevel-up-1); }
+.dock-tablist {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  height: 30px;
+  background: var(--bg-shell);
+  border-bottom: 1px solid var(--line);
+}
+.dock-tablist > [role="tab"] {
+  position: relative;
+  padding: 0 0.7rem;
+  font: 600 12px/1 var(--font-ui);
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--speed), color var(--speed);
+}
+.dock-tablist > [role="tab"]:hover { color: var(--text-1); background: var(--bg-hover); }
+.dock-tablist > [role="tab"][aria-selected="true"] {
+  color: var(--text-1);
+  background-color: var(--frost);
+  background-image: var(--frost-sheen);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.dock-tab-actions { display: flex; align-items: center; gap: 0.15rem; margin-inline-start: auto; padding-inline: 0.25rem; }
 .dock-panel-content { min-width: 0; min-height: 0; overflow: auto; }
-.dock-target-left { box-shadow: inset 5px 0 var(--accent, #4e7fff); }
-.dock-target-right { box-shadow: inset -5px 0 var(--accent, #4e7fff); }
-.dock-target-top { box-shadow: inset 0 5px var(--accent, #4e7fff); }
-.dock-target-bottom { box-shadow: inset 0 -5px var(--accent, #4e7fff); }
-.dock-target-center { box-shadow: inset 0 0 0 5px var(--accent, #4e7fff); }
-.dock-drop-status { position: absolute; inset: auto 1rem 1rem auto; z-index: 10; padding: .4rem .7rem; border-radius: .35rem; background: var(--accent, #345); color: white; }
-.dock-floating-panel { position: absolute; z-index: 8; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 200px; min-height: 120px; border: 1px solid var(--border, #888); box-shadow: 0 .4rem 1.5rem #0004; background: var(--panel, #fff); overflow: hidden; }
-.dock-floating-panel > header { display: flex; justify-content: space-between; align-items: center; padding: .35rem .5rem; border-bottom: 1px solid var(--border, #888); }
-.dock-floating-move { cursor: move; }
-.dock-floating-resize { position: absolute; inset: auto 0 0 auto; width: 1rem; height: 1rem; cursor: nwse-resize; border: solid currentColor; border-width: 0 2px 2px 0; }
-.document-tabs-shell, .document-tabs { display: flex; align-items: center; min-width: 0; }
-.document-tabs { flex: 1; overflow-x: auto; }
-.document-tab-wrap { position: relative; display: inline-flex; }
-.document-tab { display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap; }
-.document-tab[aria-selected="true"] { box-shadow: inset 0 -2px var(--accent, #4e7fff); }
-.document-status { width: .5rem; }
-.document-status-conflict { color: var(--danger, #b22); }
-.document-tab-badge { padding: .05rem .25rem; border: 1px solid currentColor; border-radius: .25rem; font-size: .65rem; opacity: .8; }
-.document-tab-menu { position: absolute; inset: 100% 0 auto auto; z-index: 20; display: grid; min-width: 12rem; background: var(--panel, #fff); border: 1px solid var(--border, #888); box-shadow: 0 .3rem 1rem #0003; }
-.document-open-picker { display: flex; gap: .35rem; align-items: center; white-space: nowrap; }
-.window-menu-root { position: relative; }
-.window-menu { position: absolute; inset: 100% auto auto 0; z-index: 40; display: grid; min-width: 19rem; max-height: min(70vh, 38rem); overflow: auto; padding: .3rem; background: var(--panel, #fff); border: 1px solid var(--border, #888); box-shadow: 0 .4rem 1.5rem #0004; }
-.window-menu [role="menuitem"] { text-align: left; }
-.window-menu [role="separator"] { border-top: 1px solid var(--border, #888); margin: .3rem 0; }
+
+.dock-target-left { box-shadow: inset 5px 0 var(--accent); }
+.dock-target-right { box-shadow: inset -5px 0 var(--accent); }
+.dock-target-top { box-shadow: inset 0 5px var(--accent); }
+.dock-target-bottom { box-shadow: inset 0 -5px var(--accent); }
+.dock-target-center { box-shadow: inset 0 0 0 5px var(--accent); }
+
+.dock-drop-status {
+  position: absolute;
+  inset: auto 1rem 1rem auto;
+  z-index: 10;
+  padding: 0.4rem 0.7rem;
+  font: 600 12px/1.4 var(--font-ui);
+  color: var(--on-accent);
+  background: var(--fill);
+  box-shadow: var(--shadow-menu);
+}
+
+.dock-floating-panel {
+  position: absolute;
+  z-index: 8;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 200px;
+  min-height: 120px;
+  background: var(--bg-panel);
+  box-shadow: var(--bevel-up), var(--shadow-menu);
+  overflow: hidden;
+}
+.dock-floating-panel > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  font: 600 12px/1.4 var(--font-ui);
+  color: var(--text-1);
+  background: var(--bg-shell);
+  border-bottom: 1px solid var(--line);
+}
+.dock-floating-panel > header > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dock-floating-move {
+  flex: none;
+  padding: 0.2rem 0.5rem;
+  font: 600 11.5px/1.4 var(--font-ui);
+  color: var(--text-2);
+  background: var(--bg-raised);
+  border: 0;
+  box-shadow: var(--bevel-up-1);
+  cursor: move;
+}
+.dock-floating-move:hover { color: var(--text-1); background: var(--bg-raised-2); }
+.dock-floating-resize {
+  position: absolute;
+  inset: auto 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  cursor: nwse-resize;
+  color: var(--text-3);
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+}
+
+/* ── Screenplay tabs ─────────────────────────────────────────────────────── */
+.document-tabs-shell {
+  display: flex;
+  align-items: stretch;
+  gap: 0.3rem;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.document-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.document-tabs-shell > .menu-root { display: flex; align-items: center; flex: none; }
+.document-picker { flex: none; white-space: nowrap; }
+
+.document-tab-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 20rem;
+}
+
+.document-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0 0.5rem 0 0.8rem;
+  font: 600 12.5px/1 var(--font-ui);
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--speed), color var(--speed);
+}
+.document-tab > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.document-tab:hover { color: var(--text-1); background: var(--bg-hover); }
+.document-tab[aria-selected="true"] {
+  color: var(--text-1);
+  background-color: var(--frost);
+  background-image: var(--frost-sheen);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.document-tab-menu-button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  padding: 0;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: background-color var(--speed), color var(--speed);
+}
+.document-tab-menu-button:hover { color: var(--text-1); background: var(--bg-hover); }
+
+.document-status { flex: none; width: 0.5rem; font-size: 15px; line-height: 0; color: var(--text-3); }
+.document-status-dirty, .document-status-saving { color: var(--warn); }
+.document-status-conflict { color: var(--danger); }
+
+.document-tab-badge {
+  flex: none;
+  padding: 0.08rem 0.3rem;
+  font: 600 9.5px/1.5 var(--font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: var(--bg-field);
+  box-shadow: var(--bevel-in-1);
+}
+
+.document-tab-menu {
+  position: absolute;
+  inset: calc(100% + 3px) 0 auto auto;
+  z-index: 60;
+  display: grid;
+  min-width: 14rem;
+  padding: 4px;
+  background: var(--panel2);
+  box-shadow: var(--bevel-up), var(--shadow-menu);
+}
+
+/* ── Window menu ─────────────────────────────────────────────────────────── */
+.window-menu-root { position: relative; display: inline-flex; }
+.window-menu {
+  position: absolute;
+  inset: calc(100% + 3px) 0 auto auto;
+  z-index: 60;
+  display: grid;
+  min-width: 20rem;
+  max-height: min(70vh, 38rem);
+  overflow: auto;
+  padding: 4px;
+  background: var(--panel2);
+  box-shadow: var(--bevel-up), var(--shadow-menu);
+}
+.window-menu [role="separator"] { height: 1px; margin: 4px 6px; background: var(--line); }
 .window-menu-pair { display: contents; }
-.layout-manager ul { list-style: none; padding: 0; }
-.layout-manager li { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin-block: .35rem; }
-.layout-panel-placement { margin-block: 1rem; padding-block: .75rem; border-block: 1px solid var(--border, #888); }
-.layout-panel-placement h4, .layout-panel-placement p { margin-block: 0 .5rem; }
-.layout-panel-placement ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: .35rem .75rem; }
-.layout-panel-placement li { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(10rem, 1.5fr) auto; }
-.layout-panel-placement small { opacity: .7; }
-.layout-manager-backdrop { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 2rem; background: #0009; }
-.layout-manager-dialog { position: relative; width: min(58rem, 95vw); max-height: 88vh; overflow: auto; padding: 1.25rem; border: 1px solid var(--border); border-radius: .6rem; background: var(--panel); color: var(--text); box-shadow: 0 1rem 3rem #0006; }
-.layout-manager-close { position: absolute; inset: .65rem .65rem auto auto; }
-.dock-mode-body { min-height: 0; overflow: hidden; padding: .5rem; }
+
+/* ── Layout manager ──────────────────────────────────────────────────────── */
+.layout-manager > header { margin-bottom: 1rem; }
+.layout-manager h3 { margin: 0 0 0.25rem; font: 650 15px/1.3 var(--font-ui); color: var(--text-1); }
+.layout-manager > header p { margin: 0; font-size: 12.5px; color: var(--text-2); }
+.layout-manager-save { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.45rem; margin-bottom: 1rem; }
+.layout-manager-field {
+  display: grid;
+  gap: 0.2rem;
+  font: 600 10px/1.4 var(--font-ui);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.layout-manager-field .input { min-width: 12rem; text-transform: none; letter-spacing: 0; }
+.layout-manager ul { list-style: none; margin: 0; padding: 0; }
+.layout-manager li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-block: 0.4rem; }
+.layout-manager-name { flex: 1; min-width: 8rem; justify-content: flex-start; }
+.layout-manager-name[aria-current="true"] {
+  color: var(--text-1);
+  background-color: var(--frost);
+  background-image: var(--frost-sheen);
+  box-shadow: var(--bevel-frost);
+}
+.layout-manager > footer { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 1rem; }
+
+.layout-panel-placement {
+  margin-block: 1.1rem;
+  padding-block: 0.85rem;
+  border-block: 1px solid var(--line);
+}
+.layout-panel-placement h4, .layout-panel-placement p { margin-block: 0 0.5rem; }
+.layout-panel-placement ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 0.35rem 0.75rem; }
+.layout-panel-placement li { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(10rem, 1.5fr) auto; align-items: center; }
+.layout-panel-placement small { color: var(--text-3); }
+
+.layout-manager-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: var(--scrim);
+}
+.layout-manager-dialog {
+  position: relative;
+  width: min(58rem, 95vw);
+  max-height: 88vh;
+  overflow: auto;
+  padding: 1.25rem;
+  background: var(--bg-panel);
+  color: var(--text-1);
+  box-shadow: var(--bevel-up), var(--shadow-pop);
+}
+.layout-manager-close { position: absolute; inset: 0.65rem 0.65rem auto auto; }
+
+.dock-mode-body { min-height: 0; overflow: hidden; padding: 0.5rem; }
 .dock-screenplay-surface { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; min-height: 0; }
 .dock-screenplay-canvas { min-height: 0; height: 100%; }
-.cross-window-drop-overlay { position: absolute; inset: 0; z-index: 100; display: grid; place-content: center; gap: .75rem; background: #0008; color: white; }
-.cross-window-drop-zones { display: grid; grid-template-columns: repeat(3, minmax(7rem, 1fr)); gap: .5rem; }
-.cross-window-drop-zones .active { outline: 3px solid var(--accent, #78a7ff); }
-.cross-window-source-preview { position: fixed; inset: auto 1rem 2.5rem auto; z-index: 100; display: flex; align-items: center; gap: .75rem; max-width: 28rem; padding: .65rem .8rem; border: 1px solid var(--accent); border-radius: .45rem; background: var(--panel); color: var(--text); box-shadow: 0 .4rem 1.5rem #0005; }
+
+/* ── Cross-window transfer ───────────────────────────────────────────────── */
+.cross-window-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-content: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  text-align: center;
+  background: var(--scrim);
+  color: var(--text-1);
+}
+/* The overlay floats over arbitrary content, so its text sits on its own
+   plate rather than trusting whatever happens to be underneath. */
+.cross-window-drop-overlay > p {
+  margin: 0;
+  padding: 0.42rem 0.7rem;
+  font: 600 13px/1.4 var(--font-ui);
+  color: var(--text-1);
+  background: var(--bg-panel);
+  box-shadow: var(--bevel-up-1);
+}
+.cross-window-drop-overlay > [role="alert"] { color: var(--danger); }
+.cross-window-drop-zones { display: grid; grid-template-columns: repeat(3, minmax(7rem, 1fr)); gap: 0.5rem; }
+.cross-window-drop-zones .btn { justify-content: center; }
+.cross-window-drop-zones .active { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cross-window-source-preview {
+  position: fixed;
+  inset: auto 1rem 2.5rem auto;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: 28rem;
+  padding: 0.65rem 0.8rem;
+  background: var(--bg-panel);
+  color: var(--text-1);
+  box-shadow: inset 0 0 0 1px var(--accent-line), var(--bevel-up), var(--shadow-menu);
+}
+
 @media (prefers-reduced-motion: reduce) { .dock-layout *, .cross-window-drop-overlay * { scroll-behavior: auto !important; transition: none !important; } }

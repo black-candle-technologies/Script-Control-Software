@@ -119,8 +119,8 @@ function DockTabs({ node, layout, panels, context, readOnly, preview, onPreview,
         {active && !readOnly ? (
           <span className="dock-tab-actions">
             <PanelPlacementSelect panel={active} layout={layout} onChange={onChange} />
-            <button type="button" aria-label={`Float ${active.title}`} onClick={() => onChange(floatDockPanel(layout, active.id))}>Float</button>
-            {active.closable ? <button type="button" aria-label={`Hide ${active.title}`} onClick={() => onChange(hideDockPanel(layout, active.id))}>Hide</button> : null}
+            <button type="button" className="tool-btn" aria-label={`Float ${active.title}`} onClick={() => onChange(floatDockPanel(layout, active.id))}>Float</button>
+            {active.closable ? <button type="button" className="tool-btn" aria-label={`Hide ${active.title}`} onClick={() => onChange(hideDockPanel(layout, active.id))}>Hide</button> : null}
           </span>
         ) : null}
       </div>
@@ -149,7 +149,7 @@ export function PanelPlacementControls({ layout, onChange, readOnly = false }: {
           <li key={panel.id}>
             <span>{panel.title} <small>{hidden.has(panel.id) ? "hidden" : floating.has(panel.id) ? "floating" : "docked"}</small></span>
             <PanelPlacementSelect panel={panel} layout={layout} onChange={onChange} disabled={readOnly} />
-            {panel.closable ? <button type="button" disabled={readOnly || hidden.has(panel.id)} onClick={() => onChange(hideDockPanel(layout, panel.id))}>Hide</button> : null}
+            {panel.closable ? <button type="button" className="btn" disabled={readOnly || hidden.has(panel.id)} onClick={() => onChange(hideDockPanel(layout, panel.id))}>Hide</button> : null}
           </li>
         ))}
       </ul>
@@ -172,6 +172,7 @@ function PanelPlacementSelect({ panel, layout, onChange, disabled = false }: {
   const commands = panelPlacementCommands(layout);
   return (
     <select
+      className="element-select"
       aria-label={`Place ${panel.title}`}
       value=""
       disabled={disabled}
@@ -269,7 +270,7 @@ function FloatingPanel({ panel, floating, context, layout, readOnly, onChange }:
                 : event.key === "ArrowDown" ? { y: floating.y + delta } : undefined;
           if (patch) { event.preventDefault(); onChange(updateFloatingPanelRect(layout, panel.id, patch)); }
         }}>Move</button> : null}
-        {!readOnly && panel.closable ? <button type="button" onClick={() => onChange(hideDockPanel(layout, panel.id))}>Hide</button> : null}
+        {!readOnly && panel.closable ? <button type="button" className="tool-btn" onClick={() => onChange(hideDockPanel(layout, panel.id))}>Hide</button> : null}
       </header>
       <div className="dock-panel-content">{renderRegisteredPanel(panel, context)}</div>
       {!readOnly ? <div className="dock-floating-resize" role="separator" aria-label={`Resize ${panel.title}`} tabIndex={0} onPointerDown={(event) => beginFloatingFrameChange(event, layout, floating, "resize", onChange)} onKeyDown={(event) => {

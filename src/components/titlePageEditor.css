@@ -1,16 +1,147 @@
-.title-page-editor { display: grid; gap: 1rem; width: min(100%, 42rem); margin-inline: auto; }
-.title-page-fields { display: grid; gap: .75rem; }
-.title-page-field-wrap { display: grid; gap: .25rem; }
-.title-page-field-wrap > span { font-size: .72rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-.title-page-field-wrap input, .title-page-field-wrap textarea { width: 100%; box-sizing: border-box; }
-.title-page-field-wrap textarea { resize: vertical; }
-.title-page-field-title > span, .title-page-field-author > span { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); }
-.title-page-imported-fields { margin-top: .5rem; text-align: left; border-top: 1px solid var(--line); padding-top: .75rem; }
-.title-page-imported-fields summary { cursor: pointer; font-weight: 650; }
-.title-page-imported-fields ol { display: grid; gap: .75rem; padding-inline-start: 1.5rem; }
-.title-page-imported-fields li { padding: .65rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--panel); }
-.title-page-imported-fields label { display: grid; gap: .2rem; margin-block: .35rem; font-size: .78rem; }
-.title-page-imported-fields input, .title-page-imported-fields textarea { width: 100%; box-sizing: border-box; }
-.title-page-block-meta, .title-page-block-actions { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
-.title-page-block-meta { color: var(--muted); font-size: .75rem; }
-@media (max-width: 720px) { .title-page-editor { width: 100%; } }
+/* ==========================================================================
+   Title page editor
+
+   This surface sits on the screenplay page, not on chrome, so every color
+   here comes from a --paper token. The masthead is centred the way a printed
+   title page is; the remaining fields form the quiet lower detail block.
+   ========================================================================== */
+
+.title-page-editor {
+  display: grid;
+  gap: 2.2rem;
+  width: min(100%, 42rem);
+  margin-inline: auto;
+  color: var(--paper-text);
+}
+
+.title-page-editor > .title-card-hint { margin: 0; text-align: center; }
+
+.title-page-masthead { display: grid; gap: 0.55rem; justify-items: center; text-align: center; }
+
+.title-page-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 1rem 2rem;
+  padding-top: 1.4rem;
+  border-top: 1px solid var(--paper-line);
+}
+
+.title-page-field-wrap { display: grid; gap: 0.3rem; min-width: 0; }
+.title-page-field-wrap > span {
+  font: 600 10px/1.4 var(--font-ui);
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+
+/* The masthead reads as a title page, so its labels are for assistive tech. */
+.title-page-masthead .title-page-field-wrap { width: 100%; justify-items: center; }
+.title-page-masthead .title-page-field-wrap > span {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.title-page-field-wrap input,
+.title-page-field-wrap textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.18rem 0.25rem;
+  font: inherit;
+  font-family: var(--font-screenplay);
+  font-size: 0.9rem;
+  color: var(--paper-text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed transparent;
+  outline: none;
+}
+.title-page-field-wrap textarea { resize: vertical; line-height: 1.4; }
+.title-page-field-wrap input::placeholder,
+.title-page-field-wrap textarea::placeholder { color: var(--paper-placeholder); font-style: italic; }
+.title-page-field-wrap input:hover:not([readonly]),
+.title-page-field-wrap textarea:hover:not([readonly]),
+.title-page-field-wrap input:focus,
+.title-page-field-wrap textarea:focus { border-bottom-color: var(--paper-line); }
+.title-page-field-wrap input:focus,
+.title-page-field-wrap textarea:focus { background: var(--paper-highlight); }
+
+.title-page-masthead input,
+.title-page-masthead textarea { text-align: center; }
+
+.title-page-field-title input {
+  width: 90%;
+  font-size: 1.35rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.title-page-field-credit input { width: 60%; font-size: 0.85rem; color: var(--paper-muted); }
+.title-page-field-author input { width: 70%; font-size: 1rem; }
+.title-page-field-source textarea { width: 70%; font-size: 0.82rem; color: var(--paper-muted); }
+
+/* ── Imported and custom paragraphs ──────────────────────────────────────── */
+.title-page-imported-fields {
+  text-align: left;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--paper-line);
+  font-family: var(--font-ui);
+}
+.title-page-imported-fields summary {
+  cursor: pointer;
+  font: 600 11px/1.5 var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-muted);
+}
+.title-page-imported-fields summary:hover { color: var(--paper-text); }
+.title-page-imported-fields > p { margin: 0.6rem 0 0.9rem; font-size: 12px; color: var(--paper-muted); }
+.title-page-imported-fields ol { display: grid; gap: 0.7rem; margin: 0; padding-inline-start: 1.5rem; }
+.title-page-imported-fields li {
+  padding: 0.7rem 0.8rem;
+  background: var(--paper-chip-bg);
+  border: 1px solid var(--paper-chip-line);
+  color: var(--paper-chip-text);
+}
+.title-page-imported-fields label { display: grid; gap: 0.25rem; margin-block: 0.4rem; }
+.title-page-imported-fields label > span {
+  font: 600 10px/1.4 var(--font-ui);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+.title-page-imported-fields input,
+.title-page-imported-fields textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.25rem 0.4rem;
+  font: 400 12.5px/1.45 var(--font-ui);
+  color: var(--paper-text);
+  background: var(--paper);
+  border: 1px solid var(--paper-chip-line);
+  outline: none;
+}
+.title-page-imported-fields textarea { resize: vertical; font-family: var(--font-screenplay); }
+.title-page-imported-fields input:focus,
+.title-page-imported-fields textarea:focus { border-color: var(--paper-line); box-shadow: inset 0 0 0 1px var(--paper-line); }
+
+.title-page-block-meta, .title-page-block-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.title-page-block-meta { margin-top: 0.5rem; color: var(--paper-muted); font-size: 11px; }
+.title-page-block-actions { margin-top: 0.6rem; }
+.title-page-block-actions button {
+  padding: 0.24rem 0.6rem;
+  font: 600 11.5px/1.4 var(--font-ui);
+  color: var(--paper-chip-text);
+  background: var(--paper-chip-bg);
+  border: 1px solid var(--paper-chip-line);
+  cursor: pointer;
+  transition: background-color var(--speed), color var(--speed);
+}
+.title-page-block-actions button:hover:not(:disabled) { background: var(--paper); color: var(--paper-text); border-color: var(--paper-line); }
+.title-page-block-actions button:disabled { opacity: 0.45; cursor: default; }
+
+@media (max-width: 720px) {
+  .title-page-editor { width: 100%; }
+  .title-page-details { grid-template-columns: 1fr; }
+}

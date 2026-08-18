@@ -106,7 +106,7 @@ test("sequence controls defer grouped scene order until the outline is applied",
 
   await page.getByRole("button", { name: "Write", exact: true }).click();
   await expect(headings.first()).toHaveValue("EXT. REST STOP - PARKING LOT - NIGHT");
-  await expect(page.locator(".nav-sequence-label").first()).toHaveText("Sequence 2");
+  await expect(page.locator(".nav-sequence-title").first()).toHaveText("Sequence 2");
   await page.getByRole("button", { name: /INT\. GREYHOUND BUS - NIGHT/ }).first().click();
   await expect(headings.nth(1)).toBeFocused();
 });
@@ -903,16 +903,16 @@ test("the theme switch flips both palettes and is remembered across a reload", a
 
   await page.getByRole("button", { name: "Switch to light theme" }).click();
   await expect(root).toHaveAttribute("data-theme", "light");
-  await expect(body).toHaveCSS("background-color", "rgb(221, 216, 205)");
+  await expect(body).toHaveCSS("background-color", "rgb(201, 196, 183)");
 
   // The writer's choice sticks, beats the OS, and is painted before React mounts.
   await page.reload();
   await expect(root).toHaveAttribute("data-theme", "light");
-  await expect(body).toHaveCSS("background-color", "rgb(221, 216, 205)");
+  await expect(body).toHaveCSS("background-color", "rgb(201, 196, 183)");
 
   // It reaches the workspace chrome too, and switches back.
   await page.getByRole("button", { name: /sample project/i }).click();
-  await expect(page.locator(".titlebar")).toHaveCSS("background-color", "rgb(179, 174, 163)");
+  await expect(page.locator(".titlebar")).toHaveCSS("background-color", "rgb(186, 181, 168)");
   await page.getByRole("button", { name: "Switch to dark theme" }).click();
   await expect(root).toHaveAttribute("data-theme", "dark");
   await expect(page.locator(".titlebar")).toHaveCSS("background-color", "rgb(13, 15, 18)");

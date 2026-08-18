@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { WindowMenuEntry } from "../../domain/windowRegistry.ts";
+import Icon from "../Icons.tsx";
 
 export interface WindowMenuProps {
   windows: readonly WindowMenuEntry[];
@@ -43,7 +44,11 @@ export function WindowMenu(props: WindowMenuProps) {
   const choose = (action: () => void) => { action(); setOpen(false); button.current?.focus(); };
   return (
     <div ref={root} className="window-menu-root">
-      <button ref={button} type="button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>Window</button>
+      <button ref={button} type="button" className={`tool-btn ${open ? "is-open" : ""}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Icon name="window" size={13} />
+        Window
+        <Icon name="chevron-down" size={12} className="menu-caret" />
+      </button>
       {open ? (
         <div role="menu" aria-label="Window" className="window-menu" onKeyDown={(event) => onMenuKeyDown(event, () => { setOpen(false); button.current?.focus(); })}>
           <MenuItem label="New Window" onChoose={() => choose(props.onNewWindow)} />
@@ -53,7 +58,7 @@ export function WindowMenu(props: WindowMenuProps) {
           <MenuItem label="Bring All to Front" onChoose={() => choose(props.onBringAllToFront)} />
           <MenuItem label="Reset Window Placement" onChoose={() => choose(props.onResetPlacement)} />
           <div role="separator" />
-          {props.windows.map((window) => <MenuItem key={window.windowId} label={`${window.active ? "✓ " : ""}${window.title}${window.leader ? " — Leader" : ""}`} onChoose={() => choose(() => props.onFocusWindow(window.windowId))} />)}
+          {props.windows.map((window) => <MenuItem key={window.windowId} label={window.title} hint={[window.active ? "Current" : "", window.leader ? "Leader" : ""].filter(Boolean).join(" · ")} onChoose={() => choose(() => props.onFocusWindow(window.windowId))} />)}
           {props.windows.filter((window) => !window.active).map((window) => (
             <span key={`move-${window.windowId}`} className="window-menu-pair">
               <MenuItem label={`${props.documentTransferKeepsSource ? "Open screenplay in" : "Move screenplay to"} ${window.title}`} disabled={!props.onMoveDocumentToWindow} onChoose={() => choose(() => props.onMoveDocumentToWindow?.(window.windowId))} />
@@ -64,7 +69,7 @@ export function WindowMenu(props: WindowMenuProps) {
           {props.hiddenPanels?.length ? <div role="separator" /> : null}
           {props.hiddenPanels?.map((panel) => <MenuItem key={panel.id} label={`Show ${panel.title}`} onChoose={() => choose(() => props.onRestorePanel?.(panel.id))} />)}
           {props.layouts?.length ? <div role="separator" /> : null}
-          {props.layouts?.map((layout) => <MenuItem key={layout.id} label={`${layout.active ? "✓ " : ""}Layout: ${layout.name}`} onChoose={() => choose(() => props.onApplyLayout?.(layout.id))} />)}
+          {props.layouts?.map((layout) => <MenuItem key={layout.id} label={`Layout: ${layout.name}`} hint={layout.active ? "Active" : undefined} onChoose={() => choose(() => props.onApplyLayout?.(layout.id))} />)}
           {props.onCustomizeLayout ? <MenuItem label="Customize Current Layout" onChoose={() => choose(props.onCustomizeLayout!)} /> : null}
           {props.onManageLayouts ? <MenuItem label="Manage Layouts…" onChoose={() => choose(props.onManageLayouts!)} /> : null}
           <div role="separator" />
@@ -75,8 +80,13 @@ export function WindowMenu(props: WindowMenuProps) {
   );
 }
 
-function MenuItem({ label, onChoose, disabled = false }: { label: string; onChoose: () => void; disabled?: boolean }) {
-  return <button type="button" role="menuitem" disabled={disabled} onClick={onChoose}>{label}</button>;
+function MenuItem({ label, onChoose, disabled = false, hint }: { label: string; onChoose: () => void; disabled?: boolean; hint?: string }) {
+  return (
+    <button type="button" role="menuitem" className="menu-item" disabled={disabled} onClick={onChoose}>
+      <span>{label}</span>
+      {hint ? <span className="menu-hint">{hint}</span> : null}
+    </button>
+  );
 }
 
 function onMenuKeyDown(event: KeyboardEvent<HTMLDivElement>, close: () => void) {

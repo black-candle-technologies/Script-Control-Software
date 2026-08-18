@@ -302,8 +302,10 @@ export default function SceneNavigator({
             toggleNode(nodeKey);
           }}
         >
-          <Icon name={nodeCollapsed ? "chevron-right" : "chevron-down"} size={11} />
-          <span>{label}</span>
+          <Icon name={nodeCollapsed ? "chevron-right" : "chevron-down"} size={11} className="nav-tree-caret" />
+          <Icon name="sequence" size={12} className="nav-sequence-icon" />
+          <span className="nav-sequence-title">{label}</span>
+          <span className="nav-sequence-count">{sequenceScenes.length}</span>
         </button>
         {!nodeCollapsed && (
           <ul className="nav-scenes" role="group">
@@ -345,7 +347,8 @@ export default function SceneNavigator({
                     toggleNode(nodeKey);
                   }}
                 >
-                  <Icon name={nodeCollapsed ? "chevron-right" : "chevron-down"} size={12} />
+                  <Icon name={nodeCollapsed ? "chevron-right" : "chevron-down"} size={12} className="nav-tree-caret" />
+                  <Icon name="act" size={13} className="nav-act-icon" />
                   <span className="nav-act-title">{act.title.trim() || "Untitled act"}</span>
                   <span className="nav-act-count">{actSceneCount}</span>
                 </button>
@@ -373,7 +376,8 @@ export default function SceneNavigator({
                 toggleNode("unassigned");
               }}
             >
-              <Icon name={collapsed.has("unassigned") ? "chevron-right" : "chevron-down"} size={12} />
+              <Icon name={collapsed.has("unassigned") ? "chevron-right" : "chevron-down"} size={12} className="nav-tree-caret" />
+              <Icon name="scene" size={13} className="nav-act-icon" />
               <span className="nav-act-title">Unassigned scenes</span>
               <span className="nav-act-count">{unassignedScenes.length}</span>
             </button>

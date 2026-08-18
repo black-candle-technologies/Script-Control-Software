@@ -54,7 +54,7 @@ export function CrossWindowDropOverlay({ active, windowId, title, documentTabCou
     }
   };
   if (active.sourceWindowId === windowId) {
-    return <div className="cross-window-source-preview"><span role="status">{active.effect === "copy" ? "Copying" : "Moving"} {title} — choose a destination window.</span><button type="button" disabled={busy} onClick={() => void cancel()}>Cancel</button>{error ? <span role="alert">{error}</span> : null}</div>;
+    return <div className="cross-window-source-preview"><span role="status">{active.effect === "copy" ? "Copying" : "Moving"} {title}. Choose a destination window.</span><button type="button" className="btn" disabled={busy} onClick={() => void cancel()}>Cancel</button>{error ? <span role="alert">{error}</span> : null}</div>;
   }
   const placements = nativeDropPlacementOptions(active.payload, documentTabCount, dockGroupIds);
   const preview = (placement: InternalDragPlacement) => {
@@ -85,10 +85,10 @@ export function CrossWindowDropOverlay({ active, windowId, title, documentTabCou
       <div className="cross-window-drop-zones">
         {placements.map((placement) => {
           const selected = active.target?.windowId === windowId && sameNativeDropPlacement(active.target.placement, placement.value);
-          return <button key={placement.key} type="button" disabled={busy} className={selected ? "active" : ""} onPointerEnter={() => preview(placement.value)} onFocus={() => preview(placement.value)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = active.effect; }} onDrop={(event) => { event.preventDefault(); void choose(placement.value); }} onClick={() => void choose(placement.value)}>{placement.label}</button>;
+          return <button key={placement.key} type="button" disabled={busy} className={`btn ${selected ? "active" : ""}`} onPointerEnter={() => preview(placement.value)} onFocus={() => preview(placement.value)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = active.effect; }} onDrop={(event) => { event.preventDefault(); void choose(placement.value); }} onClick={() => void choose(placement.value)}>{placement.label}</button>;
         })}
       </div>
-      <button type="button" disabled={busy} onClick={() => void cancel()}>Cancel transfer</button>
+      <button type="button" className="btn" disabled={busy} onClick={() => void cancel()}>Cancel transfer</button>
       {error ? <p role="alert">{error}</p> : null}
     </div>
   );

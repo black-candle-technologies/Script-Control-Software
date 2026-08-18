@@ -3218,7 +3218,7 @@ export default function Workspace({ initialSession, onOpenFdx, onExit }: Workspa
     ) : null}
     {layoutManagerOpen && <div className="layout-manager-backdrop" onMouseDown={() => setLayoutManagerOpen(false)}>
       <div className="layout-manager-dialog" role="dialog" aria-modal="true" aria-label="Workspace layout manager" onMouseDown={(event) => event.stopPropagation()}>
-        <button className="layout-manager-close" type="button" aria-label="Close layout manager" onClick={() => setLayoutManagerOpen(false)}><Icon name="close" size={12} /></button>
+        <button className="tool-btn icon-only layout-manager-close" type="button" aria-label="Close layout manager" onClick={() => setLayoutManagerOpen(false)}><Icon name="close" size={12} /></button>
         <LayoutManager
           readOnly={!canEdit}
           layouts={session.workspace.layouts.map((layout) => ({ id: layout.id, name: layout.name, builtin: BUILTIN_LAYOUT_ID_SET.has(layout.id), active: dockLayout.id === layout.id, shortcut: getWorkspaceLayoutShortcut(session.workspace, layout.id) }))}

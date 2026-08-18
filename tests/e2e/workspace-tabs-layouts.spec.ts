@@ -54,7 +54,8 @@ test("document tabs activate, reorder, close, reopen, and retain document-local 
   await expect(tabs).toHaveCount(1);
   await expect(tabs.first()).toContainText("THE LONG WAY HOME");
 
-  await page.getByRole("combobox", { name: "Open screenplay" }).selectOption({ label: "Screenplay 2" });
+  await page.getByRole("button", { name: /All Screenplays/ }).click();
+  await page.getByRole("menuitem", { name: /Screenplay 2/ }).click();
   blankTab = tabs.filter({ hasText: "Screenplay 2" });
   await expect(blankTab).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("textarea.source-editor")).toBeVisible();
