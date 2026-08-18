@@ -9,18 +9,48 @@ import {
 
 const LEGACY_DOCUMENT_KEY = "scs.document.v1";
 const LEGACY_VERSIONS_KEY = "scs.versions.v1";
-const SESSION_KEY = "scs.project-session.v3";
+const LEGACY_SESSION_KEY = "scs.project-session.v3";
+const SESSION_KEY_PREFIX = "scs.project-session.v4:";
+const CURRENT_PROJECT_KEY = "scs.project-session.v4.current-project";
 
-export function loadSession(): ProjectSession | null {
+function sessionKey(projectId: string): string {
+  return `${SESSION_KEY_PREFIX}${encodeURIComponent(projectId)}`;
+}
+
+function parseSession(value: string | null): ProjectSession | null {
+  if (!value) return null;
   try {
-    const current = localStorage.getItem(SESSION_KEY);
-    if (current) return normalizeProjectSession(JSON.parse(current));
+    return normalizeProjectSession(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+/** Load a project-scoped recovery snapshot, or the most recently saved project. */
+export function loadSession(projectId?: string): ProjectSession | null {
+  try {
+    const selectedProjectId = projectId || localStorage.getItem(CURRENT_PROJECT_KEY) || "";
+    if (selectedProjectId) {
+      const scoped = parseSession(localStorage.getItem(sessionKey(selectedProjectId)));
+      if (scoped && (!projectId || scoped.projectId === projectId)) return scoped;
+    }
+
+    // One-way compatibility migration from the former global recovery slot.
+    const legacySession = parseSession(localStorage.getItem(LEGACY_SESSION_KEY));
+    if (legacySession && (!projectId || legacySession.projectId === projectId)) {
+      saveSession(legacySession);
+      return legacySession;
+    }
+
     const document = localStorage.getItem(LEGACY_DOCUMENT_KEY);
     if (!document) return null;
-    return normalizeProjectSession({
+    const migrated = normalizeProjectSession({
       documents: [JSON.parse(document)],
       versions: JSON.parse(localStorage.getItem(LEGACY_VERSIONS_KEY) ?? "[]"),
     });
+    if (projectId && migrated.projectId !== projectId) return null;
+    saveSession(migrated);
+    return migrated;
   } catch {
     return null;
   }
@@ -28,7 +58,9 @@ export function loadSession(): ProjectSession | null {
 
 export function saveSession(session: ProjectSession): boolean {
   try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    localStorage.setItem(sessionKey(session.projectId), JSON.stringify(session));
+    localStorage.setItem(CURRENT_PROJECT_KEY, session.projectId);
+    localStorage.removeItem(LEGACY_SESSION_KEY);
     localStorage.removeItem(LEGACY_DOCUMENT_KEY);
     localStorage.removeItem(LEGACY_VERSIONS_KEY);
     return true;
@@ -37,8 +69,13 @@ export function saveSession(session: ProjectSession): boolean {
   }
 }
 
-export function clearSession(): void {
-  localStorage.removeItem(SESSION_KEY);
+export function clearSession(projectId?: string): void {
+  const selectedProjectId = projectId || localStorage.getItem(CURRENT_PROJECT_KEY) || "";
+  if (selectedProjectId) localStorage.removeItem(sessionKey(selectedProjectId));
+  if (!projectId || localStorage.getItem(CURRENT_PROJECT_KEY) === projectId) {
+    localStorage.removeItem(CURRENT_PROJECT_KEY);
+  }
+  localStorage.removeItem(LEGACY_SESSION_KEY);
   localStorage.removeItem(LEGACY_DOCUMENT_KEY);
   localStorage.removeItem(LEGACY_VERSIONS_KEY);
 }

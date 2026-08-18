@@ -7,14 +7,17 @@ import {
   isTransitionText,
   newBlock,
   paginateBlocks,
+  resolveScriptTarget,
   sceneHeadingCompletion,
   typeAfterDialogueEnter,
   type ScreenplayBlock,
   type ScreenplayElementType,
+  type ScriptTarget,
   type SceneHeadingCompletionStage,
   type ProductionPage,
   type TitlePage,
 } from "../domain/index.ts";
+import TitlePageEditor from "./TitlePageEditor.tsx";
 
 interface EditorProps {
   documentId: string;
@@ -25,6 +28,8 @@ interface EditorProps {
   onActiveBlock: (id: string) => void;
   /** Bump `nonce` to scroll to and focus a block (used by the scene navigator). */
   focusRequest: { id: string; nonce: number } | null;
+  /** Bump `nonce` to select an exact derived reference inside a screenplay block. */
+  scriptTargetRequest: { target: ScriptTarget; nonce: number } | null;
   readOnly?: boolean;
   productionPages?: ProductionPage[];
   /** Filled during render so the writing toolbar can trigger undo/redo. */
@@ -61,6 +66,12 @@ interface MultiBlockSelection {
   focusId: string;
 }
 
+interface ScriptTargetFeedback {
+  blockId?: string;
+  kind: "exact" | "relocated" | "block" | "scene" | "missing";
+  message: string;
+}
+
 function resize(el: HTMLTextAreaElement) {
   el.style.height = "0";
   el.style.height = `${el.scrollHeight}px`;
@@ -74,6 +85,7 @@ export default function Editor({
   onTitlePageChange,
   onActiveBlock,
   focusRequest,
+  scriptTargetRequest,
   readOnly = false,
   productionPages,
   historyRef,
@@ -84,7 +96,11 @@ export default function Editor({
   const tabbedFromActionBlockId = useRef<string | null>(null);
   const tabCompletion = useRef<TabCompletionSession | null>(null);
   const blockSelectionDrag = useRef<{ pointerId: number; anchorId: string } | null>(null);
+  const previousDocumentId = useRef(documentId);
   const lastFocusNonce = useRef(0);
+  const lastScriptTargetNonce = useRef(0);
+  const scriptTargetTimer = useRef<number | null>(null);
+  const scriptTargetFeedbackRef = useRef<ScriptTargetFeedback | null>(null);
   const ownHistories = useRef(new Map<string, EditorHistory>());
   const histories = historyStore ?? ownHistories;
   const history = histories.current.get(documentId) ?? { blocks, undo: [], redo: [] };
@@ -97,6 +113,7 @@ export default function Editor({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [menuSelection, setMenuSelection] = useState<{ blockId: string; index: number } | null>(null);
   const [multiBlockSelection, setMultiBlockSelection] = useState<MultiBlockSelection | null>(null);
+  const [scriptTargetFeedback, setScriptTargetFeedback] = useState<ScriptTargetFeedback | null>(null);
   const pages = useMemo(() => {
     if (!productionPages?.length) return paginateBlocks(blocks);
     const byId = new Map(blocks.map((block) => [block.id, block]));
@@ -114,7 +131,29 @@ export default function Editor({
     return new Set(blocks.slice(start, end + 1).map((block) => block.id));
   }, [blocks, indexes, multiBlockSelection]);
 
+  const clearScriptTargetFeedback = (collapseSelection = true) => {
+    if (scriptTargetTimer.current !== null) {
+      window.clearTimeout(scriptTargetTimer.current);
+      scriptTargetTimer.current = null;
+    }
+    const feedback = scriptTargetFeedbackRef.current;
+    if (collapseSelection && feedback?.blockId) {
+      const el = refs.current.get(feedback.blockId);
+      if (el && globalThis.document.activeElement === el && el.selectionStart !== el.selectionEnd) {
+        el.setSelectionRange(el.selectionEnd, el.selectionEnd);
+      }
+    }
+    scriptTargetFeedbackRef.current = null;
+    setScriptTargetFeedback(null);
+  };
+
+  const showScriptTargetFeedback = (feedback: ScriptTargetFeedback) => {
+    scriptTargetFeedbackRef.current = feedback;
+    setScriptTargetFeedback(feedback);
+  };
+
   const commit = (next: ScreenplayBlock[]) => {
+    clearScriptTargetFeedback();
     history.undo.push(blocks.map((block) => ({ ...block })));
     if (history.undo.length > 100) history.undo.shift();
     history.redo = [];
@@ -124,6 +163,7 @@ export default function Editor({
 
   const undo = () => {
     if (readOnly) return;
+    clearScriptTargetFeedback();
     const previous = history.undo.pop();
     if (previous) {
       history.redo.push(blocks.map((item) => ({ ...item })));
@@ -134,6 +174,7 @@ export default function Editor({
 
   const redo = () => {
     if (readOnly) return;
+    clearScriptTargetFeedback();
     const next = history.redo.pop();
     if (next) {
       history.undo.push(blocks.map((item) => ({ ...item })));
@@ -145,6 +186,10 @@ export default function Editor({
   if (historyRef) historyRef.current = { undo, redo };
 
   useLayoutEffect(() => {
+    if (previousDocumentId.current !== documentId) {
+      clearScriptTargetFeedback(false);
+      previousDocumentId.current = documentId;
+    }
     setActiveId(null);
     pendingFocus.current = null;
     tabbedFromActionBlockId.current = null;
@@ -153,6 +198,15 @@ export default function Editor({
     setMenuSelection(null);
     setMultiBlockSelection(null);
   }, [documentId]);
+
+  useLayoutEffect(() => {
+    if (!scriptTargetFeedback) return;
+    scriptTargetTimer.current = window.setTimeout(() => clearScriptTargetFeedback(), 5000);
+    return () => {
+      if (scriptTargetTimer.current !== null) window.clearTimeout(scriptTargetTimer.current);
+      scriptTargetTimer.current = null;
+    };
+  }, [scriptTargetFeedback]);
 
   useLayoutEffect(() => {
     if (!tabbedFromActionBlockId.current) return;
@@ -187,6 +241,7 @@ export default function Editor({
   useLayoutEffect(() => {
     if (!focusRequest || focusRequest.nonce === lastFocusNonce.current) return;
     lastFocusNonce.current = focusRequest.nonce;
+    clearScriptTargetFeedback();
     const el = refs.current.get(focusRequest.id);
     if (el) {
       el.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -194,6 +249,45 @@ export default function Editor({
       el.setSelectionRange(el.value.length, el.value.length);
     }
   }, [focusRequest]);
+
+  useLayoutEffect(() => {
+    if (!scriptTargetRequest
+      || scriptTargetRequest.nonce === lastScriptTargetNonce.current
+      || scriptTargetRequest.target.documentId !== documentId) return;
+    lastScriptTargetNonce.current = scriptTargetRequest.nonce;
+    clearScriptTargetFeedback();
+    const resolution = resolveScriptTarget(scriptTargetRequest.target, { id: documentId, blocks });
+    if (resolution.kind === "missing") {
+      showScriptTargetFeedback({ kind: "missing", message: "The exact occurrence, original paragraph, and original scene are no longer available." });
+      return;
+    }
+    const el = refs.current.get(resolution.blockId);
+    if (!el) {
+      showScriptTargetFeedback({ kind: "missing", message: "The exact occurrence, original paragraph, and original scene are no longer available." });
+      return;
+    }
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.focus();
+    if (resolution.kind === "block" || resolution.kind === "scene") {
+      el.setSelectionRange(resolution.caretOffset, resolution.caretOffset);
+      showScriptTargetFeedback({
+        blockId: resolution.blockId,
+        kind: resolution.kind,
+        message: resolution.kind === "block"
+          ? "The exact occurrence could not be restored; opened its original paragraph."
+          : "The exact occurrence and original paragraph could not be restored; opened its original scene.",
+      });
+      return;
+    }
+    el.setSelectionRange(resolution.startOffset, resolution.endOffset);
+    showScriptTargetFeedback({
+      blockId: resolution.blockId,
+      kind: resolution.kind,
+      message: resolution.kind === "exact"
+        ? `Opened exact reference “${resolution.matchedText}”.`
+        : `The reference moved within its paragraph; opened “${resolution.matchedText}”.`,
+    });
+  }, [blocks, documentId, scriptTargetRequest]);
 
   const update = (index: number, patch: Partial<ScreenplayBlock>) => {
     const next = blocks.slice();
@@ -257,6 +351,7 @@ export default function Editor({
 
   const handleChange = (index: number, block: ScreenplayBlock, el: HTMLTextAreaElement) => {
     if (readOnly) return;
+    clearScriptTargetFeedback();
     setMultiBlockSelection(null);
     if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
     if (tabCompletion.current?.blockId === block.id) tabCompletion.current = null;
@@ -290,12 +385,20 @@ export default function Editor({
     index: number,
     block: ScreenplayBlock,
   ) => {
+    if (e.key === "Escape" && scriptTargetFeedbackRef.current) {
+      e.preventDefault();
+      clearScriptTargetFeedback();
+      return;
+    }
     if (e.key === "Escape" && multiBlockSelection) {
       e.preventDefault();
       setMultiBlockSelection(null);
       return;
     }
     if (readOnly) return;
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Tab"].includes(e.key)) {
+      clearScriptTargetFeedback(false);
+    }
     const el = e.currentTarget;
     const { selectionStart, selectionEnd } = el;
     const collapsed = selectionStart === selectionEnd;
@@ -519,6 +622,7 @@ export default function Editor({
   };
 
   const startBlockSelection = (event: React.PointerEvent<HTMLTextAreaElement>, block: ScreenplayBlock) => {
+    clearScriptTargetFeedback();
     if (event.button !== 0) return;
     if (!event.ctrlKey && !event.metaKey) {
       blockSelectionDrag.current = null;
@@ -573,23 +677,9 @@ export default function Editor({
 
   return (
     <div className="editor-scroll" onCopy={copyBlockSelection}>
+      {scriptTargetFeedback && <div className={`script-target-status ${scriptTargetFeedback.kind === "missing" || scriptTargetFeedback.kind === "block" || scriptTargetFeedback.kind === "scene" ? "is-warning" : ""}`} role="status" aria-live="polite">{scriptTargetFeedback.message}</div>}
       <div className="title-card page-surface">
-        <input
-          className="title-card-title"
-          value={titlePage.title}
-          readOnly={readOnly}
-          placeholder="TITLE"
-          onChange={(e) => onTitlePageChange({ ...titlePage, title: e.target.value })}
-        />
-        <span className="title-card-by">by</span>
-        <input
-          className="title-card-author"
-          value={titlePage.author}
-          readOnly={readOnly}
-          placeholder="Author"
-          onChange={(e) => onTitlePageChange({ ...titlePage, author: e.target.value })}
-        />
-        <span className="title-card-hint">Title page</span>
+        <TitlePageEditor value={titlePage} onChange={onTitlePageChange} readOnly={readOnly} />
       </div>
 
       {pages.map((page, pageIndex) => <div className="page page-surface" key={`page-${pageIndex}`} data-page={productionPages?.[pageIndex]?.label ?? pageIndex + 1} data-revision-color={productionPages?.[pageIndex]?.color ?? ""}>
@@ -599,12 +689,14 @@ export default function Editor({
           const cycleIndex = tabCompletion.current?.blockId === block.id ? tabCompletion.current.index : -1;
           const selectedIndex = menuSelection?.blockId === block.id ? menuSelection.index : cycleIndex;
           const menuId = `suggestions-${block.id}`;
+          const targetState = scriptTargetFeedback?.blockId === block.id ? scriptTargetFeedback.kind : undefined;
           return <Fragment key={block.id}>
           <textarea
             rows={1}
             spellCheck={false}
-            className={`blk blk-${block.type}${block.textRuns?.some((run) => run.revisionId) ? " revised" : ""}${multiSelectedIds.has(block.id) ? " multi-selected" : ""}`}
+            className={`blk blk-${block.type}${block.textRuns?.some((run) => run.revisionId) ? " revised" : ""}${multiSelectedIds.has(block.id) ? " multi-selected" : ""}${targetState === "exact" || targetState === "relocated" ? " script-target-highlight" : targetState === "block" || targetState === "scene" ? " script-target-fallback" : ""}`}
             data-block-id={block.id}
+            data-script-target-state={targetState}
             value={block.text}
             readOnly={readOnly}
             placeholder={placeholderFor(block.type, index)}
@@ -621,6 +713,7 @@ export default function Editor({
             aria-activedescendant={selectedIndex >= 0 ? `${menuId}-${selectedIndex}` : undefined}
             onFocus={() => { setActiveId(block.id); setMenuSelection(null); onActiveBlock(block.id); }}
             onBlur={() => {
+              if (scriptTargetFeedbackRef.current?.blockId === block.id) clearScriptTargetFeedback();
               if (tabbedFromActionBlockId.current === block.id) tabbedFromActionBlockId.current = null;
               if (tabCompletion.current?.blockId === block.id) tabCompletion.current = null;
               if (menuSelection?.blockId === block.id) setMenuSelection(null);

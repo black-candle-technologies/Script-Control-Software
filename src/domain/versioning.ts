@@ -41,10 +41,44 @@ export interface Milestone {
   description: string;
 }
 
+export type DraftReviewStatus = "open" | "changes-requested" | "approved" | "applied" | "closed";
+
+/** A writer-facing review request between two immutable Alternate Draft heads. */
+export interface DraftReview {
+  id: string;
+  title: string;
+  description: string;
+  sourceBranchId: string;
+  targetBranchId: string;
+  baseSnapshotId: string;
+  sourceSnapshotId: string;
+  targetSnapshotId: string;
+  authorId: string;
+  reviewerIds: string[];
+  status: DraftReviewStatus;
+  createdAt: string;
+  updatedAt: string;
+  /** Explicit choices for overlapping edits. Missing paths remain unresolved. */
+  resolutions: Record<string, MergeResolution>;
+  appliedSnapshotId?: string;
+}
+
+export interface OpenDraftReviewInput {
+  id: string;
+  title: string;
+  description?: string;
+  sourceBranchId: string;
+  targetBranchId: string;
+  authorId: string;
+  reviewerIds?: readonly string[];
+  createdAt: string;
+}
+
 export interface VersionHistory {
   snapshots: ProjectSnapshot[];
   branches: DraftBranch[];
   milestones: Milestone[];
+  draftReviews: DraftReview[];
   activeBranchId: string;
 }
 
@@ -130,13 +164,30 @@ export interface SnapshotMergeResult {
   resolution: MergeResolution;
 }
 
+export interface DraftReviewPreview {
+  review: DraftReview;
+  baseSnapshot: ProjectSnapshot;
+  sourceSnapshot: ProjectSnapshot;
+  targetSnapshot: ProjectSnapshot;
+  sourceHeadSnapshotId: string;
+  targetHeadSnapshotId: string;
+  comparison: SnapshotComparison;
+  mergeResult: SnapshotMergeResult;
+  conflicts: MergeConflict[];
+  unresolvedConflictPaths: string[];
+  sourceOutdated: boolean;
+  targetOutdated: boolean;
+  outdated: boolean;
+  readyToApply: boolean;
+}
+
 export function createProjectSnapshot(session: ProjectSession, details: SnapshotDetails): ProjectSnapshot {
   if (!details.id.trim() || !details.name.trim() || !details.createdAt.trim()) throw new Error("Snapshot id, name, and createdAt are required.");
   const scope = details.scope ? validateSnapshotScope(session, details.scope) : undefined;
   const snapshotSession = clone(session);
   // History belongs to the containing project, not to each historical state.
   // Clearing it prevents recursively nested snapshots and keeps portable files small.
-  snapshotSession.versionHistory = { snapshots: [], branches: [], milestones: [], activeBranchId: "main" };
+  snapshotSession.versionHistory = { snapshots: [], branches: [], milestones: [], draftReviews: [], activeBranchId: "main" };
   snapshotSession.versions = [];
   snapshotSession.projectPath = "";
   snapshotSession.documents = documentsForPortableStorage(snapshotSession.documents);
@@ -338,6 +389,7 @@ export function createVersionHistory(initial: ProjectSnapshot, branch = { id: "m
     snapshots: [snapshot],
     branches: [{ id: branch.id, name: branch.name.trim(), baseSnapshotId: snapshot.id, headSnapshotId: snapshot.id }],
     milestones: [],
+    draftReviews: [],
     activeBranchId: branch.id,
   };
 }
@@ -373,6 +425,173 @@ export function createAlternateDraft(history: VersionHistory, branch: { id: stri
   next.branches.push({ id: branch.id, name: branch.name.trim(), baseSnapshotId: branch.fromSnapshotId, headSnapshotId: branch.fromSnapshotId });
   next.activeBranchId = branch.id;
   return next;
+}
+
+export function findCommonSnapshot(snapshots: readonly ProjectSnapshot[], leftId: string, rightId: string): ProjectSnapshot | undefined {
+  const byId = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const leftAncestors = new Set<string>();
+  const leftQueue = [leftId];
+  while (leftQueue.length) {
+    const id = leftQueue.shift()!;
+    if (leftAncestors.has(id)) continue;
+    leftAncestors.add(id);
+    leftQueue.push(...(byId.get(id)?.parentIds ?? []));
+  }
+  const rightQueue = [rightId];
+  const seen = new Set<string>();
+  while (rightQueue.length) {
+    const id = rightQueue.shift()!;
+    if (leftAncestors.has(id)) return byId.get(id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    rightQueue.push(...(byId.get(id)?.parentIds ?? []));
+  }
+  return undefined;
+}
+
+export function openDraftReview(history: VersionHistory, input: OpenDraftReviewInput): VersionHistory {
+  const id = requiredDraftReviewValue(input.id, "Draft Review id");
+  const title = requiredDraftReviewValue(input.title, "Draft Review title");
+  const sourceBranchId = requiredDraftReviewValue(input.sourceBranchId, "Source draft id");
+  const targetBranchId = requiredDraftReviewValue(input.targetBranchId, "Target draft id");
+  const authorId = requiredDraftReviewValue(input.authorId, "Draft Review author id");
+  const createdAt = requiredDraftReviewValue(input.createdAt, "Draft Review timestamp");
+  if (history.draftReviews.some((review) => review.id === id)) throw new Error(`Draft Review '${id}' already exists.`);
+  if (sourceBranchId === targetBranchId) throw new Error("A Draft Review requires different source and target drafts.");
+  const source = draftReviewBranch(history, sourceBranchId);
+  const target = draftReviewBranch(history, targetBranchId);
+  const base = findCommonSnapshot(history.snapshots, source.headSnapshotId, target.headSnapshotId);
+  if (!base) throw new Error("The source and target drafts do not share a project baseline.");
+  draftReviewProjectSnapshot(history, base.id, "Draft Review baseline");
+  draftReviewProjectSnapshot(history, source.headSnapshotId, "Source draft head");
+  draftReviewProjectSnapshot(history, target.headSnapshotId, "Target draft head");
+  const review: DraftReview = {
+    id,
+    title,
+    description: input.description?.trim() ?? "",
+    sourceBranchId,
+    targetBranchId,
+    baseSnapshotId: base.id,
+    sourceSnapshotId: source.headSnapshotId,
+    targetSnapshotId: target.headSnapshotId,
+    authorId,
+    reviewerIds: uniqueNonempty(input.reviewerIds ?? []),
+    status: "open",
+    createdAt,
+    updatedAt: createdAt,
+    resolutions: {},
+  };
+  const next = clone(history);
+  next.draftReviews.push(review);
+  return next;
+}
+
+export function refreshDraftReview(history: VersionHistory, reviewId: string, updatedAt: string): VersionHistory {
+  const review = draftReview(history, reviewId);
+  const refreshedAt = requiredDraftReviewValue(updatedAt, "Draft Review timestamp");
+  if (review.status === "applied" || review.status === "closed") throw new Error(`A ${review.status} Draft Review cannot be refreshed.`);
+  const source = draftReviewBranch(history, review.sourceBranchId);
+  const target = draftReviewBranch(history, review.targetBranchId);
+  const base = findCommonSnapshot(history.snapshots, source.headSnapshotId, target.headSnapshotId);
+  if (!base) throw new Error("The source and target drafts do not share a project baseline.");
+  draftReviewProjectSnapshot(history, base.id, "Draft Review baseline");
+  draftReviewProjectSnapshot(history, source.headSnapshotId, "Source draft head");
+  draftReviewProjectSnapshot(history, target.headSnapshotId, "Target draft head");
+  if (review.sourceSnapshotId === source.headSnapshotId && review.targetSnapshotId === target.headSnapshotId && review.baseSnapshotId === base.id) return clone(history);
+  return replaceDraftReview(history, {
+    ...review,
+    baseSnapshotId: base.id,
+    sourceSnapshotId: source.headSnapshotId,
+    targetSnapshotId: target.headSnapshotId,
+    status: "open",
+    updatedAt: refreshedAt,
+    resolutions: {},
+    appliedSnapshotId: undefined,
+  });
+}
+
+export function updateDraftReviewStatus(history: VersionHistory, reviewId: string, status: Exclude<DraftReviewStatus, "applied">, updatedAt: string): VersionHistory {
+  const review = draftReview(history, reviewId);
+  if (review.status === "applied") throw new Error("An applied Draft Review is final.");
+  if (review.status === "closed" && status !== "open" && status !== "closed") throw new Error("Reopen a closed Draft Review before changing its status.");
+  return replaceDraftReview(history, { ...review, status, updatedAt: requiredDraftReviewValue(updatedAt, "Draft Review timestamp") });
+}
+
+export function draftReviewPreview(history: VersionHistory, reviewId: string, mode: SnapshotDiffMode = "scene"): DraftReviewPreview {
+  const review = draftReview(history, reviewId);
+  const sourceBranch = draftReviewBranch(history, review.sourceBranchId);
+  const targetBranch = draftReviewBranch(history, review.targetBranchId);
+  const baseSnapshot = draftReviewProjectSnapshot(history, review.baseSnapshotId, "Draft Review baseline");
+  const sourceSnapshot = draftReviewProjectSnapshot(history, review.sourceSnapshotId, "Source draft version");
+  const targetSnapshot = draftReviewProjectSnapshot(history, review.targetSnapshotId, "Target draft version");
+  const mergeResult = mergeSnapshots(baseSnapshot, targetSnapshot, sourceSnapshot, { default: "ours", paths: review.resolutions });
+  const unresolvedConflictPaths = mergeResult.conflicts
+    .map((conflict) => conflict.path)
+    .filter((path) => !Object.prototype.hasOwnProperty.call(review.resolutions, path));
+  const sourceOutdated = sourceBranch.headSnapshotId !== review.sourceSnapshotId;
+  const targetOutdated = targetBranch.headSnapshotId !== review.targetSnapshotId;
+  const outdated = sourceOutdated || targetOutdated;
+  return {
+    review: clone(review),
+    baseSnapshot,
+    sourceSnapshot,
+    targetSnapshot,
+    sourceHeadSnapshotId: sourceBranch.headSnapshotId,
+    targetHeadSnapshotId: targetBranch.headSnapshotId,
+    comparison: compareSnapshots(baseSnapshot, sourceSnapshot, mode),
+    mergeResult,
+    conflicts: mergeResult.conflicts,
+    unresolvedConflictPaths,
+    sourceOutdated,
+    targetOutdated,
+    outdated,
+    readyToApply: review.status === "approved" && !outdated && unresolvedConflictPaths.length === 0,
+  };
+}
+
+export function setDraftReviewResolution(
+  history: VersionHistory,
+  reviewId: string,
+  path: string,
+  resolution: MergeResolution | null,
+  updatedAt: string,
+): VersionHistory {
+  const review = draftReview(history, reviewId);
+  if (review.status === "applied" || review.status === "closed") throw new Error(`A ${review.status} Draft Review cannot be changed.`);
+  const preview = draftReviewPreview(history, review.id);
+  if (preview.outdated) throw new Error("Refresh this Draft Review before resolving overlapping edits.");
+  const conflictPath = requiredDraftReviewValue(path, "Overlapping edit path");
+  if (!preview.conflicts.some((conflict) => conflict.path === conflictPath)) throw new Error(`Draft Review conflict '${conflictPath}' does not exist.`);
+  const resolutions = { ...review.resolutions };
+  if (resolution === null) delete resolutions[conflictPath];
+  else resolutions[conflictPath] = resolution;
+  return replaceDraftReview(history, {
+    ...review,
+    resolutions,
+    status: review.status === "approved" ? "open" : review.status,
+    updatedAt: requiredDraftReviewValue(updatedAt, "Draft Review timestamp"),
+  });
+}
+
+export function markDraftReviewApplied(history: VersionHistory, reviewId: string, appliedSnapshotId: string, updatedAt: string): VersionHistory {
+  const review = draftReview(history, reviewId);
+  if (review.status !== "approved") throw new Error("Approve the Draft Review before applying it.");
+  const source = draftReviewBranch(history, review.sourceBranchId);
+  const target = draftReviewBranch(history, review.targetBranchId);
+  const applied = draftReviewProjectSnapshot(history, requiredDraftReviewValue(appliedSnapshotId, "Applied snapshot id"), "Applied draft version");
+  const preview = draftReviewPreview(history, review.id);
+  if (source.headSnapshotId !== review.sourceSnapshotId) throw new Error("Refresh this Draft Review before applying it.");
+  if (preview.unresolvedConflictPaths.length) throw new Error("Resolve every overlapping edit before applying this Draft Review.");
+  if (target.headSnapshotId !== applied.id || applied.branchId !== target.id) throw new Error("The applied version must be the target draft head.");
+  if (!applied.parentIds.includes(review.targetSnapshotId) || !applied.parentIds.includes(review.sourceSnapshotId)) {
+    throw new Error("The applied version must join the reviewed source and target versions.");
+  }
+  return replaceDraftReview(history, {
+    ...review,
+    status: "applied",
+    appliedSnapshotId: applied.id,
+    updatedAt: requiredDraftReviewValue(updatedAt, "Draft Review timestamp"),
+  });
 }
 
 export function addMilestone(history: VersionHistory, milestone: Milestone): VersionHistory {
@@ -734,6 +953,42 @@ function conflictValue(value: MaybeValue): unknown {
 
 function uniqueSorted(values: string[]) {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+
+function uniqueNonempty(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function requiredDraftReviewValue(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${label} is required.`);
+  return normalized;
+}
+
+function draftReview(history: VersionHistory, reviewId: string): DraftReview {
+  const id = requiredDraftReviewValue(reviewId, "Draft Review id");
+  const review = history.draftReviews.find((item) => item.id === id);
+  if (!review) throw new Error(`Draft Review '${id}' does not exist.`);
+  return review;
+}
+
+function draftReviewBranch(history: VersionHistory, branchId: string): DraftBranch {
+  const branch = history.branches.find((item) => item.id === branchId);
+  if (!branch) throw new Error(`Draft '${branchId}' does not exist.`);
+  return branch;
+}
+
+function draftReviewProjectSnapshot(history: VersionHistory, snapshotId: string, label: string): ProjectSnapshot {
+  const snapshot = history.snapshots.find((item) => item.id === snapshotId);
+  if (!snapshot) throw new Error(`${label} '${snapshotId}' does not exist.`);
+  if (snapshotScopeOf(snapshot).kind !== "project") throw new Error(`${label} must be a whole-project version.`);
+  return snapshot;
+}
+
+function replaceDraftReview(history: VersionHistory, review: DraftReview): VersionHistory {
+  const next = clone(history);
+  next.draftReviews = next.draftReviews.map((item) => item.id === review.id ? clone(review) : item);
+  return next;
 }
 
 function clone<T>(value: T): T {

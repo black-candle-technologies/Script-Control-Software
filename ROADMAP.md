@@ -2,7 +2,7 @@
 
 # Script Control Software (SCS) Roadmap
 
-> Implementation status (July 2026): Phases 0–11 have working, tested local-first workflows in the application. Collaboration uses advisory nine-role controls, provider-synced portable projects with crash-recoverable manifests and per-conflict three-way recovery, and hardened optional HTTPS Git sync. PDF uses native printing, and optional assistance produces a private companion prompt without sending data. Hosted identity/sync, real-time co-editing, and direct AI-provider calls remain deployment choices rather than core dependencies. See [docs/COLLABORATION.md](docs/COLLABORATION.md) and [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
+> Implementation status (August 2026): Phases 0–11 have working local-first workflows in the application. The current branch adds accessible Breakdown/outline/board interactions, exact script references, rich FDX title pages, generic screenplay tabs, validated nested layouts, and a revisioned native multi-window authority. These changes have focused TypeScript, Rust, and Chromium coverage; the real two-window/monitor/capability smoke checklist remains a required release step and is not implied by automated tests. Collaboration uses advisory nine-role controls, provider-synced portable projects with crash-recoverable manifests and per-conflict three-way recovery, and hardened optional HTTPS Git sync. PDF uses native printing, and optional assistance produces a private companion prompt without sending data. Hosted identity/sync, real-time co-editing, and direct AI-provider calls remain deployment choices rather than core dependencies. See [docs/COLLABORATION.md](docs/COLLABORATION.md), [docs/TESTING.md](docs/TESTING.md), and [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
 Script Control Software, also known as **SCS**, is intended to become a local-first professional screenwriting and story development application. The long-term goal is to combine the familiar writing power of Final Draft-style screenplay software with a deeper development workspace for beat boards, treatments, character/object tracking, television continuity, Git-style version control, and generated script breakdowns.
 
@@ -184,6 +184,8 @@ Project
 
 Users can outline and develop a story using acts, sequences, scenes, and beats instead of a flat board of generic cards.
 
+**Current implementation:** the Write tree always exposes Act → Sequence → Scene → Beat, including single/empty sequences and Unassigned. Visual Board moves preview exact before/after/append/empty/unassigned placement, have keyboard commands and live announcements, and remain outline-only until **Make Draft Match Outline**. Scene selection, selected/active/unassigned beat creation, inline beat editing, and the accessible scene context menu share this hierarchy rather than introducing another board model.
+
 ---
 
 ## Phase 3 — Editable Screenplay Mode and FDX Round-Tripping
@@ -209,7 +211,7 @@ Move from read-only FDX support to real screenplay editing.
 - Export back to valid `.fdx`.
 - Add Fountain export.
 - Add PDF export.
-- Add basic title page support.
+- Add rich title-page support with canonical fields plus ordered duplicate/custom paragraphs, styled runs, safe FDX attributes, and explicit Fountain/FDX interoperability warnings.
 - Add auto-complete for character names.
 - Add auto-complete for existing locations.
 - Add auto-complete for scene headings.
@@ -226,6 +228,8 @@ Move from read-only FDX support to real screenplay editing.
 ### Deliverable
 
 Users can write, edit, and export FDX-compatible screenplay files from SCS.
+
+**Current implementation:** the realistic synthetic title-page fixture exercises multiple paragraphs/runs, duplicate and vendor fields, empty placeholders, multiline text, supported formatting/revision attributes, export warnings, and legacy normalization. Fountain deliberately emits only its canonical title vocabulary while retaining richer FDX data in the project model.
 
 ---
 
@@ -277,6 +281,8 @@ Make the compiler understand the entities moving through the script.
 ### Deliverable
 
 SCS can automatically generate and maintain a connected database of characters, locations, objects, props, and recurring story elements.
+
+**Current implementation:** object recognition retains every captured mention's stable block/scene, exact offsets, matched text, and occurrence order. Reference and production-evidence links use a typed `ScriptTarget`; stale references relocate only inside the original block, then fall back to that block or scene without a global text jump.
 
 ---
 
@@ -334,6 +340,8 @@ Create the SCS compiler: a deterministic analysis engine that turns screenplay c
 ### Deliverable
 
 Users can compile a script and receive generated reports useful for rewriting, development, and production planning.
+
+**Current implementation:** all major Breakdown groups use reusable controlled disclosures with visible labels/counts, sensible defaults, per-project/document device-local persistence, and **Expand All**, **Collapse All**, and **Reset Sections** controls. Dense report children stay mounted while hidden.
 
 ---
 
@@ -554,6 +562,8 @@ Create the powerful multi-panel workspace that makes SCS feel like a true creati
 ### Deliverable
 
 Users can build custom creative workspaces for writing, development, revision, production, and television continuity.
+
+**Current implementation:** the mode rail remains the fast preset path, while a registered panel renderer and Window/Layout manager provide validated customization. Generic screenplay tabs and active document/editor view are window-local. Portable custom layouts use a nested `layoutVersion: 2` dock tree with legacy-flat migration, protected built-ins, normalized logical floats, hidden/off-screen recovery, and shortcut operations. Native windows join one revisioned coordinator with idempotent actions, granular stale conflict handling, a serialized leader save queue, deterministic leader promotion/final-close behavior, validated capability-safe labels, and acknowledged identifier-only cross-window transfer protocols. Per-window active mode/layout persist locally; physical window geometry is tracked only for the live native registry and is not yet restored on restart.
 
 ---
 

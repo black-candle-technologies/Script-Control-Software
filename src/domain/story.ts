@@ -13,19 +13,31 @@ export function resolveStoryStructure(blocks: ScreenplayBlock[], saved?: CustomS
       ...sequence,
       sceneIds: sequence.sceneIds.filter((id) => sceneIds.has(id) && !assigned.has(id) && Boolean(assigned.add(id))),
     }));
-  if (!sequences.length) sequences.push({ id: "sequence-1", actId: acts[0].id, title: "Sequence 1", sceneIds: [] });
-  sequences[0].sceneIds.push(...scenes.map((scene) => scene.id).filter((id) => !assigned.has(id)));
   const sequenceIds = new Set(sequences.map((sequence) => sequence.id));
+  const sceneLabels = Object.fromEntries(scenes.map((scene) => [
+    scene.id,
+    scene.sceneNumber?.trim() || saved.sceneLabels?.[scene.id]?.trim() || String(scene.number),
+  ]));
+  const beats = saved.beats.map((beat) => ({
+    ...beat,
+    sceneId: beat.sceneId && sceneIds.has(beat.sceneId) ? beat.sceneId : undefined,
+    sequenceId: beat.sequenceId && sequenceIds.has(beat.sequenceId) ? beat.sequenceId : undefined,
+    moments: beat.moments ?? [],
+  }));
+  const nodeIds = new Set([
+    ...acts.map((act) => act.id),
+    ...sequences.map((sequence) => sequence.id),
+    ...sceneIds,
+    ...beats.map((beat) => beat.id),
+  ]);
   return {
+    ...saved,
     acts,
     sequences,
-    beats: saved.beats.map((beat) => ({
-      ...beat,
-      sceneId: beat.sceneId && sceneIds.has(beat.sceneId) ? beat.sceneId : undefined,
-      sequenceId: beat.sequenceId && sequenceIds.has(beat.sequenceId) ? beat.sequenceId : undefined,
-      moments: beat.moments ?? [],
-    })),
+    beats,
     sceneOrder: unique(saved.sceneOrder.filter((id) => sceneIds.has(id)).concat(scenes.map((scene) => scene.id))),
+    sceneLabels,
+    ...(saved.connections ? { connections: saved.connections.filter((connection) => nodeIds.has(connection.fromId) && nodeIds.has(connection.toId)) } : {}),
   };
 }
 
@@ -35,33 +47,66 @@ export function moveStoryScene(structure: CustomStoryStructure, sceneId: string,
   return { ...structure, sceneOrder };
 }
 
+/**
+ * Turn the visible Act -> Sequence order into screenplay scene order. Scenes
+ * outside a sequence remain present, in their existing relative order.
+ */
+export function sceneOrderForSequences(
+  structure: Pick<CustomStoryStructure, "acts" | "sceneOrder">,
+  sequences: readonly CustomStoryStructure["sequences"][number][],
+): string[] {
+  const position = new Map(structure.sceneOrder.map((id, index) => [id, index]));
+  const orderedAssigned = structure.acts.flatMap((act) => sequences
+    .filter((sequence) => sequence.actId === act.id)
+    .flatMap((sequence) => sequence.sceneIds
+      .filter((id) => position.has(id))));
+  const assigned = new Set(orderedAssigned);
+  const unassigned = structure.sceneOrder.filter((id) => !assigned.has(id));
+  return unique([...orderedAssigned, ...unassigned]);
+}
+
+/**
+ * Apply the outline's scene order to the screenplay while keeping every scene's
+ * paragraphs together. Scene ids not present in the requested order are kept at
+ * the end so an incomplete board can never discard script content.
+ */
+export function applyStorySceneOrder(blocks: ScreenplayBlock[], requestedOrder: readonly string[]): ScreenplayBlock[] {
+  const scenes = deriveScenes(blocks);
+  if (!scenes.length) return blocks;
+  const prefix = blocks.slice(0, scenes[0].blockIndex);
+  const chunks = new Map(scenes.map((scene, index) => [
+    scene.id,
+    blocks.slice(scene.blockIndex, scenes[index + 1]?.blockIndex ?? blocks.length),
+  ]));
+  const order = unique(requestedOrder.filter((id) => chunks.has(id)).concat(scenes.map((scene) => scene.id)));
+  if (order.every((id, index) => id === scenes[index]?.id)) return blocks;
+  return [...prefix, ...order.flatMap((id) => chunks.get(id) ?? [])];
+}
+
 function defaultStructure(blocks: ScreenplayBlock[]): CustomStoryStructure {
   const scenes = deriveScenes(blocks);
   const acts: CustomStoryStructure["acts"] = [];
-  const sequences: CustomStoryStructure["sequences"] = [];
   let currentAct = { id: "act-1", title: "Act I" };
   acts.push(currentAct);
-  let currentSequence: CustomStoryStructure["sequences"][number] | undefined;
   for (const scene of scenes) {
     const marker = blocks.slice(0, scene.blockIndex).reverse().find((block) => block.type === "new_act" && block.text.trim());
     if (marker && marker.id !== currentAct.id && !acts.some((act) => act.id === marker.id)) {
       currentAct = { id: marker.id, title: marker.text.trim() };
       acts.push(currentAct);
-      currentSequence = undefined;
     }
-    if (!currentSequence || currentSequence.actId !== currentAct.id || currentSequence.sceneIds.length === 8) {
-      currentSequence = { id: `${currentAct.id}-sequence-${sequences.filter((sequence) => sequence.actId === currentAct.id).length + 1}`, actId: currentAct.id, title: `Sequence ${sequences.filter((sequence) => sequence.actId === currentAct.id).length + 1}`, sceneIds: [] };
-      sequences.push(currentSequence);
-    }
-    currentSequence.sceneIds.push(scene.id);
   }
-  if (!sequences.length) sequences.push({ id: "sequence-1", actId: currentAct.id, title: "Sequence 1", sceneIds: [] });
   const beats = blocks.flatMap((block, index) => {
     if (block.type !== "note" || !block.text.trim()) return [];
     const scene = [...scenes].reverse().find((candidate) => candidate.blockIndex < index);
     return scene ? [{ id: block.id, text: block.text.trim(), sceneId: scene.id, status: "drafted" as const, moments: [] }] : [];
   });
-  return { acts, sequences, beats, sceneOrder: scenes.map((scene) => scene.id) };
+  return {
+    acts,
+    sequences: [],
+    beats,
+    sceneOrder: scenes.map((scene) => scene.id),
+    sceneLabels: Object.fromEntries(scenes.map((scene) => [scene.id, scene.sceneNumber?.trim() || String(scene.number)])),
+  };
 }
 
 function unique(values: string[]): string[] {

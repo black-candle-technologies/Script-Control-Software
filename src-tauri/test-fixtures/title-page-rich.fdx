@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<FinalDraft DocumentType="Script" Template="No" Version="3">
+  <TitlePage>
+    <Content>
+      <Paragraph Type="Title" Alignment="Center" FirstIndent="0.00" SpacingBefore="18">
+        <Text Style="Bold">THE CLOCKWORK </Text>
+        <Text Style="Italic" RevisionID="7">HORIZON</Text>
+      </Paragraph>
+      <Paragraph Type="Credit" Alignment="Center"><Text>an original screenplay</Text></Paragraph>
+      <Paragraph Type="Authors" Alignment="Center">
+        <Text>Ada Example</Text><Text Style="Underline"> &amp; Ben Sample</Text>
+      </Paragraph>
+      <Paragraph Type="Author" Alignment="Center"><Text>Duplicate author paragraph</Text></Paragraph>
+      <Paragraph Type="Written By" Alignment="Center"><Text>Another duplicate byline</Text></Paragraph>
+      <Paragraph Type="Source" Alignment="Center"><Text>Inspired by wholly synthetic events</Text></Paragraph>
+      <Paragraph Type="Draft Date" Alignment="Center"><Text>August 17, 2026</Text></Paragraph>
+      <Paragraph Type="Contact" Alignment="Left" FirstIndent="36" VendorContactLayout="stacked">
+        <Text>Example Pictures</Text><Text Style="Italic">&#10;writer@example.test</Text>
+      </Paragraph>
+      <Paragraph Type="Copyright" Alignment="Center"><Text>Copyright 2026 Example Pictures</Text></Paragraph>
+      <Paragraph Type="Notes" Alignment="Left"><Text></Text></Paragraph>
+      <Paragraph Type="Custom Dedication" Alignment="Center" VendorFlag="preserve-me">
+        <Text Style="Underline">For everyone testing edge cases.</Text>
+      </Paragraph>
+      <Paragraph Alignment="Center" VendorNoType="yes"><Text>Untyped vendor content</Text></Paragraph>
+      <Paragraph Type="Empty Optional" Alignment="Right" VendorEmpty="yes"/>
+    </Content>
+  </TitlePage>
+  <Content>
+    <Paragraph Type="Scene Heading" Number="1" Id="scene-1"><Text>INT. CLOCK SHOP - NIGHT</Text></Paragraph>
+    <Paragraph Type="Action" Id="action-1"><Text>Every clock stops at once.</Text></Paragraph>
+  </Content>
+</FinalDraft>

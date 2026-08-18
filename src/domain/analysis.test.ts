@@ -79,6 +79,20 @@ test("character, location, and object profiles retain deterministic story contex
   assert.ok(mara.cueVariants.includes("M. VALE (V.O.)"));
   assert.deepEqual(mara.coAppearances[0], { character: "DELL", count: 1, sceneNumbers: [1] });
   assert.equal(mara.dialogueLines[1].blockId, "d3");
+  const firstDialogue = mara.dialogueLines[0];
+  assert.deepEqual({
+    blockId: firstDialogue.blockId,
+    startOffset: firstDialogue.startOffset,
+    endOffset: firstDialogue.endOffset,
+    matchedText: firstDialogue.matchedText,
+    occurrence: firstDialogue.occurrence,
+  }, {
+    blockId: "d1",
+    startOffset: 0,
+    endOffset: firstDialogue.text.length,
+    matchedText: firstDialogue.text,
+    occurrence: 0,
+  });
 
   const locations = analyzeLocations(document);
   const safeHouse = locations.find((location) => location.name === "SAFE HOUSE");
@@ -86,6 +100,19 @@ test("character, location, and object profiles retain deterministic story contex
   assert.deepEqual(safeHouse.aliases, ["SAFEHOUSE"]);
   assert.deepEqual(safeHouse.interiorExterior, ["INT"]);
   assert.deepEqual(safeHouse.timesOfDay, ["NIGHT"]);
+  assert.deepEqual({
+    blockId: safeHouse.appearances[0].blockId,
+    startOffset: safeHouse.appearances[0].startOffset,
+    endOffset: safeHouse.appearances[0].endOffset,
+    matchedText: safeHouse.appearances[0].matchedText,
+    occurrence: safeHouse.appearances[0].occurrence,
+  }, {
+    blockId: "s3",
+    startOffset: 5,
+    endOffset: 14,
+    matchedText: "SAFEHOUSE",
+    occurrence: 0,
+  });
 
   const objects = analyzeObjects(document, characters);
   const gun = objects.find((object) => object.name === "GUN");
@@ -96,6 +123,26 @@ test("character, location, and object profiles retain deterministic story contex
   assert.equal(gun.likelyOwner, "MARA");
   assert.equal(gun.productionCategory, "weapons");
   assert.equal(gun.continuity.length, 3);
+});
+
+test("object continuity retains exact capture offsets for punctuation, plurals, and repeated mentions", () => {
+  const text = "A knife, then KNIVES; another knife.";
+  const profiles = analyzeObjects([
+    block("scene-exact", "scene_heading", "INT. WORKSHOP - NIGHT"),
+    block("action-exact", "action", text),
+  ]);
+  const knife = profiles.find((profile) => profile.name === "KNIFE");
+  assert.ok(knife);
+  assert.equal(knife.continuity.length, 1);
+  assert.equal(knife.continuity[0].mentionCount, 3);
+  assert.deepEqual(knife.continuity[0].occurrences, [
+    { startOffset: text.indexOf("knife"), endOffset: text.indexOf("knife") + 5, matchedText: "knife", occurrence: 0 },
+    { startOffset: text.indexOf("KNIVES"), endOffset: text.indexOf("KNIVES") + 6, matchedText: "KNIVES", occurrence: 1 },
+    { startOffset: text.lastIndexOf("knife"), endOffset: text.lastIndexOf("knife") + 5, matchedText: "knife", occurrence: 2 },
+  ]);
+  for (const occurrence of knife.continuity[0].occurrences) {
+    assert.equal(text.slice(occurrence.startOffset, occurrence.endOffset), occurrence.matchedText);
+  }
 });
 
 test("entity overrides confirm, reject, rename, merge, and split without mutating recognition output", () => {
@@ -195,6 +242,24 @@ test("compiler supplies structure, coverage, warnings, revisions, and every prod
   assert.deepEqual(Object.keys(report.production), categories);
   assert.ok(report.production.animals.length > 0);
   assert.ok(report.production.highComplexityScenes.length > 0);
+  assert.equal(report.production.cast.filter((row) => row.item === "MARA").length, 1);
+  assert.match(report.production.cast.find((row) => row.item === "MARA")?.evidence ?? "", /3 scene\(s\), 3 cue\(s\), 3 dialogue block\(s\)/);
+  assert.equal(new Set(report.production.cast.map((row) => row.item)).size, report.production.cast.length);
+  assert.equal(new Set(report.production.locations.map((row) => row.item)).size, report.production.locations.length);
+  assert.ok(report.production.props.every((row) => !["GUN", "CAR", "UNIFORM"].includes(row.item)));
+  assert.ok(report.production.weapons.some((row) => row.item === "GUN"));
+  assert.ok(report.production.vehicles.some((row) => row.item === "CAR"));
+  assert.ok(report.production.wardrobe.some((row) => row.item === "UNIFORM"));
+  const crashEvidence = report.production.stunts.find((row) => row.item === "CRASH");
+  assert.ok(crashEvidence?.occurrences?.length);
+  assert.equal(crashEvidence.occurrences[0].blockId, "a2");
+  assert.equal(document.blocks.find((block) => block.id === "a2")?.text.slice(
+    crashEvidence.occurrences[0].startOffset,
+    crashEvidence.occurrences[0].endOffset,
+  ), "crashes");
+  const castEvidence = report.production.cast.find((row) => row.item === "MARA")?.occurrences?.[0];
+  assert.equal(castEvidence?.blockId, "d1");
+  assert.equal(castEvidence?.matchedText, document.blocks.find((block) => block.id === "d1")?.text);
   const markdown = analysisToMarkdown(report);
   for (const heading of ["Overview", "Scenes", "Characters", "Character Arcs", "Locations", "Objects and Props", "Acts", "Sequences", "Beats", "Plot Threads", "Treatment Coverage", "Unresolved Beats", "Pacing Warnings", "Revision", "Production"]) {
     assert.match(markdown, new RegExp(`## ${heading}`));
@@ -217,6 +282,20 @@ test("compiler supplies structure, coverage, warnings, revisions, and every prod
   assert.match(analysisToCsv(report, "revision"), /^from,to,total,added/m);
   assert.match(analysisToCsv(report, "production"), /^category,scene,heading,item,evidence/m);
   assert.equal(JSON.parse(analysisToJson(report)).title, "Signal Fire");
+});
+
+test("production props are unique per scene even when repeated across action blocks", () => {
+  const repeated = structuredClone(document);
+  repeated.blocks.splice(3, 0,
+    block("a1-phone-2", "action", "The phone rings."),
+    block("a1-phone-3", "action", "Mara pockets the phone."),
+  );
+
+  const report = compileAnalysis(repeated);
+  const garagePhones = report.production.props.filter((row) => row.sceneNumber === 1 && row.item === "PHONE");
+  assert.equal(garagePhones.length, 1);
+  assert.match(garagePhones[0].evidence, /phone rings/i);
+  assert.match(garagePhones[0].evidence, /pockets the phone/i);
 });
 
 test("compiler uses the editable project hierarchy when supplied", () => {

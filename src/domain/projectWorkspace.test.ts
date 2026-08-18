@@ -12,7 +12,7 @@ import {
   syncSeriesDocuments,
   workspaceForPortableStorage,
 } from "./projectWorkspace.ts";
-import { deriveScenes, emptyDocument, screenplayTextFingerprint, type ScreenplayDocument } from "./screenplay.ts";
+import { deriveScenes, emptyDocument, emptyWorkspace, screenplayTextFingerprint, type ScreenplayDocument } from "./screenplay.ts";
 import { parseFountain, toFountain } from "./fountain.ts";
 import { getWorkspaceLayout } from "./workspaceLayouts.ts";
 
@@ -35,7 +35,55 @@ test("normalization migrates an older bundle and rejects malformed documents", (
   assert.equal(session.schemaVersion, 4);
   assert.match(session.documents[0].id!, /^document-/);
   assert.equal(session.workspace.collaborators[0].role, "owner");
+  assert.deepEqual(session.versionHistory.draftReviews, []);
   assert.throws(() => normalizeProjectSession({ documents: [{ titlePage: {}, blocks: [{ type: "action" }] }] }), /block 1/i);
+});
+
+test("multiple generic screenplays do not implicitly turn a feature project into television", () => {
+  const first = emptyDocument("First");
+  const second = emptyDocument("Second");
+  const explicitFeature = normalizeProjectSession({ projectType: "featureFilm", documents: [first, second] });
+  assert.equal(explicitFeature.projectType, "featureFilm");
+  const genericLegacy = normalizeProjectSession({ documents: [first, second] });
+  assert.equal(genericLegacy.projectType, "featureFilm");
+  const televisionLegacy = normalizeProjectSession({ documents: [first, second], workspace: { series: { showBible: "A serialized drama." } } });
+  assert.equal(televisionLegacy.projectType, "television");
+});
+
+test("normalization derives canonical title fields while retaining ordered title runs and attributes", () => {
+  const document = emptyDocument();
+  document.title = "filename-fallback";
+  document.titlePage = {
+    title: "",
+    author: "",
+    blocks: [
+      { type: "Title", text: "Imported Title", textRuns: [{ text: "Imported Title", bold: true, italic: false, underline: false, strikeout: false, metadata: { Style: "Bold" } }], metadata: { Type: "Title", Alignment: "Center" } },
+      { type: "Authors", text: "Ada & Ben", metadata: { Type: "Authors" } },
+      { type: "Draft Date", text: "August 17, 2026", metadata: { VendorDateLayout: "boxed" } },
+      { type: "Custom Vendor Field", text: "opaque", metadata: { VendorFlag: "yes" } },
+      { type: "Notes", text: "", metadata: { Alignment: "Left" } },
+    ],
+  };
+
+  const normalized = normalizeProjectSession({ documents: [document] });
+  const page = normalized.documents[0].titlePage;
+  assert.equal(page.title, "Imported Title");
+  assert.equal(page.author, "Ada & Ben");
+  assert.equal(page.draftDate, "August 17, 2026");
+  assert.deepEqual(page.blocks?.map((block) => block.type), ["Title", "Authors", "Draft Date", "Custom Vendor Field", "Notes"]);
+  assert.equal(page.blocks?.[0].textRuns?.[0].bold, true);
+  assert.equal(page.blocks?.[0].textRuns?.[0].metadata.Style, "Bold");
+  assert.equal(page.blocks?.[2].metadata.VendorDateLayout, "boxed");
+  assert.equal(page.blocks?.[4].text, "");
+});
+
+test("project naming uses a document filename fallback without inventing title-page content", () => {
+  const document = emptyDocument();
+  document.titlePage.title = "";
+  document.title = "filename-fallback";
+  const session = createProjectSession(document);
+  assert.equal(session.name, "filename-fallback");
+  assert.equal(session.documents[0].titlePage.title, "");
 });
 
 test("normalization repairs duplicate block ids before the editor renders", () => {
@@ -250,6 +298,55 @@ test("Fountain source materialization preserves imported metadata and the extern
   assert.equal(reimported.source?.lastImportedFingerprint, screenplayTextFingerprint(reimported));
 });
 
+test("a deleted screenplay cannot be resurrected by a stale Fountain source buffer", () => {
+  const removed = parseFountain("Title: Removed Draft\n\nINT. ARCHIVE - NIGHT\n\nProtected local source.\n");
+  removed.id = "removed-document";
+  const survivor = emptyDocument("Surviving Draft");
+  survivor.id = "surviving-document";
+  const session = createProjectSession(removed);
+  session.documents.push(survivor);
+  const afterRemoteDeletion = structuredClone(session);
+  afterRemoteDeletion.documents = [survivor];
+  afterRemoteDeletion.activeDocumentId = survivor.id;
+  const beforeAttempt = structuredClone(afterRemoteDeletion);
+
+  assert.throws(
+    () => materializeFountainSource(
+      afterRemoteDeletion,
+      removed.id!,
+      toFountain(removed).replace("Protected local source.", "Unsaved local source must not overwrite deletion."),
+    ),
+    /no longer exists/i,
+  );
+  assert.deepEqual(afterRemoteDeletion, beforeAttempt);
+  assert.equal(afterRemoteDeletion.documents.some((document) => document.id === removed.id), false);
+});
+
+test("Fountain title edits retain imported layout metadata and explicitly warn about stale styling", () => {
+  const document = parseFountain("Title: Original Title\nAuthor: Ada Example\n\nINT. ROOM - DAY\n\nAction.\n");
+  document.id = "styled-title";
+  document.titlePage.blocks = [
+    {
+      type: "Title",
+      text: "Original Title",
+      textRuns: [{ text: "Original Title", bold: true, italic: false, underline: false, strikeout: false, metadata: { Style: "Bold" } }],
+      metadata: { Type: "Title", Alignment: "Center", VendorSlot: "hero" },
+    },
+    { type: "Custom Dedication", text: "For edge cases.", metadata: { VendorFlag: "preserve-me" } },
+  ];
+  const session = createProjectSession(document);
+  const edited = materializeFountainSource(session, "styled-title", toFountain(document).replace("Title: Original Title", "Title: Edited Title"));
+  const page = edited.documents[0].titlePage;
+
+  assert.equal(page.title, "Edited Title");
+  assert.equal(page.blocks?.[0].text, "Edited Title");
+  assert.equal(page.blocks?.[0].textRuns?.[0].text, "Original Title");
+  assert.equal(page.blocks?.[0].metadata.VendorSlot, "hero");
+  assert.equal(page.blocks?.[1].type, "Custom Dedication");
+  assert.equal(page.blocks?.[1].metadata.VendorFlag, "preserve-me");
+  assert.ok(edited.documents[0].warnings?.some((warning) => warning.code === "TitlePageFountainPresentation"));
+});
+
 test("detached FDX relinking preserves local edits and exposes two-sided conflicts", () => {
   const fdxDocument = (text: string, path: string): ScreenplayDocument => {
     const document = parseFountain(`INT. ROOM - DAY\n\n${text}\n`);
@@ -292,6 +389,58 @@ test("detached FDX relinking preserves local edits and exposes two-sided conflic
   assert.equal(updated.disposition, "updated");
   assert.equal(updated.session.documents[0].blocks[1].text, "External action.");
   assert.equal(updated.session.documents[0].source?.lastImportedFingerprint, screenplayTextFingerprint(updated.session.documents[0]));
+});
+
+test("normalization preserves portable FDX beat board metadata", () => {
+  const document = emptyDocument("Beat board");
+  document.workspace!.storyStructure = {
+    acts: [{ id: "act-1", title: "Act I" }],
+    sequences: [],
+    sceneOrder: [],
+    sceneLabels: { "scene-a": "12A", "scene-empty": "  " },
+    beats: [{ id: "beat-a", title: "Arrival", text: "The team arrives.", color: "#AAAABBBBCCCC", board: { left: 40, top: 60, width: 240, height: 160 }, status: "drafted", moments: [], source: "fdx" }],
+    connections: [{ id: "link-a", fromId: "beat-a", toId: "beat-a", color: "#111122223333", frontCap: "None", endCap: "Arrow", board: { left: 100, top: 80, width: 40, height: 20 } }],
+    board: { id: "board-1", width: 2000, height: 1000, zoomLevel: 110.5, scrollOrigin: "20,40" },
+  };
+
+  const structure = normalizeProjectSession({ documents: [document] }).documents[0].workspace!.storyStructure!;
+  assert.equal(structure.beats[0].title, "Arrival");
+  assert.deepEqual(structure.beats[0].board, { left: 40, top: 60, width: 240, height: 160 });
+  assert.equal(structure.connections?.[0].endCap, "Arrow");
+  assert.deepEqual(structure.connections?.[0].board, { left: 100, top: 80, width: 40, height: 20 });
+  assert.deepEqual(structure.board, { id: "board-1", width: 2000, height: 1000, zoomLevel: 110.5, scrollOrigin: "20,40" });
+  assert.deepEqual(structure.sceneLabels, { "scene-a": "12A" });
+});
+
+test("FDX re-import replaces external beats by stable id and keeps SCS beats", () => {
+  const previous = parseFountain("INT. ROOM - DAY\n\nOriginal.\n");
+  previous.id = "linked";
+  previous.workspace = { ...emptyWorkspace(), storyStructure: {
+    acts: [{ id: "act-1", title: "Act I" }],
+    sequences: [],
+    sceneOrder: [previous.blocks[0].id],
+    sceneLabels: { [previous.blocks[0].id]: "7" },
+    beats: [
+      { id: "local", title: "Local", text: "Keep me", status: "idea", moments: [], source: "scs" },
+      { id: "external", title: "Old", text: "Old body", status: "drafted", moments: [], source: "fdx" },
+      { id: "removed", title: "Removed", text: "Gone upstream", status: "drafted", moments: [], source: "fdx" },
+    ],
+    connections: [{ id: "old-link", fromId: "external", toId: "removed" }],
+  } };
+  const session = createProjectSession(previous);
+  const imported = parseFountain("INT. ROOM - DAY\n\nExternal edit.\n");
+  imported.workspace = { ...emptyWorkspace(), storyStructure: {
+    acts: [{ id: "act-1", title: "Act I" }],
+    sequences: [],
+    sceneOrder: [imported.blocks[0].id],
+    beats: [{ id: "external", title: "Updated", text: "Updated body", status: "drafted", moments: [], source: "fdx" }],
+    connections: [],
+  } };
+
+  const structure = reconcileImportedDocument(session, "linked", imported).documents[0].workspace!.storyStructure!;
+  assert.deepEqual(structure.beats.map((beat) => [beat.id, beat.title]), [["local", "Local"], ["external", "Updated"]]);
+  assert.deepEqual(structure.connections, []);
+  assert.deepEqual(structure.sceneLabels, { [previous.blocks[0].id]: "7" });
 });
 
 test("legacy per-document comments surface in the project review workflow", () => {

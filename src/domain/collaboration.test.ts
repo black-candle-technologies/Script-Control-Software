@@ -168,6 +168,28 @@ test("comments and suggestions transition immutably and suggestions apply only t
   });
 });
 
+test("Draft Review comments preserve a normalized comparison anchor", () => {
+  const reviewed = createComment(workspace(), "reader", {
+    id: "draft-review-comment",
+    targetType: "draft-review",
+    targetId: " review-1 ",
+    changePath: " /documents/doc-1/blocks/action-1/text ",
+    text: "  This change needs context.  ",
+    createdAt: "2026-07-18T04:15:00Z",
+  });
+  assert.deepEqual(reviewed.reviews[0], {
+    id: "draft-review-comment",
+    kind: "comment",
+    authorId: "reader",
+    targetType: "draft-review",
+    targetId: "review-1",
+    changePath: "/documents/doc-1/blocks/action-1/text",
+    text: "This change needs context.",
+    status: "open",
+    createdAt: "2026-07-18T04:15:00Z",
+  });
+});
+
 test("suggestions are scoped to one document when FDX block and treatment ids repeat", () => {
   const base = session();
   const second = screenplay();

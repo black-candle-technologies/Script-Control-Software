@@ -1,0 +1,47 @@
+.brand-mark {
+  --brand-mark-size: 2rem;
+  --brand-mark-frame: #161a21;
+  --brand-mark-outline: #3b4554;
+  --brand-mark-ink: #d8a657;
+  display: block;
+  flex: 0 0 auto;
+  inline-size: var(--brand-mark-size);
+  block-size: var(--brand-mark-size);
+  overflow: visible;
+}
+
+.brand-mark__frame { fill: var(--brand-mark-frame); }
+
+.brand-mark__outline {
+  fill: none;
+  stroke: var(--brand-mark-outline);
+  stroke-width: 2;
+}
+
+.brand-mark__lettering { fill: var(--brand-mark-ink); }
+
+/* A semantic button may wrap a mark without creating a second visual frame. */
+.brand-mark-button.brand-mark-button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.brand-mark-button.brand-mark-button:active { box-shadow: none; }
+
+.brand-mark--loading .brand-mark__outline {
+  animation: brand-mark-loading 900ms ease-in-out infinite alternate;
+}
+
+@keyframes brand-mark-loading {
+  from { stroke: var(--brand-mark-outline); }
+  to { stroke: var(--brand-mark-ink); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-mark--loading .brand-mark__outline { animation: none; }
+}

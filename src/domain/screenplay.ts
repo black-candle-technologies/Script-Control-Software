@@ -46,10 +46,194 @@ export interface ScreenplayBlock {
   metadata?: Record<string, string>;
 }
 
+export type TitlePageField =
+  | "title"
+  | "credit"
+  | "author"
+  | "source"
+  | "draftDate"
+  | "contact"
+  | "copyright"
+  | "notes";
+
+export interface TitlePageBlock {
+  type: string;
+  text: string;
+  textRuns?: TextRun[];
+  metadata: Record<string, string>;
+}
+
 export interface TitlePage {
   title: string;
   author: string;
-  blocks?: { type: string; text: string; metadata: Record<string, string> }[];
+  credit?: string;
+  source?: string;
+  draftDate?: string;
+  contact?: string;
+  copyright?: string;
+  notes?: string;
+  /** Ordered imported paragraphs, including duplicate and vendor-specific fields. */
+  blocks?: TitlePageBlock[];
+}
+
+export const TITLE_PAGE_FIELD_ORDER: readonly TitlePageField[] = [
+  "title",
+  "credit",
+  "author",
+  "source",
+  "draftDate",
+  "contact",
+  "copyright",
+  "notes",
+];
+
+export const TITLE_PAGE_FIELD_LABELS: Readonly<Record<TitlePageField, string>> = {
+  title: "Title",
+  credit: "Credit",
+  author: "Author",
+  source: "Source",
+  draftDate: "Draft Date",
+  contact: "Contact",
+  copyright: "Copyright",
+  notes: "Notes",
+};
+
+/** Classifies common FDX/Fountain labels without treating arbitrary vendor labels as canonical. */
+export function canonicalTitlePageField(value: string): TitlePageField | undefined {
+  const key = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  switch (key) {
+    case "title": return "title";
+    case "credit": return "credit";
+    case "author":
+    case "authors":
+    case "writtenby": return "author";
+    case "source": return "source";
+    case "draftdate": return "draftDate";
+    case "contact":
+    case "contactinfo":
+    case "contactinformation": return "contact";
+    case "copyright": return "copyright";
+    case "note":
+    case "notes": return "notes";
+    default: return undefined;
+  }
+}
+
+/** Returns an explicit canonical value, or derives it from the first matching imported paragraph. */
+export function titlePageFieldValue(titlePage: TitlePage, field: TitlePageField): string {
+  const direct = titlePage[field];
+  if (typeof direct === "string") return direct;
+  const matches = titlePage.blocks?.filter((block) => canonicalTitlePageField(block.type || block.metadata?.Type || "") === field) ?? [];
+  return matches.find((block) => block.text.trim())?.text ?? matches[0]?.text ?? "";
+}
+
+/**
+ * Identifies the ordered paragraph that projects each canonical title-page field.
+ * An exact canonical-value match keeps empty placeholders and duplicate aliases from
+ * unexpectedly taking ownership; legacy data without a matching projection falls
+ * back to the first non-empty paragraph, then the first paragraph.
+ */
+export function representativeTitlePageBlockIndexes(titlePage: TitlePage): ReadonlyMap<TitlePageField, number> {
+  const candidates = new Map<TitlePageField, number[]>();
+  for (const [index, block] of (titlePage.blocks ?? []).entries()) {
+    const field = canonicalTitlePageField(block.type || block.metadata?.Type || "");
+    if (!field) continue;
+    candidates.set(field, [...(candidates.get(field) ?? []), index]);
+  }
+
+  const representatives = new Map<TitlePageField, number>();
+  for (const [field, indexes] of candidates) {
+    const direct = titlePage[field];
+    const exact = typeof direct === "string"
+      ? indexes.find((index) => titlePage.blocks?.[index]?.text === direct)
+      : undefined;
+    representatives.set(
+      field,
+      exact ?? indexes.find((index) => Boolean(titlePage.blocks?.[index]?.text.trim())) ?? indexes[0],
+    );
+  }
+  return representatives;
+}
+
+/** Updates a canonical field and its representative rich paragraph as one edit. */
+export function updateTitlePageField(titlePage: TitlePage, field: TitlePageField, text: string): TitlePage {
+  const index = representativeTitlePageBlockIndexes(titlePage).get(field);
+  if (index === undefined || !titlePage.blocks?.[index]) return { ...titlePage, [field]: text };
+  return {
+    ...titlePage,
+    [field]: text,
+    blocks: replaceTitlePageBlockText(titlePage.blocks, index, text),
+  };
+}
+
+/**
+ * Updates an ordered paragraph and, when it is the canonical representative,
+ * keeps the canonical projection in sync. Coherent imported run boundaries and
+ * their formatting/metadata survive ordinary plain-text edits.
+ */
+export function updateTitlePageBlockText(titlePage: TitlePage, index: number, text: string): TitlePage {
+  const block = titlePage.blocks?.[index];
+  if (!block) return titlePage;
+  const field = canonicalTitlePageField(block.type || block.metadata?.Type || "");
+  const isRepresentative = field !== undefined && representativeTitlePageBlockIndexes(titlePage).get(field) === index;
+  return {
+    ...titlePage,
+    ...(isRepresentative ? { [field]: text } : {}),
+    blocks: replaceTitlePageBlockText(titlePage.blocks ?? [], index, text),
+  };
+}
+
+function replaceTitlePageBlockText(blocks: readonly TitlePageBlock[], index: number, text: string): TitlePageBlock[] {
+  return blocks.map((block, blockIndex) => blockIndex === index
+    ? { ...block, text, ...(block.textRuns ? { textRuns: reconcileTextRuns(block, text) } : {}) }
+    : block);
+}
+
+function reconcileTextRuns(block: TitlePageBlock, text: string): TextRun[] {
+  const runs = block.textRuns ?? [];
+  if (!runs.length || block.text === text) return runs;
+  if (runs.map((run) => run.text).join("") !== block.text) return runs;
+
+  let prefixLength = 0;
+  while (prefixLength < block.text.length && prefixLength < text.length && block.text[prefixLength] === text[prefixLength]) {
+    prefixLength += 1;
+  }
+  let suffixLength = 0;
+  while (
+    suffixLength < block.text.length - prefixLength
+    && suffixLength < text.length - prefixLength
+    && block.text[block.text.length - suffixLength - 1] === text[text.length - suffixLength - 1]
+  ) {
+    suffixLength += 1;
+  }
+
+  const oldEnd = block.text.length - suffixLength;
+  const inserted = text.slice(prefixLength, text.length - suffixLength);
+  let offset = 0;
+  let targetIndex = runs.length - 1;
+  for (const [runIndex, run] of runs.entries()) {
+    const end = offset + run.text.length;
+    const containsChange = oldEnd > prefixLength
+      ? end > prefixLength && offset < oldEnd
+      : end >= prefixLength;
+    if (containsChange) {
+      targetIndex = runIndex;
+      break;
+    }
+    offset = end;
+  }
+
+  offset = 0;
+  return runs.map((run, runIndex) => {
+    const start = offset;
+    offset += run.text.length;
+    const beforeEnd = Math.max(0, Math.min(run.text.length, prefixLength - start));
+    const afterStart = Math.max(0, Math.min(run.text.length, oldEnd - start));
+    const nextText = run.text.slice(0, beforeEnd)
+      + (runIndex === targetIndex ? inserted : "")
+      + run.text.slice(afterStart);
+    return nextText === run.text ? run : { ...run, text: nextText };
+  });
 }
 
 export interface ScreenplayDocument {
@@ -69,13 +253,42 @@ export interface ScreenplayDocument {
   workspace?: WorkspaceData;
 }
 
-export type StoryBoardView = "act" | "sequence" | "scene" | "beat" | "timeline";
+export type StoryBoardView = "board" | "act" | "sequence" | "scene" | "beat" | "timeline";
+
+export interface StoryBoardRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface StoryBoardCanvas {
+  id?: string;
+  width: number;
+  height: number;
+  zoomLevel?: number;
+  scrollOrigin?: string;
+}
+
+export interface StoryConnection {
+  id: string;
+  fromId: string;
+  toId: string;
+  color?: string;
+  frontCap?: string;
+  endCap?: string;
+  board?: StoryBoardRect;
+}
 
 export interface CustomStoryStructure {
   acts: { id: string; title: string }[];
   sequences: { id: string; actId: string; title: string; sceneIds: string[] }[];
-  beats: { id: string; text: string; sceneId?: string; sequenceId?: string; status: "idea" | "drafted" | "complete"; moments: { id: string; text: string }[] }[];
+  beats: { id: string; title?: string; text: string; color?: string; board?: StoryBoardRect; sceneId?: string; sequenceId?: string; status: "idea" | "drafted" | "complete"; moments: { id: string; text: string }[]; source?: "scs" | "fdx" }[];
   sceneOrder: string[];
+  /** Stable board labels keyed by scene-heading id, independent of screenplay order. */
+  sceneLabels?: Record<string, string>;
+  connections?: StoryConnection[];
+  board?: StoryBoardCanvas;
 }
 
 export interface TreatmentDocument {
@@ -135,7 +348,7 @@ export interface WorkspaceData {
 export const emptyWorkspace = (): WorkspaceData => ({
   treatment: "",
   treatments: [],
-  storyBoardView: "scene",
+  storyBoardView: "board",
   showBible: "",
   continuity: "",
   seasonArc: "",
@@ -405,9 +618,10 @@ export function reconcileScreenplayDocument(previous: ScreenplayDocument, parsed
   const workspace = { ...emptyWorkspace(), ...parsed.workspace, ...previous.workspace };
   workspace.sceneMeta = remapRecord(previous.workspace?.sceneMeta);
   workspace.omittedSceneIds = remapSceneIds(previous.workspace?.omittedSceneIds);
-  workspace.storyStructure = previous.workspace?.storyStructure ? {
+  const previousStructure = previous.workspace?.storyStructure ? {
     ...previous.workspace.storyStructure,
     sceneOrder: remapSceneIds(previous.workspace.storyStructure.sceneOrder),
+    sceneLabels: Object.fromEntries(Object.entries(previous.workspace.storyStructure.sceneLabels ?? {}).flatMap(([id, label]) => remap.has(id) ? [[remap.get(id)!, label]] : [])),
     sequences: previous.workspace.storyStructure.sequences.map((sequence) => ({
       ...sequence,
       sceneIds: remapSceneIds(sequence.sceneIds),
@@ -418,6 +632,42 @@ export function reconcileScreenplayDocument(previous: ScreenplayDocument, parsed
       moments: beat.moments.map((moment) => ({ ...moment })),
     })),
   } : undefined;
+  const importedStructure = parsed.workspace?.storyStructure;
+  if (!previousStructure) {
+    const parsedBlockIds = new Map(parsed.blocks.map((block, index) => [block.id, blocks[index]?.id ?? block.id]));
+    workspace.storyStructure = importedStructure ? {
+      ...importedStructure,
+      sceneOrder: importedStructure.sceneOrder.map((id) => parsedBlockIds.get(id) ?? id),
+      sceneLabels: Object.fromEntries(Object.entries(importedStructure.sceneLabels ?? {}).map(([id, label]) => [parsedBlockIds.get(id) ?? id, label])),
+    } : undefined;
+  } else if (!importedStructure) {
+    workspace.storyStructure = previousStructure;
+  } else {
+    // Final Draft owns records tagged as FDX beats; SCS-owned beats and mixed
+    // connections remain local. Stable ListItem ids make repeated imports
+    // deterministic without duplicating the board.
+    const previousFdxIds = new Set(previousStructure.beats.filter((beat) => beat.source === "fdx").map((beat) => beat.id));
+    const importedFdxBeats = importedStructure.beats.filter((beat) => beat.source === "fdx");
+    const importedFdxIds = new Set(importedFdxBeats.map((beat) => beat.id));
+    const localConnections = (previousStructure.connections ?? []).filter((connection) =>
+      !(previousFdxIds.has(connection.fromId) && previousFdxIds.has(connection.toId)),
+    );
+    const importedConnectionIds = new Set((importedStructure.connections ?? []).map((connection) => connection.id));
+    workspace.storyStructure = {
+      ...previousStructure,
+      beats: [
+        ...previousStructure.beats.filter((beat) => beat.source !== "fdx"),
+        ...importedFdxBeats,
+      ],
+      connections: [
+        ...localConnections.filter((connection) => !importedConnectionIds.has(connection.id)
+          && (!previousFdxIds.has(connection.fromId) || importedFdxIds.has(connection.fromId))
+          && (!previousFdxIds.has(connection.toId) || importedFdxIds.has(connection.toId))),
+        ...(importedStructure.connections ?? []),
+      ],
+      ...(importedStructure.board ? { board: importedStructure.board } : {}),
+    };
+  }
   workspace.treatments = previous.workspace?.treatments?.map((treatment) => ({
     ...treatment,
     links: treatment.links.flatMap((link) => {

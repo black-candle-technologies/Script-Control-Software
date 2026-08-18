@@ -1,4 +1,11 @@
 import type { ProjectWorkspace, SavedLayout, WorkspaceReferenceKind } from "./projectWorkspace.ts";
+import {
+  isWorkspaceDockLayout,
+  migrateWorkspaceLayoutToDockTree,
+  validateDockLayout,
+  workspaceDockLayoutToWorkspaceLayout,
+  type WorkspaceDockLayout,
+} from "./dockTree.ts";
 
 export const BUILTIN_LAYOUT_IDS = ["writer", "development", "revision", "television", "production", "companion"] as const;
 
@@ -58,7 +65,11 @@ export interface WorkspaceLayout extends SavedLayout {
   splits: WorkspaceSplitState[];
   floatingPanels: FloatingPanelState[];
   synchronizedPanels: SynchronizedPanelState[];
+  /** Version-2 dock layouts use this only in their flat compatibility projection. */
+  hiddenPanelIds?: string[];
 }
+
+export type AnyWorkspaceLayout = WorkspaceLayout | WorkspaceDockLayout;
 
 export type LayoutValidationCode =
   | "invalid-id"
@@ -192,7 +203,8 @@ function legacyLayoutState(layout: SavedLayout): Pick<WorkspaceLayout, "panels" 
 }
 
 /** Upgrade a legacy preset without changing its existing SavedLayout fields. */
-export function normalizeWorkspaceLayout(layout: SavedLayout | WorkspaceLayout): WorkspaceLayout {
+export function normalizeWorkspaceLayout(layout: SavedLayout | AnyWorkspaceLayout): WorkspaceLayout {
+  if (isWorkspaceDockLayout(layout)) return workspaceDockLayoutToWorkspaceLayout(layout);
   const fields = layoutFields(layout);
   const fallback = legacyLayoutState(fields);
   if (!hasTopologyShape(layout)) return { ...fields, ...fallback };
@@ -210,6 +222,7 @@ export function normalizeWorkspaceLayout(layout: SavedLayout | WorkspaceLayout):
     splits: layout.splits.map((item) => ({ ...item, groupIds: [...item.groupIds], sizes: [...item.sizes] })),
     floatingPanels: layout.floatingPanels.map((item) => ({ ...item })),
     synchronizedPanels: layout.synchronizedPanels.map((item) => ({ ...item, panelIds: [...item.panelIds] })),
+    ...(stringArray(layout.hiddenPanelIds) ? { hiddenPanelIds: [...layout.hiddenPanelIds] } : {}),
   };
 }
 
@@ -224,7 +237,7 @@ export function resizeWorkspaceSplit(split: WorkspaceSplitState, dividerIndex: n
   return { ...split, sizes };
 }
 
-export function validateWorkspaceLayout(input: SavedLayout | WorkspaceLayout): LayoutValidationResult {
+export function validateWorkspaceLayout(input: SavedLayout | AnyWorkspaceLayout): LayoutValidationResult {
   const layout = normalizeWorkspaceLayout(input);
   const errors: LayoutValidationError[] = [];
   const add = (code: LayoutValidationCode, path: string, message: string) => errors.push({ code, path, message });
@@ -257,8 +270,14 @@ export function validateWorkspaceLayout(input: SavedLayout | WorkspaceLayout): L
     if (floatingPanels.has(floating.panelId) || groupedPanels.has(floating.panelId) || !panelIds.has(floating.panelId) || ![floating.x, floating.y, floating.width, floating.height].every(Number.isFinite) || floating.width < 200 || floating.height < 120) add("invalid-floating-panel", `floatingPanels.${index}`, "A floating panel must exist once, remain undocked, and have a usable frame.");
     floatingPanels.add(floating.panelId);
   });
+  const hiddenPanelIds = new Set(layout.hiddenPanelIds ?? []);
+  if (hiddenPanelIds.size !== (layout.hiddenPanelIds?.length ?? 0)) add("duplicate-id", "hiddenPanelIds", "Hidden panel ids must be unique.");
+  hiddenPanelIds.forEach((id) => {
+    const definition = layout.panels.find((panel) => panel.id === id);
+    if (!definition || groupedPanels.has(id) || floatingPanels.has(id) || !definition.closable) add("unassigned-panel", `hiddenPanelIds.${id}`, `Hidden panel ${id} is missing, visible, or required.`);
+  });
   panelIds.forEach((id) => {
-    if (!groupedPanels.has(id) && !floatingPanels.has(id)) add("unassigned-panel", `panels.${id}`, `Panel ${id} is neither docked nor floating.`);
+    if (!groupedPanels.has(id) && !floatingPanels.has(id) && !hiddenPanelIds.has(id)) add("unassigned-panel", `panels.${id}`, `Panel ${id} is neither docked, floating, nor hidden.`);
   });
 
   const splitIds = new Set<string>();
@@ -297,30 +316,85 @@ function checked(layout: SavedLayout | WorkspaceLayout): WorkspaceLayout {
 export function getWorkspaceLayout(workspace: ProjectWorkspace, id: string): WorkspaceLayout | undefined {
   const layout = Array.isArray(workspace.layouts) ? workspace.layouts.find((item) => isRecord(item) && item.id === id) : undefined;
   if (!layout) return undefined;
-  const normalized = normalizeWorkspaceLayout(layout as unknown as WorkspaceLayout);
+  const normalized = normalizeWorkspaceLayout(layout as unknown as AnyWorkspaceLayout);
   return validateWorkspaceLayout(normalized).valid ? normalized : undefined;
 }
 
-export function saveCustomLayout(workspace: ProjectWorkspace, layout: WorkspaceLayout): ProjectWorkspace {
+/** Upsert a portable custom topology without hijacking any window's active layout. */
+export function saveCustomLayout(workspace: ProjectWorkspace, layout: AnyWorkspaceLayout): ProjectWorkspace {
   if (builtinIds.has(layout.id)) throw new Error(`Layout id ${layout.id} is reserved for a built-in preset.`);
-  const saved = checked(layout);
+  let saved: WorkspaceDockLayout;
+  if (isWorkspaceDockLayout(layout)) {
+    const validation = validateDockLayout(layout);
+    if (!validation.valid) throw new Error(validation.errors.map((error) => error.message).join(" "));
+    saved = structuredClone(layout);
+  } else {
+    saved = migrateWorkspaceLayoutToDockTree(checked(layout));
+  }
   const exists = workspace.layouts.some((item) => item.id === saved.id);
-  return { ...workspace, layouts: exists ? workspace.layouts.map((item) => item.id === saved.id ? saved : item) : [...workspace.layouts, saved], activeLayoutId: saved.id };
+  return { ...workspace, layouts: exists ? workspace.layouts.map((item) => item.id === saved.id ? saved : item) : [...workspace.layouts, saved] };
 }
 
 export function deleteCustomLayout(workspace: ProjectWorkspace, id: string): ProjectWorkspace {
   if (builtinIds.has(id)) throw new Error("Built-in layouts cannot be deleted.");
   if (!workspace.layouts.some((layout) => layout.id === id)) return workspace;
-  return { ...workspace, layouts: workspace.layouts.filter((layout) => layout.id !== id), activeLayoutId: workspace.activeLayoutId === id ? "writer" : workspace.activeLayoutId };
+  const shortcuts = { ...workspace.shortcuts };
+  delete shortcuts[workspaceLayoutShortcutAction(id)];
+  return { ...workspace, layouts: workspace.layouts.filter((layout) => layout.id !== id), shortcuts, activeLayoutId: workspace.activeLayoutId === id ? "writer" : workspace.activeLayoutId };
 }
 
 export function duplicateWorkspaceLayout(workspace: ProjectWorkspace, sourceId: string): ProjectWorkspace {
-  const source = getWorkspaceLayout(workspace, sourceId);
+  const source = workspace.layouts.find((layout) => layout.id === sourceId);
   if (!source) throw new Error(`Layout ${sourceId} does not exist.`);
-  const base = `${source.id}-copy`;
-  let id = base;
-  for (let copy = 2; workspace.layouts.some((layout) => layout.id === id); copy++) id = `${base}-${copy}`;
-  return saveCustomLayout(workspace, { ...source, id, name: `${source.name} Copy` });
+  const id = uniqueWorkspaceLayoutId(workspace, `${source.id}-copy`);
+  const copy = isWorkspaceDockLayout(source)
+    ? structuredClone(source)
+    : normalizeWorkspaceLayout(source);
+  return saveCustomLayout(workspace, { ...copy, id, name: `${source.name} Copy` });
+}
+
+export function uniqueWorkspaceLayoutId(workspace: ProjectWorkspace, requested: string): string {
+  const normalized = requested.trim().toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "layout";
+  let id = normalized;
+  for (let copy = 2; builtinIds.has(id) || workspace.layouts.some((layout) => layout.id === id); copy += 1) id = `${normalized}-${copy}`;
+  return id;
+}
+
+export function renameCustomLayout(workspace: ProjectWorkspace, id: string, name: string): ProjectWorkspace {
+  if (builtinIds.has(id)) throw new Error("Built-in layouts cannot be renamed.");
+  const normalizedName = name.trim();
+  if (!normalizedName) throw new Error("Layout name is required.");
+  if (!workspace.layouts.some((layout) => layout.id === id)) throw new Error(`Layout ${id} does not exist.`);
+  return { ...workspace, layouts: workspace.layouts.map((layout) => layout.id === id ? { ...layout, name: normalizedName } : layout) };
+}
+
+/** Set only the legacy/default portable selection; native windows keep their own active layout in UI preferences. */
+export function activateWorkspaceLayout(workspace: ProjectWorkspace, id: string): ProjectWorkspace {
+  if (!workspace.layouts.some((layout) => layout.id === id)) throw new Error(`Layout ${id} does not exist.`);
+  return workspace.activeLayoutId === id ? workspace : { ...workspace, activeLayoutId: id };
+}
+
+/** Select a canonical built-in preset without mutating or deleting a custom layout. */
+export function resetWorkspaceLayout(workspace: ProjectWorkspace, builtinId: (typeof BUILTIN_LAYOUT_IDS)[number] = "writer"): ProjectWorkspace {
+  if (!builtinIds.has(builtinId) || !workspace.layouts.some((layout) => layout.id === builtinId)) throw new Error(`Built-in layout ${builtinId} does not exist.`);
+  return activateWorkspaceLayout(workspace, builtinId);
+}
+
+/** Replace one custom topology from a protected built-in while retaining its identity and shortcut. */
+export function resetCustomLayoutToBuiltIn(
+  workspace: ProjectWorkspace,
+  customId: string,
+  builtinId: (typeof BUILTIN_LAYOUT_IDS)[number] = "writer",
+): ProjectWorkspace {
+  if (builtinIds.has(customId)) throw new Error("Built-in layouts are already canonical and cannot be overwritten.");
+  const custom = workspace.layouts.find((layout) => layout.id === customId);
+  const builtin = workspace.layouts.find((layout) => layout.id === builtinId);
+  if (!custom) throw new Error(`Layout ${customId} does not exist.`);
+  if (!builtin || !builtinIds.has(builtinId)) throw new Error(`Built-in layout ${builtinId} does not exist.`);
+  const replacement = normalizeWorkspaceLayout(builtin);
+  return saveCustomLayout(workspace, { ...replacement, id: custom.id, name: custom.name });
 }
 
 const modifierOrder = ["mod", "ctrl", "alt", "shift", "meta"] as const;
@@ -359,6 +433,20 @@ export function setKeyboardShortcut(workspace: ProjectWorkspace, action: string,
   const validation = validateKeyboardShortcuts(shortcuts);
   if (!validation.valid) throw new Error(validation.collisions[0] ? `${validation.collisions[0].shortcut} is already assigned to ${validation.collisions[0].actions.join(" and ")}.` : validation.invalid[0].message);
   return { ...workspace, shortcuts };
+}
+
+export function workspaceLayoutShortcutAction(layoutId: string): string {
+  if (!layoutId.trim()) throw new Error("Layout id is required.");
+  return `layout:${layoutId}`;
+}
+
+export function setWorkspaceLayoutShortcut(workspace: ProjectWorkspace, layoutId: string, shortcut: string): ProjectWorkspace {
+  if (!workspace.layouts.some((layout) => layout.id === layoutId)) throw new Error(`Layout ${layoutId} does not exist.`);
+  return setKeyboardShortcut(workspace, workspaceLayoutShortcutAction(layoutId), shortcut);
+}
+
+export function getWorkspaceLayoutShortcut(workspace: ProjectWorkspace, layoutId: string): string {
+  return workspace.shortcuts[workspaceLayoutShortcutAction(layoutId)] ?? "";
 }
 
 export interface KeyboardShortcutEvent {

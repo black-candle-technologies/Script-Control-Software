@@ -24,4 +24,5 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 quick-xml = { version = "0.38", features = ["encoding"] }
+flate2 = "1"
 time = { version = "0.3", features = ["formatting"] }

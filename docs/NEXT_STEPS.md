@@ -1,6 +1,6 @@
 # Next Steps
 
-The roadmap now has a working local-first baseline across writing, development, television, production, versioning, companion, review, and optional-assistance workflows.
+The roadmap now has a working local-first baseline across writing, development, television, production, versioning, companion, and review workflows.
 
 Further work should be driven by real projects and measured limits:
 
